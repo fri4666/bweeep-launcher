@@ -41,33 +41,26 @@ input:focus-visible {
 
 .shell {
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
-  grid-template-rows: 82px minmax(0, 1fr);
+  grid-template-columns: 224px minmax(0, 1fr);
   min-height: 100vh;
+  height: 100vh;
   overflow: hidden;
   background: #111214;
 }
 
-.appHeader {
-  grid-column: 1 / -1;
+.sidebar {
   display: flex;
-  align-items: center;
-  gap: 28px;
-  padding: 14px 20px;
+  flex-direction: column;
+  gap: 26px;
+  padding: 26px 20px 20px;
   background: #111214;
   -webkit-app-region: drag;
-}
-
-.sidebar {
-  padding: 8px 14px 20px 20px;
-  background: #111214;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-width: 188px;
 }
 
 .brandMark {
@@ -126,17 +119,19 @@ h3 {
 
 .iconRail {
   display: flex;
+  flex-direction: column;
   gap: 6px;
   -webkit-app-region: no-drag;
 }
 
 .iconButton {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 100%;
+  min-height: 42px;
+  padding: 0 14px;
   color: #9d9a91;
-  font-size: 19px;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: left;
   background: transparent;
   border: 0;
   border-radius: var(--control-radius);
@@ -149,13 +144,14 @@ h3 {
 }
 
 .iconButton:not(.active):hover {
-  transform: translateY(-1px);
+  transform: translateX(3px);
 }
 
 .supportPanel {
   display: flex;
   align-items: end;
   min-height: 146px;
+  margin-top: auto;
   padding: 20px 18px;
   background: #202125;
   border-radius: var(--surface-radius);
@@ -247,9 +243,12 @@ h3 {
 }
 
 .content {
+  display: grid;
+  grid-template-rows: 70px minmax(0, 1fr) auto;
+  gap: 12px;
   min-width: 0;
   min-height: 0;
-  padding: 8px 20px 20px 0;
+  padding: 8px 20px 16px 0;
 }
 
 .topbar {
@@ -261,11 +260,44 @@ h3 {
 }
 
 .searchStub {
-  width: 260px;
-  padding: 13px 15px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 300px;
+  padding: 10px 14px;
   color: #aaa69d;
   background: #1b1c20;
   border-radius: var(--control-radius);
+  -webkit-app-region: no-drag;
+}
+
+.searchStub strong,
+.searchStub small {
+  display: block;
+}
+
+.searchStub strong {
+  color: #e4e1da;
+  font-size: 13px;
+}
+
+.searchStub small {
+  margin-top: 3px;
+  color: #85827b;
+  font-size: 11px;
+}
+
+.statusDot {
+  width: 9px;
+  height: 9px;
+  background: #77756f;
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px rgba(119, 117, 111, 0.12);
+}
+
+.statusDot.online {
+  background: #84ad72;
+  box-shadow: 0 0 0 4px rgba(132, 173, 114, 0.12);
 }
 
 .topbarActions {
@@ -366,9 +398,9 @@ h3 {
 
 .hero {
   position: relative;
-  height: 100%;
-  min-height: 460px;
-  overflow: visible;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--surface-radius);
 }
 
 .heroBackdrop {
@@ -389,11 +421,11 @@ h3 {
   z-index: 2;
   left: 42px;
   bottom: 42px;
-  max-width: 520px;
+  max-width: 430px;
 }
 
 .heroCopy p {
-  max-width: 520px;
+  max-width: 430px;
   margin-top: 10px;
   color: #d1cec7;
   line-height: 1.55;
@@ -422,7 +454,7 @@ h3 {
   bottom: 38px;
   display: grid;
   gap: 10px;
-  width: min(330px, calc(100% - 84px));
+  width: min(310px, calc(100% - 84px));
 }
 
 .entryScreen {
@@ -534,6 +566,19 @@ h3 {
   background: #d9b072;
   border: 0;
   border-radius: var(--control-radius);
+}
+
+.inviteHint {
+  margin-top: 9px;
+  color: #77756f;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.entryInvite button:not(:disabled):hover {
+  background: #ebc586;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  transform: translateY(-2px);
 }
 
 .entryLogout:hover {
@@ -662,7 +707,7 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: #1b1c20;
   border-radius: var(--surface-radius);
 }
@@ -774,12 +819,6 @@ button:disabled {
   font-size: 13px;
 }
 
-.inviteRow {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 10px;
-}
-
 input {
   width: 100%;
   min-height: 42px;
@@ -794,6 +833,12 @@ input {
 
 input:focus {
   background: #24252a;
+}
+
+.inviteRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -814,10 +859,33 @@ input:focus {
 }
 
 .adminTools {
-  display: flex;
-  align-items: center;
+  display: grid;
   gap: 10px;
   margin-top: 12px;
+}
+
+.adminTools > button {
+  justify-self: start;
+}
+
+.createdInvite {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.createdInvite button {
+  justify-self: start;
+}
+
+.createdInvite code {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .connectionFields {

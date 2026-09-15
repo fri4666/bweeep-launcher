@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -7,7 +7,6 @@ import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { SupabaseAuth } from "./supabase-auth.js";
 import { installAndLaunch } from "./minecraft-runtime.js";
-import { parseInviteLink } from "./deep-link.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { checkLauncherUpdate } from "./launcher-update.js";
 import type { LauncherUser, LoginProvider } from "../shared/types.js";
@@ -17,8 +16,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
 const auth = new SupabaseAuth();
 const pendingAuthUrls: string[] = [];
-const pendingInviteCodes: string[] = [];
-let inviteReceiverReady = false;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -39,16 +36,7 @@ function collectDeepLink(argv: readonly string[]): string | undefined {
 }
 
 function queueDeepLink(url: string): void {
-  if (url.startsWith("bwe-e-ep://invite/")) {
-    try {
-      const code = parseInviteLink(url);
-      if (code) pendingInviteCodes.push(code);
-    } catch (error) {
-      notifyAuthError(error);
-    }
-  } else {
-    pendingAuthUrls.push(url);
-  }
+  pendingAuthUrls.push(url);
   if (app.isReady()) void processPendingDeepLinks();
 }
 
@@ -63,14 +51,6 @@ async function processPendingDeepLinks(): Promise<void> {
       }
     } catch (error) {
       notifyAuthError(error);
-    }
-  }
-  if (!inviteReceiverReady) return;
-  while (pendingInviteCodes.length > 0) {
-    const code = pendingInviteCodes.shift();
-    if (!code) continue;
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send("invite:received", code);
     }
   }
 }
@@ -149,6 +129,7 @@ app.whenReady().then(() => {
     if (url.protocol !== "https:") throw new Error("HTTPS 다운로드 주소만 열 수 있습니다.");
     await shell.openExternal(url.toString());
   });
+  ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
   ipcMain.handle("modpack:sync", async (event, request: { packId: string; instanceDir: string }) => {
     const progress = (payload: SyncProgress) => event.sender.send("modpack:progress", payload);
     const manifest = await auth.getManifest(sessionUser, request.packId);
@@ -180,12 +161,6 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("access:redeemInvite", (_event, code: string) => auth.redeemInvite(sessionUser, code));
   ipcMain.handle("access:createInvite", () => auth.createInvite(sessionUser));
-  ipcMain.handle("invite:ready", () => {
-    inviteReceiverReady = true;
-    const firstInvite = pendingInviteCodes.shift() ?? null;
-    void processPendingDeepLinks();
-    return firstInvite;
-  });
   ipcMain.handle("server:connection", () => readServerConnection(defaultServer));
   ipcMain.handle("server:saveConnection", (_event, connection: unknown) => writeServerConnection(connection, defaultServer));
   ipcMain.handle("server:resetConnection", () => resetServerConnection(defaultServer));

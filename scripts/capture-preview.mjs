@@ -5,9 +5,10 @@ const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, dev
 const errors = [];
 const signedIn = process.env.BWEEP_PREVIEW_SIGNED_IN !== "false";
 const accessUnavailable = process.env.BWEEP_PREVIEW_ACCESS_UNAVAILABLE === "true";
+const accessDenied = process.env.BWEEP_PREVIEW_ACCESS_DENIED === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied }) => {
   const listeners = [];
   const result = {
     manifest: {
@@ -47,21 +48,23 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable }) => {
     }),
     accessStatus: async () => ({
       loggedIn: previewSignedIn,
-      allowed: previewSignedIn && !previewAccessUnavailable,
+      allowed: previewSignedIn && !previewAccessUnavailable && !previewAccessDenied,
       isAdmin: false,
       unavailable: previewAccessUnavailable,
-      reason: previewAccessUnavailable ? "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요." : previewSignedIn ? "초대 확인 완료" : "초대 코드가 필요합니다.",
+      reason: previewAccessUnavailable ? "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요." : previewAccessDenied ? "초대 코드가 필요합니다." : previewSignedIn ? "초대 확인 완료" : "로그인이 필요합니다.",
       user: previewSignedIn ? { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, provider: "discord" } : undefined
     }),
     login: async () => ({ configured: true, user: null }),
     logout: async () => ({ loggedIn: false, allowed: false, isAdmin: false, reason: "로그아웃했습니다." }),
-    redeemInvite: async () => ({
-      ok: true,
-      message: "완료",
-      status: { loggedIn: true, allowed: true, isAdmin: false, reason: "허용됨" }
-    }),
-    createInvite: async () => ({ code: "ABC123", expiresAt: "2026-12-31" }),
-    readyForInvite: async () => null,
+    redeemInvite: async (code) => {
+      if (code !== "BWEEP-123456789ABC-123456789ABC") throw new Error(`초대 코드가 정규화되지 않았습니다: ${code}`);
+      return {
+        ok: true,
+        message: "완료",
+        status: { loggedIn: true, allowed: true, isAdmin: false, reason: "허용됨" }
+      };
+    },
+    createInvite: async () => ({ code: "BWEEP-123456789ABC-123456789ABC", expiresAt: "2026-12-31" }),
     serverConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
     saveServerConnection: async (connection) => connection,
     resetServerConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
@@ -80,11 +83,11 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable }) => {
     },
     openPath: async () => "",
     openExternal: async () => undefined,
+    copyText: async () => undefined,
     minimizeWindow: () => undefined,
     closeWindow: () => undefined,
     onAuthSession: () => () => {},
     onAuthError: () => () => {},
-    onInviteCode: () => () => {},
     onProgress: (listener) => {
       listeners.push(listener);
       return () => {
@@ -93,7 +96,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable }) => {
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "networkidle" });
 await page.waitForTimeout(120);
@@ -116,14 +119,23 @@ async function verifyHover(selector, name) {
   await page.mouse.move(1, 1);
 }
 
-await verifyHover(accessUnavailable ? ".entryRecovery > button:first-child" : signedIn ? ".launchButton" : ".entryChoices button:first-child", accessUnavailable ? "recovery" : signedIn ? "launch" : "login");
-await page.screenshot({ path: signedIn ? "previews/bweeep-launcher-flow-ready.png" : "previews/bweeep-launcher-login-main.png" });
+await verifyHover(accessUnavailable ? ".entryRecovery > button:first-child" : accessDenied ? ".entryLogout" : signedIn ? ".launchButton" : ".entryChoices button:first-child", accessUnavailable ? "recovery" : accessDenied ? "invite-screen" : signedIn ? "launch" : "login");
+await page.screenshot({ path: accessDenied ? "previews/bweeep-launcher-invite-entry.png" : signedIn ? "previews/bweeep-launcher-flow-ready.png" : "previews/bweeep-launcher-login-main.png" });
 if (accessUnavailable) {
   if (await page.getByRole("button", { name: "다시 확인" }).count() !== 1) throw new Error("access recovery action is missing");
   await page.screenshot({ path: "previews/bweeep-launcher-access-recovery.png" });
+} else if (accessDenied) {
+  await page.locator(".entryInvite input").fill("bweep-123456789abc-123456789abc");
+  await page.getByRole("button", { name: "참여" }).click();
+  await page.getByRole("button", { name: "게임 시작" }).waitFor();
+  interactionChecks.push("invite-code-paste");
 } else if (signedIn) {
   await page.getByRole("button", { name: "설정" }).click();
   await page.waitForTimeout(100);
+  await page.getByRole("button", { name: "초대 코드 만들기" }).click();
+  await page.getByText("BWEEP-123456789ABC-123456789ABC", { exact: true }).waitFor();
+  const copyButtonBox = await page.getByRole("button", { name: "코드 복사" }).boundingBox();
+  if (!copyButtonBox || copyButtonBox.x + copyButtonBox.width > 1440) throw new Error("invite code copy action is not visible");
   await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
   await page.locator(".settingsModal .closeButton").click();
   await page.getByRole("button", { name: "게임 시작" }).click();

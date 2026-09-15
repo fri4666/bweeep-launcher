@@ -33,7 +33,7 @@ function App() {
   const [result, setResult] = useState<SyncResult | null>(null);
   const [user, setUser] = useState<LauncherUser | null>(null);
   const [access, setAccess] = useState<AccessStatus | null>(null);
-  const [inviteCode, setInviteCode] = useState("");
+  const [inviteInput, setInviteInput] = useState("");
   const [createdInvite, setCreatedInvite] = useState<CreatedInvite | null>(null);
   const [notice, setNotice] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -51,9 +51,8 @@ function App() {
       window.bweeep.defaultInstanceRoot(),
       window.bweeep.accessStatus(),
       window.bweeep.serverConnection(),
-      window.bweeep.checkLauncherUpdate(),
-      window.bweeep.readyForInvite()
-    ]).then(([serverList, root, status, savedConnection, updateStatus, pendingInvite]) => {
+      window.bweeep.checkLauncherUpdate()
+    ]).then(([serverList, root, status, savedConnection, updateStatus]) => {
       if (serverList.status === "fulfilled") {
         setServers(serverList.value);
         setSelectedId(serverList.value[0]?.id ?? "");
@@ -77,10 +76,6 @@ function App() {
         setLauncherUpdate(updateStatus.value);
         setUpdateOpen(updateStatus.value.state === "available");
       }
-      if (pendingInvite.status === "fulfilled" && pendingInvite.value) {
-        setInviteCode(pendingInvite.value);
-        setSettingsOpen(true);
-      }
     });
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
       setLogs((current) => [...current, event]);
@@ -91,16 +86,10 @@ function App() {
       void refreshAccessStatus(nextUser);
     });
     const unsubscribeError = window.bweeep.onAuthError(setNotice);
-    const unsubscribeInvite = window.bweeep.onInviteCode((code: string) => {
-      setInviteCode(code);
-      setSettingsOpen(true);
-      setNotice("초대 링크를 받았습니다. 로그인 후 코드를 사용해 주세요.");
-    });
     return () => {
       unsubscribeProgress();
       unsubscribeSession();
       unsubscribeError();
-      unsubscribeInvite();
     };
   }, []);
 
@@ -172,10 +161,11 @@ function App() {
   async function redeemInvite() {
     setNotice("");
     try {
-      const result = await window.bweeep.redeemInvite(inviteCode);
+      const code = normalizeInviteCode(inviteInput);
+      const result = await window.bweeep.redeemInvite(code);
       setAccess(result.status);
       setNotice(result.message);
-      if (result.ok) setInviteCode("");
+      if (result.ok) setInviteInput("");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "초대 코드를 사용할 수 없습니다.");
     }
@@ -188,6 +178,12 @@ function App() {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  async function copyInviteCode() {
+    if (!createdInvite) return;
+    await window.bweeep.copyText(createdInvite.code);
+    setNotice("초대 코드를 복사했습니다.");
   }
 
   async function saveConnection() {
@@ -343,13 +339,14 @@ function App() {
         <WindowControls />
         <section className="entryCard">
           <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
-          <p className="eyebrow">Invite only</p>
+          <p className="eyebrow">멤버 전용</p>
           <h1>초대 코드를 입력하세요</h1>
           <p className="entryDescription">{access.reason}</p>
           <div className="entryInvite">
-            <input value={inviteCode} placeholder="초대 코드" onChange={(event) => setInviteCode(event.target.value)} />
-            <button disabled={!inviteCode.trim()} onClick={() => void redeemInvite()}>입장</button>
+            <input value={inviteInput} placeholder="초대 코드" onChange={(event) => setInviteInput(event.target.value)} />
+            <button disabled={!inviteInput.trim()} onClick={() => void redeemInvite()}>참여</button>
           </div>
+          <p className="inviteHint">친구에게 받은 BWEEP 초대 코드를 붙여 넣으세요.</p>
           <button className="entryLogout" onClick={() => void logout()}>다른 계정으로 로그인</button>
           {notice && <p className="notice">{notice}</p>}
         </section>
@@ -359,44 +356,45 @@ function App() {
 
   return (
     <main className="shell">
-      <header className="appHeader">
+      <aside className="sidebar">
         <div className="brand">
           <span className="brandMark" aria-label="붸에엡">
             <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
           </span>
           <div>
-            <p className="eyebrow">modpack launcher</p>
+            <p className="eyebrow">모드팩 런처</p>
             <h1 className="brandWord">붸에엡</h1>
           </div>
         </div>
 
         <nav className="iconRail" aria-label="주 메뉴">
-          <button className="iconButton active" title="홈">⌂</button>
-          <button className="iconButton" title="게임">▣</button>
-          <button className="iconButton" title="설정" onClick={() => setSettingsOpen(true)}>⚙</button>
+          <button className="iconButton active">홈</button>
+          <button className="iconButton" onClick={() => setProfileOpen(true)}>서버</button>
+          <button className="iconButton" onClick={() => setSettingsOpen(true)}>설정</button>
         </nav>
-        <div className="topbarActions">
-          <button className="settingsButton" onClick={() => setSettingsOpen(true)}>설정</button>
-          <button className="profileBox" onClick={() => setProfileOpen(true)}>
-            {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span className="avatarFallback">{user.username.slice(0, 1).toUpperCase()}</span>}
-            <div>
-              <strong>{user.globalName ?? user.username}</strong>
-              <small>{user.provider === "microsoft" ? "Microsoft" : "Discord"}</small>
-            </div>
-          </button>
-          <WindowControls />
+        <div className="supportPanel">
+          <div>
+            <span className="accessStamp">서버 멤버 전용</span>
+            <strong>함께 떠나는 모드팩</strong>
+            <p>초대받은 친구들과 같은 모드팩으로 바로 시작할 수 있어요.</p>
+          </div>
         </div>
-      </header>
-
-      <aside className="sidebar">
-        <p className="sectionLabel">모드팩</p>
-        <button className="packCard active" type="button">
-          <span className="packThumbnail" />
-          <span><strong>Create Aeronautics</strong><small>Minecraft 1.21.1</small></span>
-        </button>
       </aside>
 
       <section className="content">
+        <header className="topbar">
+          <div className="searchStub">
+            <span className={serverStatus?.online ? "statusDot online" : "statusDot"} />
+            <div><strong>{serverStatus?.message ?? "서버 확인 중"}</strong><small>{connection ? `${connection.host}:${connection.port}` : "연결 정보 확인 중"}</small></div>
+          </div>
+          <div className="topbarActions">
+            <button className="profileBox" onClick={() => setProfileOpen(true)}>
+              {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span className="avatarFallback">{user.username.slice(0, 1).toUpperCase()}</span>}
+              <div><strong>{user.globalName ?? user.username}</strong><small>{user.provider === "microsoft" ? "Microsoft" : "Discord"}</small></div>
+            </button>
+            <WindowControls />
+          </div>
+        </header>
         <section className="hero">
           <div className="heroBackdrop" />
           <div className="heroCopy">
@@ -406,7 +404,7 @@ function App() {
             <div className="chips">
               <span>Minecraft 1.21.1</span>
               <span>NeoForge</span>
-              <span>초대 전용</span>
+              <span>서버 멤버 전용</span>
             </div>
           </div>
           <div className="actionDock" aria-live="polite">
@@ -434,6 +432,12 @@ function App() {
             </button>
           </div>
         </section>
+        <section className="serverSummary" aria-label="모드팩 정보">
+          <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatus?.message ?? "확인 중"}</strong></article>
+          <article className="quickFact"><span className="factIcon">◆</span><span>모드팩</span><strong>{selected?.name ?? "없음"}</strong></article>
+          <article className="quickFact"><span className="factIcon">▰</span><span>Minecraft</span><strong>{selected?.minecraftVersion ?? "-"}</strong></article>
+          <article className="quickFact"><span className="factIcon">◈</span><span>모드 로더</span><strong>{selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong></article>
+        </section>
       </section>
 
       {settingsOpen && (
@@ -454,17 +458,18 @@ function App() {
                   <span>{access?.reason ?? "확인 중"}</span>
                 </div>
                 <div className="inviteRow">
-                  <input
-                    value={inviteCode}
-                    placeholder="초대 코드"
-                    onChange={(event: React.ChangeEvent<HTMLInputElement>) => setInviteCode(event.target.value)}
-                  />
-                  <button disabled={!user || !inviteCode.trim()} onClick={redeemInvite}>사용</button>
+                  <input value={inviteInput} placeholder="초대 코드" onChange={(event) => setInviteInput(event.target.value)} />
+                  <button disabled={!user || !inviteInput.trim()} onClick={() => void redeemInvite()}>참여</button>
                 </div>
                 {access?.allowed && (
                   <div className="adminTools">
-                    <button onClick={createInvite}>초대 링크 만들기</button>
-                    {createdInvite && <code>bwe-e-ep://invite/{createdInvite.code}</code>}
+                    <button onClick={() => void createInvite()}>초대 코드 만들기</button>
+                    {createdInvite && (
+                      <div className="createdInvite">
+                        <code>{createdInvite.code}</code>
+                        <button onClick={() => void copyInviteCode()}>코드 복사</button>
+                      </div>
+                    )}
                   </div>
                 )}
                 {notice && <p className="notice">{notice}</p>}
@@ -512,7 +517,7 @@ function App() {
           <section className="profileModal" aria-label="계정 및 서버 설정" onClick={(event) => event.stopPropagation()}>
             <header className="modalHeader">
               <div>
-                <p className="eyebrow">{user?.provider === "microsoft" ? "Microsoft account" : "Discord account"}</p>
+                <p className="eyebrow">{user?.provider === "microsoft" ? "Microsoft 계정" : "Discord 계정"}</p>
                 <h2>{user?.globalName ?? user?.username ?? "계정"}</h2>
               </div>
               <button className="closeButton" onClick={() => setProfileOpen(false)}>닫기</button>
@@ -552,6 +557,10 @@ function App() {
 
     </main>
   );
+}
+
+function normalizeInviteCode(value: string): string {
+  return value.trim().toUpperCase();
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

@@ -80,28 +80,19 @@ async function handleRequest(request: Request): Promise<Response> {
 
     if (body.action === "redeem") {
       const code = normalizeCode(body.code);
-      if (!code) {
-        return json({ message: "초대 코드 형식이 올바르지 않습니다." }, 400);
-      }
-
+      if (!code) return json({ message: "초대 코드 형식이 올바르지 않습니다." }, 400);
       const { data, error } = await supabaseAdmin.rpc("redeem_launcher_invite", {
         p_code_hash: await sha256(code),
         p_user_id: userId
       });
-      if (error) {
-        return json({ message: "초대 코드 사용 중 오류가 발생했습니다." }, 500);
-      }
-
+      if (error) return json({ message: "초대 코드를 사용하는 중 오류가 발생했습니다." }, 500);
       const outcome = data?.[0];
-      return json(
-        {
-          ok: Boolean(outcome?.ok),
-          message: outcome?.message ?? "초대 코드 결과를 확인하지 못했습니다.",
-          allowed: Boolean(outcome?.ok),
-          isAdmin: outcome?.member_role === "admin"
-        },
-        outcome?.ok ? 200 : 400
-      );
+      return json({
+        ok: Boolean(outcome?.ok),
+        message: outcome?.message ?? "초대 결과를 확인하지 못했습니다.",
+        allowed: Boolean(outcome?.ok),
+        isAdmin: outcome?.member_role === "admin"
+      }, outcome?.ok ? 200 : 400);
     }
 
     if (!membership) {
@@ -139,11 +130,8 @@ async function handleRequest(request: Request): Promise<Response> {
       expires_at: expiresAt,
       max_uses: maxUses
     });
-
-    if (error) {
-      return json({ message: "초대 코드를 만들지 못했습니다." }, 500);
-    }
-  return json({ code, expiresAt, maxUses });
+    if (error) return json({ message: "초대 코드를 만들지 못했습니다." }, 500);
+    return json({ code, expiresAt, maxUses });
 }
 
 function normalizeCode(value: unknown): string | null {

@@ -8,7 +8,7 @@
 - Pack sync: files are SHA-256 verified from the protected Supabase Manifest.
 - Default pack: Create Aeronautics on `server.fri4666.com:25565`.
 - Account choices: Supabase Auth OAuth with PKCE and the `bwe-e-ep://auth/callback` desktop callback. An invitee can choose Discord or Microsoft.
-- Invite gate and protected Manifest delivery: Supabase Edge Function with database-backed access and one-time invite codes. Every approved member can invite the next friend.
+- Invite gate and protected Manifest delivery: Supabase Edge Function with database-backed access and one-time invite codes. Every approved member can create and copy a `BWEEP-…` code for the next friend.
 - Game launch: installs Minecraft 1.21.1, Java 21, and NeoForge 21.1.228 into the selected instance, then starts directly into the server.
 - Discord launch: creates a stable offline Minecraft profile derived from the Discord account and display name.
 - Microsoft launch: verifies Minecraft: Java Edition ownership through Microsoft, Xbox, XSTS, and Minecraft Services, then launches with the account's actual Minecraft profile name and UUID.
@@ -73,7 +73,7 @@ insert into public.launcher_members (user_id, role)
 values ('YOUR_SUPABASE_AUTH_USER_UUID', 'admin');
 ```
 
-The first admin can join through the normal launcher flow. Once a person has redeemed an invite, that member can create their own limited-use invite codes from the launcher. The Edge Function hashes every code before storage, redeems it atomically, and only returns an active modpack Manifest to members.
+The first admin can join through the normal launcher flow. Once a person has redeemed an invite code, that member can create their own limited-use invite codes from the launcher. The Edge Function hashes every code before storage, redeems it atomically, and only returns an active modpack Manifest to members.
 
 ## Launcher release updates
 
@@ -91,7 +91,7 @@ The HTTPS metadata endpoint should return only a public download link and releas
 {
   "version": "0.1.1",
   "downloadUrl": "https://downloads.example.com/bweeep/Bweeep-win32-x64.zip",
-  "notes": ["초대 링크 흐름을 개선했습니다.", "서버 연결 설정을 추가했습니다."]
+  "notes": ["초대 코드 흐름을 개선했습니다.", "서버 연결 설정을 추가했습니다."]
 }
 ```
 

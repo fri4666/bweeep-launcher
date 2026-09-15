@@ -25,7 +25,6 @@ const api = {
   accessStatus: () => ipcRenderer.invoke("access:status") as Promise<AccessStatus>,
   redeemInvite: (code: string) => ipcRenderer.invoke("access:redeemInvite", code) as Promise<InviteResult>,
   createInvite: () => ipcRenderer.invoke("access:createInvite") as Promise<CreatedInvite>,
-  readyForInvite: () => ipcRenderer.invoke("invite:ready") as Promise<string | null>,
   serverConnection: () => ipcRenderer.invoke("server:connection") as Promise<ServerConnection>,
   saveServerConnection: (connection: ServerConnection) => ipcRenderer.invoke("server:saveConnection", connection) as Promise<ServerConnection>,
   resetServerConnection: () => ipcRenderer.invoke("server:resetConnection") as Promise<ServerConnection>,
@@ -34,6 +33,7 @@ const api = {
   launchGame: (request: { packId: string; instanceDir: string }) => ipcRenderer.invoke("game:launch", request) as Promise<LaunchResult>,
   openPath: (target: string) => ipcRenderer.invoke("shell:openPath", target) as Promise<string>,
   openExternal: (target: string) => ipcRenderer.invoke("shell:openExternal", target) as Promise<void>,
+  copyText: (value: string) => ipcRenderer.invoke("clipboard:writeText", value) as Promise<void>,
   minimizeWindow: () => ipcRenderer.send("window:minimize"),
   closeWindow: () => ipcRenderer.send("window:close"),
   onProgress: (callback: (event: SyncProgress) => void) => {
@@ -50,11 +50,6 @@ const api = {
     const listener = (_: Electron.IpcRendererEvent, message: string) => callback(message);
     ipcRenderer.on("auth:error", listener);
     return () => ipcRenderer.off("auth:error", listener);
-  },
-  onInviteCode: (callback: (code: string) => void) => {
-    const listener = (_: Electron.IpcRendererEvent, code: string) => callback(code);
-    ipcRenderer.on("invite:received", listener);
-    return () => ipcRenderer.off("invite:received", listener);
   }
 };
 
