@@ -35,6 +35,7 @@ function App() {
   const [access, setAccess] = useState<AccessStatus | null>(null);
   const [inviteInput, setInviteInput] = useState("");
   const [createdInvite, setCreatedInvite] = useState<CreatedInvite | null>(null);
+  const [inviteCopied, setInviteCopied] = useState(false);
   const [notice, setNotice] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -175,6 +176,7 @@ function App() {
     setNotice("");
     try {
       setCreatedInvite(await window.bweeep.createInvite());
+      setInviteCopied(false);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -182,8 +184,14 @@ function App() {
 
   async function copyInviteCode() {
     if (!createdInvite) return;
-    await window.bweeep.copyText(createdInvite.code);
-    setNotice("초대 코드를 복사했습니다.");
+    try {
+      await window.bweeep.copyText(createdInvite.code);
+      setInviteCopied(true);
+      setNotice("초대 코드를 복사했습니다.");
+    } catch (error) {
+      setInviteCopied(false);
+      setNotice(error instanceof Error ? error.message : "초대 코드를 복사하지 못했습니다.");
+    }
   }
 
   async function saveConnection() {
@@ -209,6 +217,7 @@ function App() {
       setUser(null);
       setAccess(status);
       setCreatedInvite(null);
+      setInviteCopied(false);
       setProfileOpen(false);
       setNotice(status.reason);
     } catch (error) {
@@ -467,7 +476,7 @@ function App() {
                     {createdInvite && (
                       <div className="createdInvite">
                         <code>{createdInvite.code}</code>
-                        <button onClick={() => void copyInviteCode()}>코드 복사</button>
+                        <button onClick={() => void copyInviteCode()}>{inviteCopied ? "복사됨" : "코드 복사"}</button>
                       </div>
                     )}
                   </div>

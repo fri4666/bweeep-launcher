@@ -10,6 +10,7 @@ page.on("pageerror", (error) => errors.push(error.message));
 
 await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied }) => {
   const listeners = [];
+  window.__copiedText = null;
   const result = {
     manifest: {
       schemaVersion: 1,
@@ -83,7 +84,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     },
     openPath: async () => "",
     openExternal: async () => undefined,
-    copyText: async () => undefined,
+    copyText: async (value) => { window.__copiedText = value; },
     minimizeWindow: () => undefined,
     closeWindow: () => undefined,
     onAuthSession: () => () => {},
@@ -136,6 +137,11 @@ if (accessUnavailable) {
   await page.getByText("BWEEP-123456789ABC-123456789ABC", { exact: true }).waitFor();
   const copyButtonBox = await page.getByRole("button", { name: "코드 복사" }).boundingBox();
   if (!copyButtonBox || copyButtonBox.x + copyButtonBox.width > 1440) throw new Error("invite code copy action is not visible");
+  await page.getByRole("button", { name: "코드 복사" }).click();
+  await page.getByRole("button", { name: "복사됨" }).waitFor();
+  const copiedText = await page.evaluate(() => window.__copiedText);
+  if (copiedText !== "BWEEP-123456789ABC-123456789ABC") throw new Error(`wrong invite code copied: ${copiedText}`);
+  interactionChecks.push("invite-code-copy");
   await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
   await page.locator(".settingsModal .closeButton").click();
   await page.getByRole("button", { name: "게임 시작" }).click();
