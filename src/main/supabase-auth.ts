@@ -195,54 +195,78 @@ export class SupabaseAuth {
 
   private async invokeFunction<T>(body: Record<string, unknown>, fallbackMessage: string): Promise<T> {
     const client = await this.requireClient();
+    const config = await readConfig();
+    if (!config.url || !config.publishableKey) throw new Error("Supabase 설정이 필요합니다.");
+    const functionConfig = { url: config.url, publishableKey: config.publishableKey };
+
+    let accessToken = await this.requireVerifiedAccessToken(client);
+    let response = await postLauncherAccess<T>(functionConfig, accessToken, body);
+    if (response.status === 401) {
+      const { data: refreshed, error: refreshError } = await client.auth.refreshSession();
+      if (!refreshError && refreshed.session?.access_token) {
+        accessToken = await this.requireVerifiedAccessToken(client);
+        response = await postLauncherAccess<T>(functionConfig, accessToken, body);
+      }
+    }
+
+    if (!response.ok || !response.payload) {
+      throw new Error(functionResponseMessage(response.status, response.payload, fallbackMessage));
+    }
+    return response.payload as T;
+  }
+
+  private async requireVerifiedAccessToken(client: SupabaseClient): Promise<string> {
     const { data: sessionData, error: sessionError } = await client.auth.getSession();
-    if (sessionError || !sessionData.session?.access_token) {
+    const accessToken = sessionData.session?.access_token;
+    if (sessionError || !accessToken) {
       throw new Error("로그인 세션이 만료되었습니다. 다시 로그인해 주세요.");
     }
 
-    const invoke = (accessToken: string) => client.functions.invoke<T>("launcher-access", {
-      body,
-      headers: { Authorization: `Bearer ${accessToken}` }
+    const { data: userData, error: userError } = await client.auth.getUser(accessToken);
+    if (userError || !userData.user) {
+      throw new Error("저장된 로그인 세션이 유효하지 않습니다. 다른 계정으로 다시 로그인해 주세요.");
+    }
+    return accessToken;
+  }
+}
+
+async function postLauncherAccess<T>(config: Required<Pick<SupabaseConfig, "url" | "publishableKey">>, accessToken: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; payload: T | FunctionErrorPayload | null }> {
+  try {
+    const response = await fetch(`${config.url}/functions/v1/launcher-access`, {
+      method: "POST",
+      headers: {
+        apikey: config.publishableKey,
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
     });
-
-    let result = await invoke(sessionData.session.access_token);
-    if (result.error && functionHttpStatus(result.error) === 401) {
-      const { data: refreshed, error: refreshError } = await client.auth.refreshSession();
-      if (!refreshError && refreshed.session?.access_token) {
-        result = await invoke(refreshed.session.access_token);
-      }
-    }
-
-    if (result.error || !result.data) {
-      throw new Error(await functionErrorMessage(result.error, fallbackMessage));
-    }
-    return result.data;
+    const payload = await response.json().catch(() => null) as T | FunctionErrorPayload | null;
+    return { ok: response.ok, status: response.status, payload };
+  } catch {
+    return { ok: false, status: 0, payload: null };
   }
 }
 
-function functionHttpStatus(error: unknown): number | null {
-  if (!error || typeof error !== "object" || !("context" in error)) return null;
-  const context = (error as { context?: unknown }).context;
-  return context instanceof Response ? context.status : null;
+interface FunctionErrorPayload {
+  code?: unknown;
+  message?: unknown;
 }
 
-async function functionErrorMessage(error: unknown, fallback: string): Promise<string> {
-  const status = functionHttpStatus(error);
-  if (status === 401) return "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요.";
-
-  if (error && typeof error === "object" && "context" in error) {
-    const context = (error as { context?: unknown }).context;
-    if (context instanceof Response) {
-      try {
-        const payload = await context.clone().json() as { message?: unknown };
-        if (typeof payload.message === "string" && payload.message.trim()) return payload.message;
-      } catch {
-        // Fall through to a stable user-facing message when the response is not JSON.
-      }
-    }
+function functionResponseMessage(status: number, payload: unknown, fallback: string): string {
+  const message = payload && typeof payload === "object" && "message" in payload
+    ? (payload as FunctionErrorPayload).message
+    : null;
+  const code = payload && typeof payload === "object" && "code" in payload
+    ? (payload as FunctionErrorPayload).code
+    : null;
+  if (status === 401 && code === "UNUSABLE_CREDENTIAL") {
+    return "런처 세션 토큰이 서버에 전달되지 않았습니다. 다른 계정으로 다시 로그인해 주세요.";
   }
+  if (status === 401) return "로그인 세션을 서버에서 인증하지 못했습니다. 다른 계정으로 다시 로그인해 주세요.";
+  if (typeof message === "string" && message.trim()) return message;
 
-  return status ? `${fallback} (서버 응답 ${status})` : fallback;
+  return status ? `${fallback} (서버 응답 ${status})` : `${fallback} (네트워크 연결을 확인해 주세요.)`;
 }
 
 class EncryptedSessionStorage {
