@@ -21,6 +21,7 @@ body {
 button,
 input {
   font: inherit;
+  -webkit-app-region: no-drag;
 }
 
 button {
@@ -759,6 +760,7 @@ button:disabled {
   padding: 28px;
   background: rgba(10, 10, 12, 0.58);
   backdrop-filter: blur(16px);
+  -webkit-app-region: no-drag;
 }
 
 .settingsModal {
@@ -877,7 +879,12 @@ input:focus {
 }
 
 .createdInvite button {
+  position: relative;
+  z-index: 1;
   justify-self: start;
+  min-width: 96px;
+  user-select: none;
+  -webkit-app-region: no-drag;
 }
 
 .createdInvite code {

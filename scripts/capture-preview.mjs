@@ -137,7 +137,18 @@ if (accessUnavailable) {
   await page.getByText("BWEEP-123456789ABC-123456789ABC", { exact: true }).waitFor();
   const copyButtonBox = await page.getByRole("button", { name: "코드 복사" }).boundingBox();
   if (!copyButtonBox || copyButtonBox.x + copyButtonBox.width > 1440) throw new Error("invite code copy action is not visible");
-  await page.getByRole("button", { name: "코드 복사" }).click();
+  const copyButtonCenter = await page.evaluate(({ x, y }) => {
+    const hit = document.elementFromPoint(x, y);
+    return {
+      tagName: hit?.tagName,
+      text: hit?.textContent,
+      appRegion: hit ? getComputedStyle(hit).getPropertyValue("-webkit-app-region") : ""
+    };
+  }, { x: copyButtonBox.x + copyButtonBox.width / 2, y: copyButtonBox.y + copyButtonBox.height / 2 });
+  if (copyButtonCenter.tagName !== "BUTTON" || copyButtonCenter.text !== "코드 복사" || copyButtonCenter.appRegion !== "no-drag") {
+    throw new Error(`invite copy center is not clickable: ${JSON.stringify(copyButtonCenter)}`);
+  }
+  await page.mouse.click(copyButtonBox.x + copyButtonBox.width / 2, copyButtonBox.y + copyButtonBox.height / 2);
   await page.getByRole("button", { name: "복사됨" }).waitFor();
   const copiedText = await page.evaluate(() => window.__copiedText);
   if (copiedText !== "BWEEP-123456789ABC-123456789ABC") throw new Error(`wrong invite code copied: ${copiedText}`);
