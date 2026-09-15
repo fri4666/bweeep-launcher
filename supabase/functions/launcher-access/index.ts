@@ -1,5 +1,5 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
-import { withSupabase } from "@supabase/server";
+import { createClient } from "@supabase/supabase-js";
 
 type RequestBody =
   | { action: "status" }
@@ -10,15 +10,36 @@ type RequestBody =
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 
 export default {
-  fetch: withSupabase({ auth: "user" }, async (request, ctx) => {
+  async fetch(request: Request): Promise<Response> {
     if (request.method !== "POST") {
       return json({ message: "POST 요청만 지원합니다." }, 405);
     }
 
-    const userId = ctx.userClaims?.sub;
-    if (!userId) {
-      return json({ message: "사용자 식별 정보를 찾지 못했습니다." }, 401);
+    const accessToken = getBearerToken(request);
+    if (!accessToken) return json({ code: "MISSING_BEARER_TOKEN", message: "로그인 토큰이 필요합니다." }, 401);
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!supabaseUrl || !serviceRoleKey) {
+      console.error("Supabase function environment is missing required credentials.");
+      return json({ message: "서버 인증 설정을 확인하지 못했습니다." }, 500);
     }
+
+    // Do not use the request's apikey for user authentication.  The launcher sends
+    // both headers (as Supabase requires), and @supabase/server can select the
+    // publishable key before the user bearer token on current key formats.
+    const authClient = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    });
+    const { data: authData, error: authError } = await authClient.auth.getUser(accessToken);
+    const userId = authData.user?.id;
+    if (authError || !userId) {
+      return json({ code: "INVALID_BEARER_TOKEN", message: "로그인 세션을 확인할 수 없습니다." }, 401);
+    }
+
+    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    });
 
     let body: RequestBody;
     try {
@@ -27,7 +48,7 @@ export default {
       return json({ message: "JSON 요청 본문이 필요합니다." }, 400);
     }
 
-    const { data: membership, error: membershipError } = await ctx.supabaseAdmin
+    const { data: membership, error: membershipError } = await supabaseAdmin
       .from("launcher_members")
       .select("role")
       .eq("user_id", userId)
@@ -51,7 +72,7 @@ export default {
         return json({ message: "초대 코드 형식이 올바르지 않습니다." }, 400);
       }
 
-      const { data, error } = await ctx.supabaseAdmin.rpc("redeem_launcher_invite", {
+      const { data, error } = await supabaseAdmin.rpc("redeem_launcher_invite", {
         p_code_hash: await sha256(code),
         p_user_id: userId
       });
@@ -80,7 +101,7 @@ export default {
         return json({ message: "모드팩 ID 형식이 올바르지 않습니다." }, 400);
       }
 
-      const { data, error } = await ctx.supabaseAdmin
+      const { data, error } = await supabaseAdmin
         .from("launcher_releases")
         .select("manifest, version")
         .eq("pack_id", body.packId)
@@ -100,7 +121,7 @@ export default {
     const maxUses = clamp(body.maxUses, 1, 1, 20);
     const code = createInviteCode();
     const expiresAt = new Date(Date.now() + expiresInDays * 86_400_000).toISOString();
-    const { error } = await ctx.supabaseAdmin.from("launcher_invites").insert({
+    const { error } = await supabaseAdmin.from("launcher_invites").insert({
       code_hash: await sha256(code),
       created_by: userId,
       expires_at: expiresAt,
@@ -111,8 +132,14 @@ export default {
       return json({ message: "초대 코드를 만들지 못했습니다." }, 500);
     }
     return json({ code, expiresAt, maxUses });
-  })
+  }
 };
+
+function getBearerToken(request: Request): string | null {
+  const authorization = request.headers.get("authorization")?.trim() ?? "";
+  const match = /^Bearer\\s+(.+)$/i.exec(authorization);
+  return match?.[1]?.trim() || null;
+}
 
 function normalizeCode(value: unknown): string | null {
   const code = typeof value === "string" ? value.trim().toUpperCase() : "";

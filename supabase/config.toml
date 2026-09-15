@@ -416,9 +416,8 @@ enabled = true
 
 [functions.launcher-access]
 enabled = true
-# `@supabase/server` verifies the caller's user JWT inside the handler.  The
-# platform's legacy verifier rejects current asymmetric signing keys before
-# the handler runs, so keep that compatibility layer disabled.
+# The handler validates the caller bearer token itself.  The platform's legacy
+# verifier rejects current asymmetric signing keys before the handler runs.
 verify_jwt = false
 import_map = "./functions/launcher-access/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.

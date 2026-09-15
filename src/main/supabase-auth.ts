@@ -36,6 +36,13 @@ interface FunctionManifest {
 
 const defaultRedirectUri = "bwe-e-ep://auth/callback";
 
+class InvalidLauncherSessionError extends Error {
+  constructor() {
+    super("로그인 세션이 만료되었거나 서버에서 더 이상 유효하지 않습니다.");
+    this.name = "InvalidLauncherSessionError";
+  }
+}
+
 export class SupabaseAuth {
   private client: SupabaseClient | null = null;
   private loginInFlight = false;
@@ -108,8 +115,21 @@ export class SupabaseAuth {
       return { loggedIn: true, allowed: false, isAdmin: false, reason: "Supabase 설정이 필요합니다.", user };
     }
 
-    const data = await this.invokeFunction<FunctionStatus>({ action: "status" }, "접근 권한을 확인하지 못했습니다.");
-    return { loggedIn: true, allowed: data.allowed, isAdmin: data.isAdmin, reason: data.reason, user };
+    try {
+      const data = await this.invokeFunction<FunctionStatus>({ action: "status" }, "접근 권한을 확인하지 못했습니다.");
+      return { loggedIn: true, allowed: data.allowed, isAdmin: data.isAdmin, reason: data.reason, user };
+    } catch (error) {
+      if (!(error instanceof InvalidLauncherSessionError)) throw error;
+      await this.signOut().catch(() => {
+        this.client = null;
+      });
+      return {
+        loggedIn: false,
+        allowed: false,
+        isAdmin: false,
+        reason: "로그인 세션이 만료되었습니다. 다시 로그인해 주세요."
+      };
+    }
   }
 
   async redeemInvite(user: LauncherUser | null, code: string): Promise<InviteResult> {
@@ -209,6 +229,9 @@ export class SupabaseAuth {
       }
     }
 
+    if (response.status === 401 && functionResponseCode(response.payload) === "INVALID_BEARER_TOKEN") {
+      throw new InvalidLauncherSessionError();
+    }
     if (!response.ok || !response.payload) {
       throw new Error(functionResponseMessage(response.status, response.payload, fallbackMessage));
     }
@@ -219,12 +242,12 @@ export class SupabaseAuth {
     const { data: sessionData, error: sessionError } = await client.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (sessionError || !accessToken) {
-      throw new Error("로그인 세션이 만료되었습니다. 다시 로그인해 주세요.");
+      throw new InvalidLauncherSessionError();
     }
 
     const { data: userData, error: userError } = await client.auth.getUser(accessToken);
     if (userError || !userData.user) {
-      throw new Error("저장된 로그인 세션이 유효하지 않습니다. 다른 계정으로 다시 로그인해 주세요.");
+      throw new InvalidLauncherSessionError();
     }
     return accessToken;
   }
@@ -257,9 +280,7 @@ function functionResponseMessage(status: number, payload: unknown, fallback: str
   const message = payload && typeof payload === "object" && "message" in payload
     ? (payload as FunctionErrorPayload).message
     : null;
-  const code = payload && typeof payload === "object" && "code" in payload
-    ? (payload as FunctionErrorPayload).code
-    : null;
+  const code = functionResponseCode(payload);
   if (status === 401 && code === "UNUSABLE_CREDENTIAL") {
     return "런처 세션 토큰이 서버에 전달되지 않았습니다. 다른 계정으로 다시 로그인해 주세요.";
   }
@@ -267,6 +288,12 @@ function functionResponseMessage(status: number, payload: unknown, fallback: str
   if (typeof message === "string" && message.trim()) return message;
 
   return status ? `${fallback} (서버 응답 ${status})` : `${fallback} (네트워크 연결을 확인해 주세요.)`;
+}
+
+function functionResponseCode(payload: unknown): unknown {
+  return payload && typeof payload === "object" && "code" in payload
+    ? (payload as FunctionErrorPayload).code
+    : null;
 }
 
 class EncryptedSessionStorage {

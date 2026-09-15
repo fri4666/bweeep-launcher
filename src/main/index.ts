@@ -169,7 +169,9 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("access:status", async () => {
     try {
-      return await auth.getAccessStatus(sessionUser);
+      const status = await auth.getAccessStatus(sessionUser);
+      if (!status.loggedIn) sessionUser = null;
+      return status;
     } catch (error) {
       if (!sessionUser) throw error;
       return {
