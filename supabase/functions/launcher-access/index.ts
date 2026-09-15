@@ -1,5 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
+import { getBearerToken } from "./authorization.ts";
 
 type RequestBody =
   | { action: "status" }
@@ -134,12 +135,6 @@ export default {
     return json({ code, expiresAt, maxUses });
   }
 };
-
-function getBearerToken(request: Request): string | null {
-  const authorization = request.headers.get("authorization")?.trim() ?? "";
-  const match = /^Bearer\\s+(.+)$/i.exec(authorization);
-  return match?.[1]?.trim() || null;
-}
 
 function normalizeCode(value: unknown): string | null {
   const code = typeof value === "string" ? value.trim().toUpperCase() : "";
