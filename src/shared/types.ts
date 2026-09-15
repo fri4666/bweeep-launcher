@@ -103,6 +103,7 @@ export interface InviteResult {
 export interface CreatedInvite {
   code: string;
   expiresAt: string;
+  maxUses: number;
 }
 
 export interface LaunchResult {

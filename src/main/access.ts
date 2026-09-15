@@ -108,7 +108,7 @@ export async function createInvite(user: LauncherUser | null): Promise<CreatedIn
   });
   await writeState(state);
 
-  return { code, expiresAt: expiresAt.toISOString() };
+  return { code, expiresAt: expiresAt.toISOString(), maxUses: 1 };
 }
 
 async function readPolicy(): Promise<AccessPolicy> {

@@ -7,6 +7,8 @@ import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { SupabaseAuth } from "./supabase-auth.js";
 import { installAndLaunch } from "./minecraft-runtime.js";
+import { AuthCallbackError, parseAuthCallback, parseInviteLink } from "./deep-link.js";
+import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { checkLauncherUpdate } from "./launcher-update.js";
 import type { LauncherUser, LoginProvider } from "../shared/types.js";
@@ -16,6 +18,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
 const auth = new SupabaseAuth();
 const pendingAuthUrls: string[] = [];
+const queuedAuthCallbacks = new Set<string>();
+const completedAuthFlows = new Set<string>();
+let deepLinkProcessing: Promise<void> | null = null;
+const pendingInviteCodes: string[] = [];
+let inviteReceiverReady = false;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -35,22 +42,77 @@ function collectDeepLink(argv: readonly string[]): string | undefined {
   return argv.find((arg) => arg.startsWith("bwe-e-ep://"));
 }
 
-function queueDeepLink(url: string): void {
-  pendingAuthUrls.push(url);
-  if (app.isReady()) void processPendingDeepLinks();
+function queueDeepLink(url: string, source: "argv" | "second-instance" | "open-url"): void {
+  if (url.startsWith("bwe-e-ep://invite/")) {
+    try {
+      pendingInviteCodes.push(parseInviteLink(url));
+    } catch (error) {
+      notifyAuthError(error);
+    }
+  } else {
+    const callbackId = authFingerprint(url);
+    if (queuedAuthCallbacks.has(callbackId)) {
+      void writeAuthLog("callback.duplicate.ignored", { callbackId, source });
+      return;
+    }
+    queuedAuthCallbacks.add(callbackId);
+    pendingAuthUrls.push(url);
+    void writeAuthLog("callback.queued", { callbackId, source, queueDepth: pendingAuthUrls.length });
+  }
+  if (app.isReady()) schedulePendingDeepLinks();
+}
+
+function schedulePendingDeepLinks(): void {
+  if (deepLinkProcessing) return;
+  deepLinkProcessing = processPendingDeepLinks().finally(() => {
+    deepLinkProcessing = null;
+    if (pendingAuthUrls.length > 0 || (inviteReceiverReady && pendingInviteCodes.length > 0)) {
+      schedulePendingDeepLinks();
+    }
+  });
 }
 
 async function processPendingDeepLinks(): Promise<void> {
   while (pendingAuthUrls.length > 0) {
     const url = pendingAuthUrls.shift();
     if (!url) continue;
+    const callbackId = authFingerprint(url);
     try {
+      const callback = parseAuthCallback(url);
+      const flowId = callback.flowId ? authFingerprint(callback.flowId) : null;
       sessionUser = await auth.completeCallback(url);
+      if (flowId) completedAuthFlows.add(flowId);
+      await writeAuthLog("callback.session.delivered", {
+        callbackId,
+        flowId,
+        provider: sessionUser.provider,
+        userId: authFingerprint(sessionUser.id)
+      });
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send("auth:session", sessionUser);
       }
     } catch (error) {
+      if (error instanceof AuthCallbackError && error.flowId) {
+        const flowId = authFingerprint(error.flowId);
+        if (completedAuthFlows.has(flowId)) {
+          await writeAuthLog("callback.stale_error.ignored", { callbackId, flowId, category: error.category });
+          continue;
+        }
+      }
+      await writeAuthLog("callback.error.delivered", {
+        callbackId,
+        category: error instanceof AuthCallbackError ? error.category : "exchange_error",
+        message: error instanceof Error ? error.message : String(error)
+      });
       notifyAuthError(error);
+    }
+  }
+  if (!inviteReceiverReady) return;
+  while (pendingInviteCodes.length > 0) {
+    const code = pendingInviteCodes.shift();
+    if (!code) continue;
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send("invite:received", code);
     }
   }
 }
@@ -62,12 +124,14 @@ function notifyAuthError(error: unknown): void {
   }
 }
 
+void writeAuthLog("app.auth.initialized", { packaged: app.isPackaged, logPath: authLogPath() });
+
 const initialDeepLink = collectDeepLink(process.argv);
-if (initialDeepLink) queueDeepLink(initialDeepLink);
+if (initialDeepLink) queueDeepLink(initialDeepLink, "argv");
 
 app.on("second-instance", (_event, argv) => {
   const url = collectDeepLink(argv);
-  if (url) queueDeepLink(url);
+  if (url) queueDeepLink(url, "second-instance");
   const window = BrowserWindow.getAllWindows()[0];
   if (window) {
     if (window.isMinimized()) window.restore();
@@ -77,7 +141,7 @@ app.on("second-instance", (_event, argv) => {
 
 app.on("open-url", (event, url) => {
   event.preventDefault();
-  queueDeepLink(url);
+  queueDeepLink(url, "open-url");
 });
 
 function createWindow(): void {
@@ -160,7 +224,15 @@ app.whenReady().then(() => {
     }
   });
   ipcMain.handle("access:redeemInvite", (_event, code: string) => auth.redeemInvite(sessionUser, code));
-  ipcMain.handle("access:createInvite", () => auth.createInvite(sessionUser));
+  ipcMain.handle("access:createInvite", (_event, maxUses: unknown) =>
+    auth.createInvite(sessionUser, typeof maxUses === "number" ? maxUses : 1)
+  );
+  ipcMain.handle("invite:ready", () => {
+    inviteReceiverReady = true;
+    const firstInvite = pendingInviteCodes.shift() ?? null;
+    void processPendingDeepLinks();
+    return firstInvite;
+  });
   ipcMain.handle("server:connection", () => readServerConnection(defaultServer));
   ipcMain.handle("server:saveConnection", (_event, connection: unknown) => writeServerConnection(connection, defaultServer));
   ipcMain.handle("server:resetConnection", () => resetServerConnection(defaultServer));
@@ -186,7 +258,7 @@ app.whenReady().then(() => {
       // The renderer will show its normal signed-out state when a persisted session cannot be restored.
     }
     createWindow();
-    await processPendingDeepLinks();
+    schedulePendingDeepLinks();
   })();
 
   app.on("activate", () => {

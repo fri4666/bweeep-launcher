@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AccessStatus, CreatedInvite, LauncherUser, LoginProvider, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
 import { parseAuthCallback } from "./deep-link.js";
+import { authFingerprint, writeAuthLog } from "./auth-log.js";
 import { createDiscordLaunchIdentity, type LaunchIdentity } from "./minecraft-runtime.js";
 import { createMicrosoftLaunchIdentity } from "./microsoft-minecraft-auth.js";
 
@@ -27,6 +28,7 @@ interface FunctionInviteResult extends FunctionStatus {
 interface FunctionCreatedInvite {
   code: string;
   expiresAt: string;
+  maxUses: number;
 }
 
 interface FunctionManifest {
@@ -48,6 +50,7 @@ export class SupabaseAuth {
   private loginInFlight = false;
 
   async startLogin(provider: LoginProvider): Promise<LoginResult> {
+    await writeAuthLog("login.start.requested", { provider, alreadyInFlight: this.loginInFlight });
     const client = await this.getClient();
     if (!client) {
       return {
@@ -56,7 +59,8 @@ export class SupabaseAuth {
       };
     }
     if (this.loginInFlight) {
-      return { configured: true, pending: true, message: "브라우저에서 Discord 로그인을 진행하고 있습니다." };
+      await writeAuthLog("login.start.blocked", { provider, reason: "already_in_flight" });
+      return { configured: true, pending: true, message: "브라우저에서 로그인을 진행하고 있습니다." };
     }
 
     const supabaseProvider = provider === "microsoft" ? "azure" : "discord";
@@ -66,19 +70,29 @@ export class SupabaseAuth {
       options: {
         redirectTo: (await readConfig()).redirectUri ?? defaultRedirectUri,
         skipBrowserRedirect: true,
-        scopes: provider === "microsoft" ? "email offline_access XboxLive.signin" : undefined
+        scopes: provider === "microsoft" ? "email offline_access XboxLive.signin" : undefined,
+        queryParams: provider === "microsoft" ? { prompt: "select_account" } : undefined
       }
     });
     if (error || !data.url) {
       this.loginInFlight = false;
+      await writeAuthLog("login.start.failed", { provider, message: error?.message ?? "missing_oauth_url" });
       throw new Error(error?.message ?? "Discord 로그인 주소를 만들지 못했습니다.");
     }
 
+    await writeAuthLog("login.start.ready", {
+      provider,
+      flowId: data.flowId ? authFingerprint(data.flowId) : null,
+      authorizationUrl: authFingerprint(data.url)
+    });
+
     try {
       await shell.openExternal(data.url);
+      await writeAuthLog("login.browser.opened", { provider, authorizationUrl: authFingerprint(data.url) });
       return { configured: true, pending: true, message: `브라우저에서 ${provider === "microsoft" ? "Microsoft" : "Discord"} 로그인을 완료해 주세요.` };
     } catch (error) {
       this.loginInFlight = false;
+      await writeAuthLog("login.browser.failed", { provider, message: error instanceof Error ? error.message : String(error) });
       throw error;
     }
   }
@@ -86,12 +100,37 @@ export class SupabaseAuth {
   async completeCallback(rawUrl: string): Promise<LauncherUser> {
     try {
       const client = await this.requireClient();
-      const { code } = parseAuthCallback(rawUrl);
-      const { data, error } = await client.auth.exchangeCodeForSession(code);
+      const callbackId = authFingerprint(rawUrl);
+      await writeAuthLog("callback.exchange.started", { callbackId });
+      const { code, flowId } = parseAuthCallback(rawUrl);
+      const codeId = authFingerprint(code);
+      const safeFlowId = flowId ? authFingerprint(flowId) : null;
+      await writeAuthLog("callback.exchange.requested", { callbackId, codeId, flowId: safeFlowId });
+      const { data, error } = await client.auth.exchangeCodeForSession(code, flowId ? { flowId } : undefined);
       if (error || !data.user) {
+        await writeAuthLog("callback.exchange.failed", {
+          callbackId,
+          codeId,
+          flowId: safeFlowId,
+          message: error?.message ?? "missing_user"
+        });
         throw new Error(error?.message ?? "Discord 세션을 만들지 못했습니다.");
       }
+      await writeAuthLog("callback.exchange.succeeded", {
+        callbackId,
+        codeId,
+        flowId: safeFlowId,
+        provider: data.user.app_metadata?.provider ?? "unknown",
+        userId: authFingerprint(data.user.id)
+      });
       return toLauncherUser(data.user);
+    } catch (error) {
+      await writeAuthLog("callback.processing.failed", {
+        callbackId: authFingerprint(rawUrl),
+        name: error instanceof Error ? error.name : "UnknownError",
+        message: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
     } finally {
       this.loginInFlight = false;
     }
@@ -149,11 +188,14 @@ export class SupabaseAuth {
     };
   }
 
-  async createInvite(user: LauncherUser | null): Promise<CreatedInvite> {
+  async createInvite(user: LauncherUser | null, maxUses: number): Promise<CreatedInvite> {
     if (!user) throw new Error("Discord 로그인이 필요합니다.");
 
-    const data = await this.invokeFunction<FunctionCreatedInvite>({ action: "createInvite" }, "초대 코드를 만들지 못했습니다.");
-    return { code: data.code, expiresAt: data.expiresAt };
+    const data = await this.invokeFunction<FunctionCreatedInvite>(
+      { action: "createInvite", maxUses },
+      "초대 코드를 만들지 못했습니다."
+    );
+    return { code: data.code, expiresAt: data.expiresAt, maxUses: data.maxUses };
   }
 
   async signOut(): Promise<void> {
@@ -198,6 +240,7 @@ export class SupabaseAuth {
     this.client = createClient(config.url, config.publishableKey, {
       auth: {
         flowType: "pkce",
+        experimental: { appendPkceFlowIdToRedirects: true },
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: false,

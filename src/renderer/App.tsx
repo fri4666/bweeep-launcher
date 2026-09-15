@@ -36,6 +36,8 @@ function App() {
   const [inviteInput, setInviteInput] = useState("");
   const [createdInvite, setCreatedInvite] = useState<CreatedInvite | null>(null);
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [inviteLinkCopied, setInviteLinkCopied] = useState(false);
+  const [inviteMaxUses, setInviteMaxUses] = useState(10);
   const [notice, setNotice] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -87,10 +89,20 @@ function App() {
       void refreshAccessStatus(nextUser);
     });
     const unsubscribeError = window.bweeep.onAuthError(setNotice);
+    const acceptInvite = (code: string) => {
+      setInviteInput(code);
+      setSettingsOpen(true);
+      setNotice("초대 링크를 받았습니다. 로그인 후 참여를 눌러 주세요.");
+    };
+    const unsubscribeInvite = window.bweeep.onInviteReceived(acceptInvite);
+    void window.bweeep.readyForInvite().then((code) => {
+      if (code) acceptInvite(code);
+    });
     return () => {
       unsubscribeProgress();
       unsubscribeSession();
       unsubscribeError();
+      unsubscribeInvite();
     };
   }, []);
 
@@ -175,8 +187,9 @@ function App() {
   async function createInvite() {
     setNotice("");
     try {
-      setCreatedInvite(await window.bweeep.createInvite());
+      setCreatedInvite(await window.bweeep.createInvite(inviteMaxUses));
       setInviteCopied(false);
+      setInviteLinkCopied(false);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -191,6 +204,18 @@ function App() {
     } catch (error) {
       setInviteCopied(false);
       setNotice(error instanceof Error ? error.message : "초대 코드를 복사하지 못했습니다.");
+    }
+  }
+
+  async function copyInviteLink() {
+    if (!createdInvite) return;
+    try {
+      await window.bweeep.copyText("bwe-e-ep://invite/" + createdInvite.code);
+      setInviteLinkCopied(true);
+      setNotice("초대 링크를 복사했습니다.");
+    } catch (error) {
+      setInviteLinkCopied(false);
+      setNotice(error instanceof Error ? error.message : "초대 링크를 복사하지 못했습니다.");
     }
   }
 
@@ -218,6 +243,7 @@ function App() {
       setAccess(status);
       setCreatedInvite(null);
       setInviteCopied(false);
+      setInviteLinkCopied(false);
       setProfileOpen(false);
       setNotice(status.reason);
     } catch (error) {
@@ -472,11 +498,24 @@ function App() {
                 </div>
                 {access?.allowed && (
                   <div className="adminTools">
-                    <button onClick={() => void createInvite()}>초대 코드 만들기</button>
+                    <div className="inviteCreateRow">
+                      <label>
+                        사용 인원
+                        <select value={inviteMaxUses} onChange={(event) => setInviteMaxUses(Number(event.target.value))}>
+                          <option value={1}>1명</option>
+                          <option value={5}>5명</option>
+                          <option value={10}>10명</option>
+                          <option value={20}>20명</option>
+                        </select>
+                      </label>
+                      <button onClick={() => void createInvite()}>{inviteMaxUses}명용 초대 만들기</button>
+                    </div>
                     {createdInvite && (
                       <div className="createdInvite">
                         <code>{createdInvite.code}</code>
                         <button onClick={() => void copyInviteCode()}>{inviteCopied ? "복사됨" : "코드 복사"}</button>
+                        <button onClick={() => void copyInviteLink()}>{inviteLinkCopied ? "링크 복사됨" : "링크 복사"}</button>
+                        <small>{createdInvite.maxUses}명까지 · {new Date(createdInvite.expiresAt).toLocaleDateString("ko-KR")} 만료</small>
                       </div>
                     )}
                   </div>

@@ -17,6 +17,7 @@
     "package:win:arm64": "npm run build && electron-builder --win nsis --arm64 --config.directories.output=release-installer-arm64",
     "package:win:all": "npm run package:win && npm run package:win:arm64",
     "verify:electron-startup": "npm run build && node scripts/verify-electron-startup.mjs",
+    "verify:deep-link": "npm run build && node scripts/verify-deep-link.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
