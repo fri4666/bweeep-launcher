@@ -29,7 +29,7 @@ export function parseAuthCallback(rawUrl: string): AuthCallback {
     const description = url.searchParams.get("error_description") ?? "로그인이 취소되었습니다.";
     if (/AADSTS70000|code.+expired|code.+not valid/i.test(description)) {
       throw new AuthCallbackError(
-        "Microsoft 로그인 코드가 만료되었습니다. 런처에서 Microsoft 로그인을 다시 눌러 새 로그인을 시작해 주세요.",
+        "Microsoft 로그인 시간이 만료되었습니다. 런처에서 Microsoft 로그인을 다시 눌러 새 로그인을 시작해 주세요.",
         flowId,
         "provider_code_expired"
       );
