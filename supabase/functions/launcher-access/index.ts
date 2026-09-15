@@ -12,12 +12,22 @@ const json = (body: unknown, status = 200) => Response.json(body, { status });
 
 export default {
   async fetch(request: Request): Promise<Response> {
-    if (request.method !== "POST") {
-      return json({ message: "POST 요청만 지원합니다." }, 405);
+    try {
+      return await handleRequest(request);
+    } catch (error) {
+      console.error("launcher-access unhandled error", error);
+      return json({ code: "INTERNAL_ERROR", message: "서버에서 권한 확인 중 오류가 발생했습니다." }, 500);
     }
+  }
+};
 
-    const accessToken = getBearerToken(request);
-    if (!accessToken) return json({ code: "MISSING_BEARER_TOKEN", message: "로그인 토큰이 필요합니다." }, 401);
+async function handleRequest(request: Request): Promise<Response> {
+  if (request.method !== "POST") {
+    return json({ message: "POST 요청만 지원합니다." }, 405);
+  }
+
+  const accessToken = getBearerToken(request);
+  if (!accessToken) return json({ code: "MISSING_BEARER_TOKEN", message: "로그인 토큰이 필요합니다." }, 401);
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -32,8 +42,8 @@ export default {
     const authClient = createClient(supabaseUrl, serviceRoleKey, {
       auth: { autoRefreshToken: false, persistSession: false }
     });
-    const { data: authData, error: authError } = await authClient.auth.getUser(accessToken);
-    const userId = authData.user?.id;
+    const { data: authData, error: authError } = await authClient.auth.getClaims(accessToken);
+    const userId = typeof authData?.claims?.sub === "string" ? authData.claims.sub : null;
     if (authError || !userId) {
       return json({ code: "INVALID_BEARER_TOKEN", message: "로그인 세션을 확인할 수 없습니다." }, 401);
     }
@@ -56,6 +66,7 @@ export default {
       .maybeSingle();
 
     if (membershipError) {
+      console.error("launcher membership query failed", membershipError);
       return json({ message: "권한 정보를 조회하지 못했습니다." }, 500);
     }
 
@@ -132,9 +143,8 @@ export default {
     if (error) {
       return json({ message: "초대 코드를 만들지 못했습니다." }, 500);
     }
-    return json({ code, expiresAt, maxUses });
-  }
-};
+  return json({ code, expiresAt, maxUses });
+}
 
 function normalizeCode(value: unknown): string | null {
   const code = typeof value === "string" ? value.trim().toUpperCase() : "";

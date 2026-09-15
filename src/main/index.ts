@@ -75,12 +75,6 @@ async function processPendingDeepLinks(): Promise<void> {
   }
 }
 
-function notifySession(user: LauncherUser): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send("auth:session", user);
-  }
-}
-
 function notifyAuthError(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   for (const window of BrowserWindow.getAllWindows()) {
@@ -210,14 +204,13 @@ app.whenReady().then(() => {
     return { ...launched, instanceDir: synced.instanceDir };
   });
 
-  createWindow();
   void (async () => {
     try {
       sessionUser = await auth.restoreUser();
-      if (sessionUser) notifySession(sessionUser);
     } catch {
       // The renderer will show its normal signed-out state when a persisted session cannot be restored.
     }
+    createWindow();
     await processPendingDeepLinks();
   })();
 
