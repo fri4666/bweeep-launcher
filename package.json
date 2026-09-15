@@ -58,6 +58,14 @@
     "artifactName": "Bweeep-Setup-${version}.${ext}",
     "asar": true,
     "icon": "build/icon.ico",
+    "protocols": [
+      {
+        "name": "Bweeep Invite Link",
+        "schemes": [
+          "bwe-e-ep"
+        ]
+      }
+    ],
     "files": [
       "**/*",
       "!Bweeep-Setup-*.exe",
@@ -72,6 +80,7 @@
       "!.vscode/**"
     ],
     "nsis": {
+      "include": "build/installer.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
