@@ -4,9 +4,10 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
 const errors = [];
 const signedIn = process.env.BWEEP_PREVIEW_SIGNED_IN !== "false";
+const accessUnavailable = process.env.BWEEP_PREVIEW_ACCESS_UNAVAILABLE === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript((previewSignedIn) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable }) => {
   const listeners = [];
   const result = {
     manifest: {
@@ -46,9 +47,10 @@ await page.addInitScript((previewSignedIn) => {
     }),
     accessStatus: async () => ({
       loggedIn: previewSignedIn,
-      allowed: previewSignedIn,
+      allowed: previewSignedIn && !previewAccessUnavailable,
       isAdmin: false,
-      reason: previewSignedIn ? "초대 확인 완료" : "초대 코드가 필요합니다.",
+      unavailable: previewAccessUnavailable,
+      reason: previewAccessUnavailable ? "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요." : previewSignedIn ? "초대 확인 완료" : "초대 코드가 필요합니다.",
       user: previewSignedIn ? { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, provider: "discord" } : undefined
     }),
     login: async () => ({ configured: true, user: null }),
@@ -78,6 +80,8 @@ await page.addInitScript((previewSignedIn) => {
     },
     openPath: async () => "",
     openExternal: async () => undefined,
+    minimizeWindow: () => undefined,
+    closeWindow: () => undefined,
     onAuthSession: () => () => {},
     onAuthError: () => () => {},
     onInviteCode: () => () => {},
@@ -89,28 +93,50 @@ await page.addInitScript((previewSignedIn) => {
       };
     }
   };
-}, signedIn);
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "networkidle" });
 await page.waitForTimeout(120);
+const interactionChecks = [];
+
+async function verifyHover(selector, name) {
+  const target = page.locator(selector).first();
+  const before = await target.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return `${style.backgroundColor}|${style.transform}|${style.boxShadow}`;
+  });
+  await target.hover();
+  await page.waitForTimeout(190);
+  const after = await target.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return `${style.backgroundColor}|${style.transform}|${style.boxShadow}`;
+  });
+  if (before === after) throw new Error(`${name} hover state did not change`);
+  interactionChecks.push(name);
+  await page.mouse.move(1, 1);
+}
+
+await verifyHover(accessUnavailable ? ".entryRecovery > button:first-child" : signedIn ? ".launchButton" : ".entryChoices button:first-child", accessUnavailable ? "recovery" : signedIn ? "launch" : "login");
 await page.screenshot({ path: signedIn ? "previews/bweeep-launcher-flow-ready.png" : "previews/bweeep-launcher-login-main.png" });
-if (signedIn) {
+if (accessUnavailable) {
+  if (await page.getByRole("button", { name: "다시 확인" }).count() !== 1) throw new Error("access recovery action is missing");
+  await page.screenshot({ path: "previews/bweeep-launcher-access-recovery.png" });
+} else if (signedIn) {
   await page.getByRole("button", { name: "설정" }).click();
   await page.waitForTimeout(100);
   await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
-  await page.getByRole("button", { name: "닫기" }).click();
-  await page.getByRole("button", { name: "업데이트 후 시작" }).click();
+  await page.locator(".settingsModal .closeButton").click();
+  await page.getByRole("button", { name: "게임 시작" }).click();
   await page.waitForTimeout(480);
   await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
 } else {
-  await page.locator(".profileBox").click();
-  await page.waitForTimeout(100);
   await page.screenshot({ path: "previews/bweeep-launcher-login-preview.png" });
 }
 
 console.log(JSON.stringify({
   bodyHasContent: (await page.locator("body").innerText()).trim().length > 0,
   hasErrorOverlay: await page.locator("[data-nextjs-dialog], .vite-error-overlay, #webpack-dev-server-client-overlay").count() > 0,
+  interactionChecks,
   errors
 }));
 

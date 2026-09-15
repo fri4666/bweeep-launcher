@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+const { contextBridge, ipcRenderer } = require("electron") as typeof import("electron");
 import type {
   AccessStatus,
   CreatedInvite,
@@ -34,6 +34,8 @@ const api = {
   launchGame: (request: { packId: string; instanceDir: string }) => ipcRenderer.invoke("game:launch", request) as Promise<LaunchResult>,
   openPath: (target: string) => ipcRenderer.invoke("shell:openPath", target) as Promise<string>,
   openExternal: (target: string) => ipcRenderer.invoke("shell:openExternal", target) as Promise<void>,
+  minimizeWindow: () => ipcRenderer.send("window:minimize"),
+  closeWindow: () => ipcRenderer.send("window:close"),
   onProgress: (callback: (event: SyncProgress) => void) => {
     const listener = (_: Electron.IpcRendererEvent, payload: SyncProgress) => callback(payload);
     ipcRenderer.on("modpack:progress", listener);

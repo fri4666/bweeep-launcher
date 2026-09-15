@@ -1,7 +1,9 @@
 node_modules/
 dist/
 release/
-release-installer/
+release-installer*/
+Bweeep-Setup-*.exe
+Bweeep-Setup-*.blockmap
 previews/
 create-aeronautics/
 resources/*.local.json

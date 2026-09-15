@@ -114,13 +114,23 @@ function createWindow(): void {
     minWidth: 920,
     minHeight: 620,
     title: "붸에엡",
+    frame: false,
+    thickFrame: false,
+    roundedCorners: false,
+    hasShadow: false,
+    maximizable: false,
+    fullscreenable: false,
+    autoHideMenuBar: true,
     backgroundColor: "#111315",
     webPreferences: {
-      preload: path.join(distRoot, "src", "preload", "index.js"),
+      preload: path.join(distRoot, "src", "preload", "index.cjs"),
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false
     }
   });
+
+  win.removeMenu();
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) {
@@ -157,7 +167,21 @@ app.whenReady().then(() => {
     sessionUser = null;
     return { loggedIn: false, allowed: false, isAdmin: false, reason: "런처 계정에서 로그아웃했습니다." };
   });
-  ipcMain.handle("access:status", () => auth.getAccessStatus(sessionUser));
+  ipcMain.handle("access:status", async () => {
+    try {
+      return await auth.getAccessStatus(sessionUser);
+    } catch (error) {
+      if (!sessionUser) throw error;
+      return {
+        loggedIn: true,
+        allowed: false,
+        isAdmin: false,
+        unavailable: true,
+        reason: error instanceof Error ? error.message : "접근 권한을 확인하지 못했습니다.",
+        user: sessionUser
+      };
+    }
+  });
   ipcMain.handle("access:redeemInvite", (_event, code: string) => auth.redeemInvite(sessionUser, code));
   ipcMain.handle("access:createInvite", () => auth.createInvite(sessionUser));
   ipcMain.handle("invite:ready", () => {
@@ -170,6 +194,8 @@ app.whenReady().then(() => {
   ipcMain.handle("server:saveConnection", (_event, connection: unknown) => writeServerConnection(connection, defaultServer));
   ipcMain.handle("server:resetConnection", () => resetServerConnection(defaultServer));
   ipcMain.handle("launcher:checkUpdate", () => checkLauncherUpdate());
+  ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
+  ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:launch", async (event, request: { packId: string; instanceDir: string }) => {
     const progress = (payload: SyncProgress) => event.sender.send("modpack:progress", payload);
     const manifest = await auth.getManifest(sessionUser, request.packId);

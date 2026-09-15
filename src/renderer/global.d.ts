@@ -1,4 +1,4 @@
-import type { BweeepApi } from "../preload/index";
+import type { BweeepApi } from "../preload/index.cjs";
 
 declare global {
   interface Window {

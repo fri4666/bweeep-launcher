@@ -108,12 +108,7 @@ export class SupabaseAuth {
       return { loggedIn: true, allowed: false, isAdmin: false, reason: "Supabase 설정이 필요합니다.", user };
     }
 
-    const { data, error } = await client.functions.invoke<FunctionStatus>("launcher-access", {
-      body: { action: "status" }
-    });
-    if (error || !data) {
-      throw new Error(error?.message ?? "접근 권한을 확인하지 못했습니다.");
-    }
+    const data = await this.invokeFunction<FunctionStatus>({ action: "status" }, "접근 권한을 확인하지 못했습니다.");
     return { loggedIn: true, allowed: data.allowed, isAdmin: data.isAdmin, reason: data.reason, user };
   }
 
@@ -126,13 +121,7 @@ export class SupabaseAuth {
       };
     }
 
-    const client = await this.requireClient();
-    const { data, error } = await client.functions.invoke<FunctionInviteResult>("launcher-access", {
-      body: { action: "redeem", code }
-    });
-    if (error || !data) {
-      throw new Error(error?.message ?? "초대 코드를 사용할 수 없습니다.");
-    }
+    const data = await this.invokeFunction<FunctionInviteResult>({ action: "redeem", code }, "초대 코드를 사용할 수 없습니다.");
     return {
       ok: data.ok,
       message: data.message,
@@ -143,13 +132,7 @@ export class SupabaseAuth {
   async createInvite(user: LauncherUser | null): Promise<CreatedInvite> {
     if (!user) throw new Error("Discord 로그인이 필요합니다.");
 
-    const client = await this.requireClient();
-    const { data, error } = await client.functions.invoke<FunctionCreatedInvite>("launcher-access", {
-      body: { action: "createInvite" }
-    });
-    if (error || !data) {
-      throw new Error(error?.message ?? "초대 코드를 만들지 못했습니다.");
-    }
+    const data = await this.invokeFunction<FunctionCreatedInvite>({ action: "createInvite" }, "초대 코드를 만들지 못했습니다.");
     return { code: data.code, expiresAt: data.expiresAt };
   }
 
@@ -164,13 +147,8 @@ export class SupabaseAuth {
   async getManifest(user: LauncherUser | null, packId: string): Promise<ModpackManifest> {
     if (!user) throw new Error("Discord 로그인이 필요합니다.");
 
-    const client = await this.requireClient();
-    const { data, error } = await client.functions.invoke<FunctionManifest>("launcher-access", {
-      body: { action: "manifest", packId }
-    });
-    if (error || !data?.manifest) {
-      throw new Error(error?.message ?? "모드팩 정보를 가져오지 못했습니다.");
-    }
+    const data = await this.invokeFunction<FunctionManifest>({ action: "manifest", packId }, "모드팩 정보를 가져오지 못했습니다.");
+    if (!data.manifest) throw new Error("모드팩 정보를 가져오지 못했습니다.");
     return data.manifest;
   }
 
@@ -214,6 +192,57 @@ export class SupabaseAuth {
     if (!client) throw new Error("Supabase 설정이 필요합니다.");
     return client;
   }
+
+  private async invokeFunction<T>(body: Record<string, unknown>, fallbackMessage: string): Promise<T> {
+    const client = await this.requireClient();
+    const { data: sessionData, error: sessionError } = await client.auth.getSession();
+    if (sessionError || !sessionData.session?.access_token) {
+      throw new Error("로그인 세션이 만료되었습니다. 다시 로그인해 주세요.");
+    }
+
+    const invoke = (accessToken: string) => client.functions.invoke<T>("launcher-access", {
+      body,
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    let result = await invoke(sessionData.session.access_token);
+    if (result.error && functionHttpStatus(result.error) === 401) {
+      const { data: refreshed, error: refreshError } = await client.auth.refreshSession();
+      if (!refreshError && refreshed.session?.access_token) {
+        result = await invoke(refreshed.session.access_token);
+      }
+    }
+
+    if (result.error || !result.data) {
+      throw new Error(await functionErrorMessage(result.error, fallbackMessage));
+    }
+    return result.data;
+  }
+}
+
+function functionHttpStatus(error: unknown): number | null {
+  if (!error || typeof error !== "object" || !("context" in error)) return null;
+  const context = (error as { context?: unknown }).context;
+  return context instanceof Response ? context.status : null;
+}
+
+async function functionErrorMessage(error: unknown, fallback: string): Promise<string> {
+  const status = functionHttpStatus(error);
+  if (status === 401) return "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요.";
+
+  if (error && typeof error === "object" && "context" in error) {
+    const context = (error as { context?: unknown }).context;
+    if (context instanceof Response) {
+      try {
+        const payload = await context.clone().json() as { message?: unknown };
+        if (typeof payload.message === "string" && payload.message.trim()) return payload.message;
+      } catch {
+        // Fall through to a stable user-facing message when the response is not JSON.
+      }
+    }
+  }
+
+  return status ? `${fallback} (서버 응답 ${status})` : fallback;
 }
 
 class EncryptedSessionStorage {

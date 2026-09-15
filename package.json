@@ -8,27 +8,33 @@
   "main": "dist/src/main/index.js",
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/ensure-xmcl-compat.mjs",
+    "prebuild": "node scripts/ensure-xmcl-compat.mjs",
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json && vite build",
     "package:portable": "npm run build && electron-packager . Bweeep --platform=win32 --arch=x64 --out=release --overwrite --asar --ignore=^/release --ignore=^/previews",
     "package:win": "npm run build && electron-builder --win nsis --x64",
+    "package:win:arm64": "npm run build && electron-builder --win nsis --arm64 --config.directories.output=release-installer-arm64",
+    "package:win:all": "npm run package:win && npm run package:win:arm64",
+    "verify:electron-startup": "npm run build && node scripts/verify-electron-startup.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",
-    "@xmcl/core": "^2.16.1",
-    "@xmcl/installer": "^6.3.3"
+    "@xmcl/core": "^2.16.2",
+    "@xmcl/installer": "^6.3.3",
+    "yauzl": "npm:@xmcl/yauzl@2.10.0"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
-    "@vitejs/plugin-react": "^5.1.2",
-    "electron": "^44.3.0",
-    "electron-builder": "^24.13.3",
     "@types/node": "^25.0.3",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
     "playwright": "^1.63.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
@@ -38,6 +44,7 @@
   },
   "overrides": {
     "@xmcl/unzip": {
+      ".": "2.1.0",
       "@xmcl/yauzl": "2.10.0"
     }
   },
@@ -49,10 +56,13 @@
     },
     "artifactName": "Bweeep-Setup-${version}.${ext}",
     "asar": true,
+    "icon": "build/icon.ico",
     "files": [
       "**/*",
+      "!Bweeep-Setup-*.exe",
+      "!Bweeep-Setup-*.blockmap",
       "!release/**",
-      "!release-installer/**",
+      "!release-installer*/**",
       "!previews/**",
       "!create-aeronautics/**",
       "!supabase/**",

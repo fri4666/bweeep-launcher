@@ -14,6 +14,15 @@ import type {
 } from "../shared/types.js";
 import "./styles.css";
 
+function WindowControls() {
+  return (
+    <div className="windowControls" aria-label="창 제어">
+      <button type="button" aria-label="최소화" onClick={() => window.bweeep.minimizeWindow()}>−</button>
+      <button type="button" className="closeWindowButton" aria-label="닫기" onClick={() => window.bweeep.closeWindow()}>×</button>
+    </div>
+  );
+}
+
 function App() {
   const [servers, setServers] = useState<ServerPreset[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -35,10 +44,9 @@ function App() {
   const [portInput, setPortInput] = useState("");
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
-  const [loginOpen, setLoginOpen] = useState(false);
 
   useEffect(() => {
-    void Promise.all([
+    void Promise.allSettled([
       window.bweeep.listServers(),
       window.bweeep.defaultInstanceRoot(),
       window.bweeep.accessStatus(),
@@ -46,29 +54,32 @@ function App() {
       window.bweeep.checkLauncherUpdate(),
       window.bweeep.readyForInvite()
     ]).then(([serverList, root, status, savedConnection, updateStatus, pendingInvite]) => {
-      setServers(serverList);
-      setSelectedId(serverList[0]?.id ?? "");
-      setInstanceRoot(root);
-      setAccess(status);
-      setUser(status.user ?? null);
-      setConnection(savedConnection);
-      setHostInput(savedConnection.host);
-      setPortInput(String(savedConnection.port));
-      setLauncherUpdate(updateStatus);
-      setUpdateOpen(updateStatus.state === "available");
-      if (pendingInvite) {
-        setInviteCode(pendingInvite);
-        setSettingsOpen(true);
+      if (serverList.status === "fulfilled") {
+        setServers(serverList.value);
+        setSelectedId(serverList.value[0]?.id ?? "");
       }
-      if (savedConnection) {
-        void window.bweeep.serverStatus(savedConnection).then(setServerStatus).catch(() => {
-          setServerStatus({
-            online: false,
-            host: savedConnection.host,
-            port: savedConnection.port,
-            message: "서버 상태를 확인할 수 없음"
-          });
-        });
+      if (root.status === "fulfilled") setInstanceRoot(root.value);
+      if (status.status === "fulfilled") {
+        setAccess(status.value);
+        setUser(status.value.user ?? null);
+        if (status.value.unavailable) setNotice(status.value.reason);
+      } else {
+        setAccess({ loggedIn: false, allowed: false, isAdmin: false, unavailable: true, reason: "로그인 상태를 확인하지 못했습니다." });
+        setNotice("로그인 상태를 확인하지 못했습니다. 다시 시도해 주세요.");
+      }
+      if (savedConnection.status === "fulfilled") {
+        setConnection(savedConnection.value);
+        setHostInput(savedConnection.value.host);
+        setPortInput(String(savedConnection.value.port));
+        void refreshServerStatus(savedConnection.value);
+      }
+      if (updateStatus.status === "fulfilled") {
+        setLauncherUpdate(updateStatus.value);
+        setUpdateOpen(updateStatus.value.state === "available");
+      }
+      if (pendingInvite.status === "fulfilled" && pendingInvite.value) {
+        setInviteCode(pendingInvite.value);
+        setSettingsOpen(true);
       }
     });
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
@@ -77,12 +88,7 @@ function App() {
     });
     const unsubscribeSession = window.bweeep.onAuthSession((nextUser: LauncherUser) => {
       setUser(nextUser);
-      void window.bweeep.accessStatus().then((status: AccessStatus) => {
-        setAccess(status);
-        setNotice(status.reason);
-      }).catch((error: unknown) => {
-        setNotice(error instanceof Error ? error.message : String(error));
-      });
+      void refreshAccessStatus(nextUser);
     });
     const unsubscribeError = window.bweeep.onAuthError(setNotice);
     const unsubscribeInvite = window.bweeep.onInviteCode((code: string) => {
@@ -121,6 +127,27 @@ function App() {
     }
   }
 
+  async function refreshAccessStatus(fallbackUser: LauncherUser | null = user) {
+    setNotice("");
+    try {
+      const status = await window.bweeep.accessStatus();
+      setAccess(status);
+      setUser(status.user ?? fallbackUser);
+      setNotice(status.reason);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "접근 권한을 확인하지 못했습니다.";
+      setAccess({
+        loggedIn: Boolean(fallbackUser),
+        allowed: false,
+        isAdmin: false,
+        unavailable: true,
+        reason: message,
+        user: fallbackUser ?? undefined
+      });
+      setNotice(message);
+    }
+  }
+
   async function login(provider: LoginProvider) {
     setNotice("");
     try {
@@ -144,10 +171,14 @@ function App() {
 
   async function redeemInvite() {
     setNotice("");
-    const result = await window.bweeep.redeemInvite(inviteCode);
-    setAccess(result.status);
-    setNotice(result.message);
-    if (result.ok) setInviteCode("");
+    try {
+      const result = await window.bweeep.redeemInvite(inviteCode);
+      setAccess(result.status);
+      setNotice(result.message);
+      if (result.ok) setInviteCode("");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "초대 코드를 사용할 수 없습니다.");
+    }
   }
 
   async function createInvite() {
@@ -250,12 +281,88 @@ function App() {
     }
   }
 
+  if (!access) {
+    return (
+      <main className="entryScreen">
+        <WindowControls />
+        <section className="entryCard isLoading">
+          <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
+          <p className="eyebrow">Bweeep launcher</p>
+          <h1>런처를 준비하고 있어요</h1>
+        </section>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="entryScreen">
+        <WindowControls />
+        <section className="entryCard">
+          <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
+          <p className="eyebrow">Bweeep launcher</p>
+          <h1>로그인하고 시작하세요</h1>
+          <p className="entryDescription">친구 전용 모드팩과 서버는 로그인 후에 표시됩니다.</p>
+          <div className="entryChoices">
+            <button onClick={() => void login("discord")}>
+              <strong>Discord로 로그인</strong>
+              <span>Discord 프로필로 참가</span>
+            </button>
+            <button onClick={() => void login("microsoft")}>
+              <strong>Microsoft로 로그인</strong>
+              <span>Minecraft Java 프로필로 참가</span>
+            </button>
+          </div>
+          {notice && <p className="notice">{notice}</p>}
+        </section>
+      </main>
+    );
+  }
+
+  if (access.unavailable) {
+    return (
+      <main className="entryScreen">
+        <WindowControls />
+        <section className="entryCard">
+          <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
+          <p className="eyebrow">Connection check</p>
+          <h1>권한 확인에 실패했어요</h1>
+          <p className="entryDescription">{access.reason}</p>
+          <div className="entryRecovery">
+            <button onClick={() => void refreshAccessStatus(user)}>다시 확인</button>
+            <button className="entryLogout" onClick={() => void logout()}>다른 계정으로 로그인</button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!access.allowed) {
+    return (
+      <main className="entryScreen">
+        <WindowControls />
+        <section className="entryCard">
+          <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
+          <p className="eyebrow">Invite only</p>
+          <h1>초대 코드를 입력하세요</h1>
+          <p className="entryDescription">{access.reason}</p>
+          <div className="entryInvite">
+            <input value={inviteCode} placeholder="초대 코드" onChange={(event) => setInviteCode(event.target.value)} />
+            <button disabled={!inviteCode.trim()} onClick={() => void redeemInvite()}>입장</button>
+          </div>
+          <button className="entryLogout" onClick={() => void logout()}>다른 계정으로 로그인</button>
+          {notice && <p className="notice">{notice}</p>}
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="shell">
-      <aside className="sidebar">
+      <header className="appHeader">
         <div className="brand">
           <span className="brandMark" aria-label="붸에엡">
-            <img src="/images/bweeep-pixel-mark-v1.png" alt="" />
+            <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
           </span>
           <div>
             <p className="eyebrow">modpack launcher</p>
@@ -268,32 +375,28 @@ function App() {
           <button className="iconButton" title="게임">▣</button>
           <button className="iconButton" title="설정" onClick={() => setSettingsOpen(true)}>⚙</button>
         </nav>
+        <div className="topbarActions">
+          <button className="settingsButton" onClick={() => setSettingsOpen(true)}>설정</button>
+          <button className="profileBox" onClick={() => setProfileOpen(true)}>
+            {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span className="avatarFallback">{user.username.slice(0, 1).toUpperCase()}</span>}
+            <div>
+              <strong>{user.globalName ?? user.username}</strong>
+              <small>{user.provider === "microsoft" ? "Microsoft" : "Discord"}</small>
+            </div>
+          </button>
+          <WindowControls />
+        </div>
+      </header>
 
-        <section className="supportPanel">
-          <div>
-            <span className="accessStamp">INVITE ONLY</span>
-            <strong>함께 떠나는 모드팩</strong>
-            <p>초대 링크로 연결된 친구만 입장할 수 있어요.</p>
-          </div>
-        </section>
-
+      <aside className="sidebar">
+        <p className="sectionLabel">모드팩</p>
+        <button className="packCard active" type="button">
+          <span className="packThumbnail" />
+          <span><strong>Create Aeronautics</strong><small>Minecraft 1.21.1</small></span>
+        </button>
       </aside>
 
       <section className="content">
-        <header className="topbar">
-          <div className="searchStub">{connection ? `${connection.host}:${connection.port}` : "서버 확인 중"}</div>
-          <div className="topbarActions">
-          <button className="settingsButton" onClick={() => setSettingsOpen(true)}>설정</button>
-          <button className="profileBox" onClick={() => user ? setProfileOpen(true) : setLoginOpen(true)}>
-            {user?.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span className="avatarFallback">D</span>}
-            <div>
-              <strong>{user ? user.globalName ?? user.username : "런처 로그인"}</strong>
-              <small>{user ? `${user.provider === "microsoft" ? "Microsoft" : "Discord"} · ${access?.allowed ? "허용됨" : "권한 확인 필요"}` : "Discord 또는 Microsoft"}</small>
-            </div>
-          </button>
-          </div>
-        </header>
-
         <section className="hero">
           <div className="heroBackdrop" />
           <div className="heroCopy">
@@ -307,53 +410,28 @@ function App() {
             </div>
           </div>
           <div className="actionDock" aria-live="polite">
-            {(syncing || result) && (
-              <section className={`updatePanel ${syncing ? "isSyncing" : "isReady"}`}>
+            <section className={`updatePanel ${syncing ? "isSyncing" : result ? "isReady" : ""}`}>
                 <div className="updatePanelTop">
-                  <span>{syncing ? "업데이트 중" : "준비 완료"}</span>
+                  <span>{syncing ? "업데이트 중" : result ? "준비 완료" : serverStatus?.message ?? "서버 확인 중"}</span>
                   {syncing && <strong>{progressPercent}%</strong>}
                 </div>
                 <strong className="updateTitle">
                   {syncing
                     ? `${syncProgress?.total ?? 0}개 파일 중 ${syncProgress?.completed ?? 0}개 처리`
-                    : "같은 버전으로 준비됐어요"}
+                    : result ? "같은 버전으로 준비됐어요" : connection ? `${connection.host}:${connection.port}` : "연결 정보 확인 중"}
                 </strong>
                 {syncing ? (
                   <>
                     <div className="progressTrack"><i style={{ width: `${progressPercent}%` }} /></div>
                     <p>{syncProgress?.filePath ?? "서버 파일 목록을 확인하는 중"}</p>
                   </>
-                ) : (
+                ) : result ? (
                   <p>다운로드 {result?.downloaded ?? 0}개 · 기존 파일 {result?.skipped ?? 0}개 유지</p>
-                )}
+                ) : <p>실행하면 필요한 파일만 자동으로 맞춥니다.</p>}
               </section>
-            )}
             <button className="launchButton" disabled={!canUseLauncher || syncing} onClick={launchSelected}>
-              {syncing ? "업데이트 중" : canUseLauncher ? "업데이트 후 시작" : "초대 필요"}
+              {syncing ? "업데이트 중" : "게임 시작"}
             </button>
-          </div>
-        </section>
-
-        <section className="serverSummary" aria-label="서버 요약">
-          <div className="quickFact">
-            <span className="factIcon">●</span>
-            <span>상태</span>
-            <strong>{serverStatus?.message ?? "서버 확인 중"}</strong>
-          </div>
-          <div className="quickFact">
-            <span className="factIcon">↗</span>
-            <span>서버</span>
-            <strong>{connection ? `${connection.host}:${connection.port}` : "확인 중"}</strong>
-          </div>
-          <div className="quickFact">
-            <span className="factIcon">✦</span>
-            <span>모드팩</span>
-            <strong>Minecraft 1.21.1 · NeoForge</strong>
-          </div>
-          <div className="quickFact syncFact">
-            <span className="factIcon">↓</span>
-            <span>동기화</span>
-            <strong>{result ? `${result.downloaded} 다운로드 · ${result.skipped} 유지` : "대기 중"}</strong>
           </div>
         </section>
       </section>
@@ -389,7 +467,6 @@ function App() {
                     {createdInvite && <code>bwe-e-ep://invite/{createdInvite.code}</code>}
                   </div>
                 )}
-                {!user && <div className="loginTools"><button onClick={() => setLoginOpen(true)}>로그인 선택</button></div>}
                 {notice && <p className="notice">{notice}</p>}
               </article>
 
@@ -473,25 +550,6 @@ function App() {
         </div>
       )}
 
-      {loginOpen && (
-        <div className="modalBackdrop" onClick={() => setLoginOpen(false)}>
-          <section className="loginModal" aria-label="로그인 선택" onClick={(event) => event.stopPropagation()}>
-            <p className="eyebrow">Choose account</p>
-            <h2>어떤 계정으로 참가할까요?</h2>
-            <p>초대 권한은 선택한 계정에 연결됩니다.</p>
-            <div className="loginChoices">
-              <button onClick={() => { setLoginOpen(false); void login("discord"); }}>
-                <strong>Discord로 참가</strong>
-                <span>Discord 표시명 기반 프로필로 실행</span>
-              </button>
-              <button onClick={() => { setLoginOpen(false); void login("microsoft"); }}>
-                <strong>Microsoft로 참가</strong>
-                <span>내 Minecraft Java 닉네임으로 실행</span>
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
     </main>
   );
 }

@@ -1,4 +1,6 @@
 :root {
+  --surface-radius: 16px;
+  --control-radius: 12px;
   color: #e4e2dc;
   background: #111214;
   font-family:
@@ -23,28 +25,49 @@ input {
 
 button {
   cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 160ms ease,
+    transform 140ms ease,
+    opacity 140ms ease;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid #e6c28b;
+  outline-offset: 3px;
 }
 
 .shell {
   display: grid;
-  grid-template-columns: 304px 1fr;
+  grid-template-columns: 236px minmax(0, 1fr);
+  grid-template-rows: 82px minmax(0, 1fr);
   min-height: 100vh;
   overflow: hidden;
   background: #111214;
 }
 
-.sidebar {
+.appHeader {
+  grid-column: 1 / -1;
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 28px;
-  padding: 24px 20px 26px;
-  background: #151619;
+  padding: 14px 20px;
+  background: #111214;
+  -webkit-app-region: drag;
+}
+
+.sidebar {
+  padding: 8px 14px 20px 20px;
+  background: #111214;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 188px;
 }
 
 .brandMark {
@@ -102,9 +125,9 @@ h3 {
 }
 
 .iconRail {
-  display: grid;
-  grid-template-columns: repeat(3, 44px);
-  gap: 12px;
+  display: flex;
+  gap: 6px;
+  -webkit-app-region: no-drag;
 }
 
 .iconButton {
@@ -116,7 +139,7 @@ h3 {
   font-size: 19px;
   background: transparent;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--control-radius);
 }
 
 .iconButton.active,
@@ -125,13 +148,75 @@ h3 {
   background: #d9b072;
 }
 
+.iconButton:not(.active):hover {
+  transform: translateY(-1px);
+}
+
 .supportPanel {
   display: flex;
   align-items: end;
   min-height: 146px;
   padding: 20px 18px;
   background: #202125;
-  border-radius: 18px;
+  border-radius: var(--surface-radius);
+}
+
+.sectionLabel {
+  margin: 0 0 10px;
+  color: #78766f;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.packCard {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+  width: 100%;
+  padding: 8px;
+  color: #aaa69d;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--control-radius);
+}
+
+.packCard.active,
+.packCard:hover {
+  color: #f0ede6;
+  background: #1b1c20;
+}
+
+.packCard:hover {
+  transform: translateX(3px);
+}
+
+.packThumbnail {
+  width: 72px;
+  height: 46px;
+  background: linear-gradient(90deg, rgba(17, 18, 20, 0.16), rgba(17, 18, 20, 0.5)), url("/images/create-aeronautics-hero.png") center / cover;
+  border-radius: 8px;
+}
+
+.packCard strong,
+.packCard small {
+  display: block;
+}
+
+.packCard strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.packCard small {
+  margin-top: 5px;
+  color: #77756f;
+  font-size: 10px;
 }
 
 .accessStamp {
@@ -162,10 +247,9 @@ h3 {
 }
 
 .content {
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  gap: 20px;
-  padding: 24px 20px 22px;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 20px 20px 0;
 }
 
 .topbar {
@@ -173,6 +257,7 @@ h3 {
   align-items: center;
   justify-content: space-between;
   min-height: 54px;
+  -webkit-app-region: drag;
 }
 
 .searchStub {
@@ -180,13 +265,42 @@ h3 {
   padding: 13px 15px;
   color: #aaa69d;
   background: #1b1c20;
-  border-radius: 14px;
+  border-radius: var(--control-radius);
 }
 
 .topbarActions {
   display: flex;
   align-items: center;
   gap: 12px;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+}
+
+.windowControls {
+  display: flex;
+  align-self: stretch;
+  margin-left: 2px;
+}
+
+.windowControls button {
+  width: 38px;
+  min-height: 36px;
+  padding: 0;
+  color: #aaa69d;
+  font-size: 18px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.windowControls button:hover {
+  color: #f0ede6;
+  background: #292a2f;
+}
+
+.windowControls .closeWindowButton:hover {
+  color: #fff;
+  background: #b84a4a;
 }
 
 .settingsButton,
@@ -217,11 +331,12 @@ h3 {
   text-align: left;
   background: #1b1c20;
   border: 0;
-  border-radius: 16px;
+  border-radius: var(--control-radius);
 }
 
 .profileBox:hover {
   background: #25262b;
+  transform: translateY(-1px);
 }
 
 .profileBox img,
@@ -232,7 +347,7 @@ h3 {
   height: 38px;
   color: #ddd8cf;
   background: #2a2c32;
-  border-radius: 12px;
+  border-radius: var(--control-radius);
 }
 
 .profileBox strong,
@@ -251,7 +366,8 @@ h3 {
 
 .hero {
   position: relative;
-  min-height: 390px;
+  height: 100%;
+  min-height: 460px;
   overflow: visible;
 }
 
@@ -264,7 +380,7 @@ h3 {
     url("/images/create-aeronautics-hero.png");
   background-position: center;
   background-size: cover;
-  border-radius: 20px;
+  border-radius: var(--surface-radius);
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.22);
 }
 
@@ -272,7 +388,7 @@ h3 {
   position: absolute;
   z-index: 2;
   left: 42px;
-  bottom: 38px;
+  bottom: 42px;
   max-width: 520px;
 }
 
@@ -309,11 +425,155 @@ h3 {
   width: min(330px, calc(100% - 84px));
 }
 
+.entryScreen {
+  position: relative;
+  display: grid;
+  min-width: 100vw;
+  min-height: 100vh;
+  place-items: center;
+  overflow: hidden;
+  background: #111214;
+  -webkit-app-region: drag;
+}
+
+.entryScreen > .windowControls {
+  position: absolute;
+  z-index: 3;
+  top: 14px;
+  right: 14px;
+  -webkit-app-region: no-drag;
+}
+
+.entryCard {
+  position: relative;
+  z-index: 2;
+  width: min(430px, calc(100vw - 48px));
+  padding: 38px;
+  text-align: center;
+  background: #191a1e;
+  border-radius: var(--surface-radius);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.35);
+  -webkit-app-region: no-drag;
+}
+
+.entryCard > img {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 18px;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.entryCard h1 {
+  font-size: 28px;
+}
+
+.entryDescription {
+  margin-top: 11px;
+  color: #9e9b93;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.entryChoices {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.entryChoices button {
+  display: grid;
+  gap: 4px;
+  padding: 15px 16px;
+  color: #e8e4dc;
+  text-align: left;
+  background: #24252a;
+  border: 0;
+  border-radius: var(--control-radius);
+}
+
+.entryChoices button:first-child {
+  color: #24201a;
+  background: #d9b072;
+}
+
+.entryChoices button:hover {
+  color: #f3f0e9;
+  background: #303137;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  transform: translateY(-2px);
+}
+
+.entryChoices button:first-child:hover {
+  color: #24201a;
+  background: #ebc586;
+}
+
+.entryChoices button:active {
+  box-shadow: none;
+  transform: translateY(0);
+}
+
+.entryChoices span {
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.entryInvite {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 9px;
+  margin-top: 24px;
+}
+
+.entryInvite button,
+.entryLogout {
+  padding: 0 16px;
+  color: #25221d;
+  font-weight: 900;
+  background: #d9b072;
+  border: 0;
+  border-radius: var(--control-radius);
+}
+
+.entryLogout:hover {
+  color: #f0ede6;
+  background: #292a2f;
+}
+
+.entryRecovery {
+  display: grid;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.entryRecovery > button:first-child {
+  min-height: 44px;
+  color: #24201a;
+  font-weight: 900;
+  background: #d9b072;
+  border: 0;
+  border-radius: var(--control-radius);
+}
+
+.entryRecovery > button:first-child:hover {
+  background: #ebc586;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  transform: translateY(-2px);
+}
+
+.entryLogout {
+  min-height: 38px;
+  margin-top: 12px;
+  color: #aaa69d;
+  background: transparent;
+}
+
 .updatePanel {
   padding: 14px 16px;
   color: #c5c1b9;
   background: rgba(19, 20, 23, 0.72);
-  border-radius: 14px;
+  border-radius: var(--control-radius);
   backdrop-filter: blur(12px);
 }
 
@@ -375,9 +635,15 @@ h3 {
   font-weight: 900;
   background: #d9b072;
   border: 0;
-  border-radius: 16px;
+  border-radius: var(--control-radius);
   box-shadow: 0 5px 0 #9c733e, 0 15px 28px rgba(0, 0, 0, 0.24);
   transform: translateY(0);
+}
+
+.launchButton:not(:disabled):hover {
+  background: #ebc586;
+  box-shadow: 0 7px 0 #9c733e, 0 18px 32px rgba(0, 0, 0, 0.28);
+  transform: translateY(-2px);
 }
 
 .launchButton:not(:disabled):active {
@@ -398,7 +664,7 @@ button:disabled {
   gap: 8px;
   padding: 10px 12px;
   background: #1b1c20;
-  border-radius: 18px;
+  border-radius: var(--surface-radius);
 }
 
 .quickFact {
@@ -408,11 +674,15 @@ button:disabled {
   align-content: center;
   min-height: 62px;
   padding: 8px 10px;
-  border-radius: 12px;
+  border-radius: var(--control-radius);
 }
 
 .quickFact:hover {
   background: #222328;
+}
+
+.quickFact {
+  transition: background-color 140ms ease;
 }
 
 .factIcon {
@@ -452,7 +722,7 @@ button:disabled {
   overflow: auto;
   padding: 22px;
   background: #17181b;
-  border-radius: 22px;
+  border-radius: var(--surface-radius);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
 }
 
@@ -462,7 +732,7 @@ button:disabled {
   width: min(540px, 100%);
   padding: 22px;
   background: #17181b;
-  border-radius: 22px;
+  border-radius: var(--surface-radius);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
 }
 
@@ -488,7 +758,7 @@ button:disabled {
 .panel {
   padding: 18px;
   background: #202125;
-  border-radius: 16px;
+  border-radius: var(--surface-radius);
 }
 
 .panelHeader {
@@ -518,12 +788,29 @@ input {
   font-size: 14px;
   background: #17181b;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--control-radius);
   outline: none;
 }
 
 input:focus {
   background: #24252a;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  .quickFact,
+  .progressTrack i {
+    transition-duration: 0.01ms;
+  }
+
+  .iconButton,
+  .packCard,
+  .profileBox,
+  .entryChoices button,
+  .entryRecovery > button:first-child,
+  .launchButton {
+    transform: none !important;
+  }
 }
 
 .adminTools {
@@ -610,7 +897,7 @@ input:focus {
 
 .updateActions .launchButton {
   min-height: 44px;
-  border-radius: 13px;
+  border-radius: var(--control-radius);
   box-shadow: 0 4px 0 #9c733e;
 }
 
@@ -639,7 +926,7 @@ input:focus {
   text-align: left;
   background: #202125;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--control-radius);
 }
 
 .loginChoices button:hover {
@@ -665,7 +952,7 @@ code {
   padding: 9px 11px;
   color: #d8d2c4;
   background: #17181b;
-  border-radius: 12px;
+  border-radius: var(--control-radius);
   overflow-wrap: anywhere;
 }
 
@@ -687,7 +974,7 @@ code {
   overflow: auto;
   padding: 12px;
   background: #17181b;
-  border-radius: 12px;
+  border-radius: var(--control-radius);
 }
 
 .empty,

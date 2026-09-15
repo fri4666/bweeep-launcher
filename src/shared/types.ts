@@ -91,6 +91,7 @@ export interface AccessStatus {
   isAdmin: boolean;
   reason: string;
   user?: LauncherUser;
+  unavailable?: boolean;
 }
 
 export interface InviteResult {
