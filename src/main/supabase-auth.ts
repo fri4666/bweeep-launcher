@@ -315,20 +315,36 @@ class EncryptedSessionStorage {
   }
 
   private async read(): Promise<Record<string, string>> {
+    const target = sessionPath();
     try {
-      const encrypted = await fsp.readFile(sessionPath(), "utf8");
+      const encrypted = await fsp.readFile(target, "utf8");
       const plain = safeStorage.decryptString(Buffer.from(encrypted, "base64"));
       return JSON.parse(plain) as Record<string, string>;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-      throw new Error("저장된 로그인 세션을 읽을 수 없습니다.");
+      const backup = `${target}.corrupt-${Date.now()}`;
+      try {
+        await fsp.rename(target, backup);
+      } catch (renameError) {
+        if ((renameError as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw new Error("손상된 로그인 세션을 격리하지 못했습니다.");
+        }
+      }
+      return {};
     }
   }
 
   private async write(values: Record<string, string>): Promise<void> {
-    await fsp.mkdir(path.dirname(sessionPath()), { recursive: true });
+    const target = sessionPath();
+    const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
+    await fsp.mkdir(path.dirname(target), { recursive: true });
     const encrypted = safeStorage.encryptString(JSON.stringify(values)).toString("base64");
-    await fsp.writeFile(sessionPath(), encrypted, { encoding: "utf8", mode: 0o600 });
+    try {
+      await fsp.writeFile(temporary, encrypted, { encoding: "utf8", mode: 0o600 });
+      await fsp.rename(temporary, target);
+    } finally {
+      await fsp.rm(temporary, { force: true }).catch(() => undefined);
+    }
   }
 }
 
