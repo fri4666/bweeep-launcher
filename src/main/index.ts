@@ -144,7 +144,7 @@ app.on("open-url", (event, url) => {
   queueDeepLink(url, "open-url");
 });
 
-function createWindow(): void {
+async function createWindow(): Promise<BrowserWindow> {
   const distRoot = path.resolve(__dirname, "..", "..");
   const win = new BrowserWindow({
     width: 1120,
@@ -172,10 +172,11 @@ function createWindow(): void {
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) {
-    void win.loadURL(devUrl);
+    await win.loadURL(devUrl);
   } else {
-    void win.loadFile(path.join(distRoot, "renderer", "index.html"));
+    await win.loadFile(path.join(distRoot, "renderer", "index.html"));
   }
+  return win;
 }
 
 app.whenReady().then(() => {
@@ -257,13 +258,13 @@ app.whenReady().then(() => {
     } catch {
       // The renderer will show its normal signed-out state when a persisted session cannot be restored.
     }
-    createWindow();
+    await createWindow();
     schedulePendingDeepLinks();
   })();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      void createWindow();
     }
   });
 });
