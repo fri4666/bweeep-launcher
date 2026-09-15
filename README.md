@@ -64,7 +64,7 @@ The server stays on `online-mode=false` so Discord-derived offline profiles and 
 
 ## Windows package
 
-Run `npm run package:win` in WSL to create `release/Bweeep-win32-x64/Bweeep.exe`. The folder is portable: distribute the entire `Bweeep-win32-x64` folder, not the executable by itself.
+Run `npm run package:win` in WSL to create `release-installer/Bweeep-Setup-<version>.exe`. The installer lets each player choose an installation folder and creates Bweeep shortcuts in the Start menu and on the desktop. Use `npm run package:portable` when a ZIP-style portable folder is needed instead.
 
 5. After the first owner signs in, promote that Supabase Auth user to the first launcher admin in the SQL Editor:
 

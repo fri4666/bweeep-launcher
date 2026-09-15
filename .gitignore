@@ -1,6 +1,7 @@
 node_modules/
 dist/
 release/
+release-installer/
 previews/
 create-aeronautics/
 resources/*.local.json

@@ -3,9 +3,10 @@ import { chromium } from "playwright";
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
 const errors = [];
+const signedIn = process.env.BWEEP_PREVIEW_SIGNED_IN !== "false";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(() => {
+await page.addInitScript((previewSignedIn) => {
   const listeners = [];
   const result = {
     manifest: {
@@ -44,11 +45,11 @@ await page.addInitScript(() => {
       message: "서버 연결 가능"
     }),
     accessStatus: async () => ({
-      loggedIn: true,
-      allowed: true,
+      loggedIn: previewSignedIn,
+      allowed: previewSignedIn,
       isAdmin: false,
-      reason: "초대 확인 완료",
-      user: { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, provider: "discord" }
+      reason: previewSignedIn ? "초대 확인 완료" : "초대 코드가 필요합니다.",
+      user: previewSignedIn ? { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, provider: "discord" } : undefined
     }),
     login: async () => ({ configured: true, user: null }),
     logout: async () => ({ loggedIn: false, allowed: false, isAdmin: false, reason: "로그아웃했습니다." }),
@@ -88,14 +89,24 @@ await page.addInitScript(() => {
       };
     }
   };
-});
+}, signedIn);
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "networkidle" });
 await page.waitForTimeout(120);
-await page.screenshot({ path: "previews/bweeep-launcher-flow-ready.png" });
-await page.getByRole("button", { name: "업데이트 후 시작" }).click();
-await page.waitForTimeout(480);
-await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
+await page.screenshot({ path: signedIn ? "previews/bweeep-launcher-flow-ready.png" : "previews/bweeep-launcher-login-main.png" });
+if (signedIn) {
+  await page.getByRole("button", { name: "설정" }).click();
+  await page.waitForTimeout(100);
+  await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
+  await page.getByRole("button", { name: "닫기" }).click();
+  await page.getByRole("button", { name: "업데이트 후 시작" }).click();
+  await page.waitForTimeout(480);
+  await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
+} else {
+  await page.locator(".profileBox").click();
+  await page.waitForTimeout(100);
+  await page.screenshot({ path: "previews/bweeep-launcher-login-preview.png" });
+}
 
 console.log(JSON.stringify({
   bodyHasContent: (await page.locator("body").innerText()).trim().length > 0,
