@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, session, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -9,6 +9,7 @@ import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
 import { installAndLaunch } from "./minecraft-runtime.js";
 import { AuthCallbackError, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
+import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { checkLauncherUpdate } from "./launcher-update.js";
 import type { LauncherUser, LoginProvider } from "../shared/types.js";
@@ -196,7 +197,8 @@ async function createWindow(): Promise<BrowserWindow> {
   return win;
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await session.defaultSession.setProxy({ mode: "system" });
   const defaultServer = getServerPresets()[0].server;
   ipcMain.handle("catalog:list", () => getServerPresets());
   ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
@@ -260,14 +262,27 @@ app.whenReady().then(() => {
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:launch", async (event, request: { packId: string; instanceDir: string }) => {
     const progress = (payload: SyncProgress) => event.sender.send("modpack:progress", payload);
-    const manifest = await auth.getManifest(sessionUser, request.packId);
-    assertManifest(manifest);
-    const server = await readServerConnection(defaultServer);
-    const configuredManifest = { ...manifest, server };
-    const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
-    if (!sessionUser) throw new Error("Discord 로그인이 필요합니다.");
-    const launched = await installAndLaunch(configuredManifest, synced.instanceDir, await auth.createLaunchIdentity(sessionUser), progress);
-    return { ...launched, instanceDir: synced.instanceDir };
+    await writeGameLog("launch.started", { packId: request.packId });
+    try {
+      await writeGameLog("launch.manifest.requested", { packId: request.packId });
+      const manifest = await auth.getManifest(sessionUser, request.packId);
+      assertManifest(manifest);
+      const server = await readServerConnection(defaultServer);
+      const configuredManifest = { ...manifest, server };
+      await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
+      const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
+      if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
+      await writeGameLog("launch.identity.requested", { provider: sessionUser.provider });
+      const identity = await auth.createLaunchIdentity(sessionUser);
+      await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
+      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, identity, progress);
+      await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
+      return { ...launched, instanceDir: synced.instanceDir };
+    } catch (error) {
+      const details = gameErrorDetails(error);
+      await writeGameLog("launch.failed", details);
+      throw new Error(`${details.message} (로그: ${gameLogPath()})`);
+    }
   });
 
   void (async () => {

@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ModpackManifest, SyncProgress, SyncRequest, SyncResult } from "../shared/types.js";
+import { fetchWithSystemNetwork } from "./system-network.js";
 
 type ProgressSink = (event: SyncProgress) => void;
 
@@ -94,9 +95,9 @@ async function downloadToFile(url: string, target: string, expectedSize: number)
     return;
   }
 
-  const response = await fetch(url);
+  const response = await fetchWithSystemNetwork(url, { signal: AbortSignal.timeout(60_000) });
   if (!response.ok || !response.body) {
-    throw new Error(`파일 다운로드 실패: ${url}`);
+    throw new Error(`파일 다운로드 실패: ${path.basename(target)}`);
   }
 
   const temp = `${target}.part`;

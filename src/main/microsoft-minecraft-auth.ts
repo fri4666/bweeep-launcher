@@ -1,4 +1,5 @@
 import type { LaunchIdentity } from "./minecraft-runtime.js";
+import { fetchWithSystemNetwork } from "./system-network.js";
 
 interface XboxAuthentication {
   Token?: string;
@@ -60,7 +61,7 @@ export async function createMicrosoftLaunchIdentity(microsoftAccessToken: string
 }
 
 async function request<T>(url: string, body: unknown): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetchWithSystemNetwork(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
@@ -71,7 +72,7 @@ async function request<T>(url: string, body: unknown): Promise<T> {
 }
 
 async function get<T>(url: string, headers: Record<string, string>): Promise<T> {
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+  const response = await fetchWithSystemNetwork(url, { headers, signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error("Minecraft 계정 정보를 확인하지 못했습니다.");
   return response.json() as Promise<T>;
 }

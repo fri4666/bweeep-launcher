@@ -18,6 +18,7 @@ import {
   resolveNeoForgedInstallerFile
 } from "@xmcl/installer";
 import type { ModpackManifest, SyncProgress } from "../shared/types.js";
+import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
 
 type ProgressSink = (event: SyncProgress) => void;
 
@@ -31,7 +32,10 @@ export async function installAndLaunch(
     throw new Error("현재 붸에엡은 NeoForge 모드팩 실행을 지원합니다.");
   }
 
-  const runtime = createDefaultNodeInstallRuntime({ maxConcurrency: 4 });
+  const runtime = createDefaultNodeInstallRuntime({
+    maxConcurrency: 2,
+    download: downloadInstallFilesWithSystemNetwork
+  });
   const minecraft = MinecraftFolder.from(instanceDir);
   const javaPath = await resolveRuntime(instanceDir, runtime, progress);
   const baseVersion = await installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, progress);
@@ -92,7 +96,7 @@ async function resolveRuntime(instanceDir: string, runtime: ReturnType<typeof cr
     ? process.arch === "arm64" ? "windows-arm64" : "windows-x64"
     : process.platform === "darwin" ? process.arch === "arm64" ? "mac-os-arm64" : "mac-os"
     : "linux";
-  const response = await fetch("https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json");
+  const response = await fetchWithSystemNetwork("https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json");
   if (!response.ok) throw new Error("Java 런타임 목록을 가져오지 못했습니다.");
   const catalog = await response.json() as Record<string, Record<string, Array<unknown>>>;
   const targets = catalog[platform]?.["java-runtime-gamma"] ?? catalog[platform]?.["java-runtime-beta"];
@@ -114,7 +118,7 @@ async function installMinecraftBase(
   progress: ProgressSink
 ): Promise<string> {
   progress({ kind: "info", message: `Minecraft ${minecraftVersion} 준비 중` });
-  const entry = (await getVersionList()).versions.find((item) => item.id === minecraftVersion);
+  const entry = (await getVersionList({ fetch: fetchWithSystemNetwork })).versions.find((item) => item.id === minecraftVersion);
   if (!entry) throw new Error(`Minecraft ${minecraftVersion} 정보를 찾지 못했습니다.`);
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-version", type: "files", files: [resolveMinecraftVersionJsonInstallFile(entry, minecraft)] }] }, runtime);
   const resolved = await Version.parse(minecraft, minecraftVersion);
