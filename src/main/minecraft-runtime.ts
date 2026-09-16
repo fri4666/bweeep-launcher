@@ -27,8 +27,7 @@ type ProgressSink = (event: SyncProgress) => void;
 export async function installAndLaunch(
   manifest: ModpackManifest,
   instanceDir: string,
-  identity: LaunchIdentity,
-  gameTicket: string,
+  getLaunchAuthorization: () => Promise<{ identity: LaunchIdentity; ticket: string }>,
   companionModPath: string,
   progress: ProgressSink,
   onExit: () => void
@@ -49,6 +48,8 @@ export async function installAndLaunch(
   const quickPlayPath = path.join(instanceDir, "quickPlay", "bweeep.json");
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
+  progress({ kind: "info", message: "서버 접속 인증표 준비 중" });
+  const { identity, ticket: gameTicket } = await getLaunchAuthorization();
   progress({ kind: "info", message: "Minecraft 실행 중" });
   const gameProcess = await launch({
     gamePath: instanceDir,
