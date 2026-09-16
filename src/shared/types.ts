@@ -68,14 +68,11 @@ export interface SyncResult {
   skipped: number;
 }
 
-export type LoginProvider = "discord" | "microsoft";
-
 export interface LauncherUser {
   id: string;
   username: string;
   globalName?: string | null;
   avatarUrl?: string | null;
-  provider: LoginProvider;
 }
 
 export interface LoginResult {

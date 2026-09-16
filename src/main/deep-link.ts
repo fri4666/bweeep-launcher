@@ -39,9 +39,9 @@ export function parseAuthCallback(rawUrl: string): AuthCallback {
       providerDescriptionFingerprint: fingerprint(description),
       stateFingerprint: fingerprint(url.searchParams.get("state"))
     };
-    if (/AADSTS70000|code.+expired|code.+not valid/i.test(description)) {
+    if (/code.+expired|code.+not valid/i.test(description)) {
       throw new AuthCallbackError(
-        "Microsoft 로그인 시간이 만료되었습니다. 런처에서 Microsoft 로그인을 다시 눌러 새 로그인을 시작해 주세요.",
+        "로그인 시간이 만료되었습니다. 런처에서 Discord 로그인을 다시 눌러 새 로그인을 시작해 주세요.",
         flowId,
         "provider_code_expired",
         diagnostics

@@ -7,11 +7,10 @@
 - Desktop shell: Electron + React.
 - Pack sync: files are SHA-256 verified from the protected Supabase Manifest.
 - Default pack: Create Aeronautics on `server.fri4666.com:25565`.
-- Account choices: Supabase Auth OAuth with PKCE and the `bwe-e-ep://auth/callback` desktop callback. An invitee can choose Discord or Microsoft.
+- Account: Discord-only Supabase Auth OAuth with PKCE and the `bwe-e-ep://auth/callback` desktop callback.
 - Invite gate and protected Manifest delivery: Supabase Edge Function with database-backed access and one-time invite codes. Every approved member can create and copy a `BWEEP-…` code for the next friend.
-- Game launch: installs Minecraft 1.21.1, Java 21, and NeoForge 21.1.228 into the selected instance, then starts directly into the server.
+- Game launch: installs Minecraft 1.21.1, Java 21, and NeoForge 21.1.228 into the selected instance and starts the modded client.
 - Discord launch: creates a stable offline Minecraft profile derived from the Discord account and display name.
-- Microsoft launch: uses the verified Supabase Microsoft identity to create a stable offline game profile for the private offline-mode server.
 - Account menu: shows the Discord profile, stores a server host/port override, and signs out locally.
 - Settings: keeps the install location and sync log, and can reset launcher settings without deleting installed modpack files or the Discord account.
 - Launcher updates: fetches optional HTTPS release metadata and shows a download popup when a newer version is published.
@@ -42,11 +41,9 @@ npx supabase functions deploy launcher-access
 
 2. In Supabase Dashboard, enable the Discord provider under **Authentication > Providers**. Discord's Developer Portal client secret belongs in Supabase only; it must never be placed in the Electron app.
 
-3. To offer Microsoft as an alternative login, register an Azure Entra app that supports both organizational and personal Microsoft accounts. Add `https://YOUR_PROJECT.supabase.co/auth/v1/callback` as its Web redirect URI, then enable Azure (Microsoft) in Supabase Auth with the Azure Client ID and Client Secret. Keep **Allow users without an email** disabled. The launcher requests `email`, `profile`, and `offline_access` when the user selects Microsoft.
+3. Add `bwe-e-ep://auth/callback` to Supabase **Authentication > URL Configuration > Redirect URLs** and to the Discord application redirect URLs.
 
-4. Add `bwe-e-ep://auth/callback` to Supabase **Authentication > URL Configuration > Redirect URLs** and to the Discord application redirect URLs.
-
-5. For development, create `resources/supabase.local.json` from `resources/supabase.example.json`. The packaged launcher already includes this public Supabase configuration; `bweeep-config/supabase.local.json` next to `Bweeep.exe` can override it when changing projects:
+4. For development, create `resources/supabase.local.json` from `resources/supabase.example.json`. The packaged launcher already includes this public Supabase configuration; `bweeep-config/supabase.local.json` next to `Bweeep.exe` can override it when changing projects:
 
 ```json
 {
@@ -60,7 +57,7 @@ The publishable key is safe to ship with the launcher. Do not add a Supabase sec
 
 ## Server authentication mode
 
-The server stays on `online-mode=false` so Discord-derived offline profiles and Microsoft profiles can use the same modpack server. Microsoft users still authenticate with their actual Java account before launch, but the server does not perform Mojang account verification in this mixed mode. Keep the server port restricted to friends and use server-side access controls when it becomes publicly reachable.
+The server stays on `online-mode=false` so Discord-derived offline profiles can join without a separate Mojang login. Keep the server port restricted to friends and use server-side access controls when it becomes publicly reachable.
 
 ## Windows package
 

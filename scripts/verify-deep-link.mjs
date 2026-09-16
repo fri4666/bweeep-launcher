@@ -11,7 +11,7 @@ const expired = new URL("bwe-e-ep://auth/callback");
 expired.searchParams.set("error", "server_error");
 expired.searchParams.set(
   "error_description",
-  "Unable to exchange external code: M.C5 AADSTS70000: The code has expired"
+  "OAuth code has expired"
 );
 expired.searchParams.set("sb_flow_id", "0123456789abcdef");
 
@@ -19,7 +19,7 @@ try {
   parseAuthCallback(expired.toString());
   throw new Error("Expired callback was accepted");
 } catch (error) {
-  if (!String(error.message).includes("Microsoft 로그인 시간이 만료되었습니다")) throw error;
+  if (!String(error.message).includes("로그인 시간이 만료되었습니다")) throw error;
   if (error.flowId !== "0123456789abcdef") throw new Error("Expired callback lost its PKCE flow id");
 }
 

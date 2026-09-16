@@ -53,10 +53,10 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       isAdmin: false,
       unavailable: previewAccessUnavailable,
       reason: previewAccessUnavailable ? "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요." : previewAccessDenied ? "초대 코드가 필요합니다." : previewSignedIn ? "초대 확인 완료" : "로그인이 필요합니다.",
-      user: previewSignedIn ? { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, provider: "discord" } : undefined
+      user: previewSignedIn ? { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null } : undefined
     }),
     login: async () => ({ configured: true, pending: true, user: null, message: "브라우저에서 Discord 로그인을 완료해 주세요." }),
-    cancelLogin: async () => ({ cancelled: true, message: "로그인을 취소했습니다. 다른 방법을 선택할 수 있습니다." }),
+    cancelLogin: async () => ({ cancelled: true, message: "로그인을 취소했습니다. 다시 시도할 수 있습니다." }),
     logout: async () => ({ loggedIn: false, allowed: false, isAdmin: false, reason: "로그아웃했습니다." }),
     redeemInvite: async (code) => {
       if (code !== "BWEEP-123456789ABC-123456789ABC") throw new Error(`초대 코드가 정규화되지 않았습니다: ${code}`);
@@ -66,7 +66,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
         status: { loggedIn: true, allowed: true, isAdmin: false, reason: "허용됨" }
       };
     },
-    createInvite: async () => ({ code: "BWEEP-123456789ABC-123456789ABC", expiresAt: "2026-12-31" }),
+    createInvite: async (maxUses) => ({ code: "BWEEP-123456789ABC-123456789ABC", expiresAt: "2026-12-31", maxUses }),
     serverConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
     saveServerConnection: async (connection) => connection,
     resetServerConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
@@ -86,10 +86,12 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     openPath: async () => "",
     openExternal: async () => undefined,
     copyText: async (value) => { window.__copiedText = value; },
+    readyForInvite: async () => null,
     minimizeWindow: () => undefined,
     closeWindow: () => undefined,
     onAuthSession: () => () => {},
     onAuthError: () => () => {},
+    onInviteReceived: () => () => {},
     onProgress: (listener) => {
       listeners.push(listener);
       return () => {
@@ -100,7 +102,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   };
 }, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied });
 
-await page.goto("http://127.0.0.1:5173/", { waitUntil: "networkidle" });
+await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(120);
 const interactionChecks = [];
 
@@ -134,7 +136,7 @@ if (accessUnavailable) {
 } else if (signedIn) {
   await page.getByRole("button", { name: "설정" }).click();
   await page.waitForTimeout(100);
-  await page.getByRole("button", { name: "초대 코드 만들기" }).click();
+  await page.getByRole("button", { name: "10명용 초대 만들기" }).click();
   await page.getByText("BWEEP-123456789ABC-123456789ABC", { exact: true }).waitFor();
   const copyButtonBox = await page.getByRole("button", { name: "코드 복사" }).boundingBox();
   if (!copyButtonBox || copyButtonBox.x + copyButtonBox.width > 1440) throw new Error("invite code copy action is not visible");
@@ -162,12 +164,12 @@ if (accessUnavailable) {
 } else {
   await page.getByRole("button", { name: "Discord로 로그인" }).click();
   await page.getByRole("button", { name: "Discord 로그인 진행 중" }).waitFor();
-  if (!(await page.getByRole("button", { name: "Microsoft로 로그인" }).isDisabled())) {
-    throw new Error("other login provider remained enabled during OAuth");
+  if (await page.getByRole("button", { name: /Microsoft/ }).count()) {
+    throw new Error("Microsoft login remained visible");
   }
-  await page.getByRole("button", { name: "로그인 취소 · 다른 방법 선택" }).click();
+  await page.getByRole("button", { name: "로그인 취소" }).click();
   if (await page.getByRole("button", { name: "Discord로 로그인" }).isDisabled()) {
-    throw new Error("login providers did not unlock after cancellation");
+    throw new Error("Discord login did not unlock after cancellation");
   }
   interactionChecks.push("login-lock-and-cancel");
   await page.screenshot({ path: "previews/bweeep-launcher-login-preview.png" });

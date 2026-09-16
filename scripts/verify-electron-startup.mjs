@@ -11,7 +11,7 @@ const temp = await fs.mkdtemp(path.join(os.tmpdir(), "bweeep-startup-"));
 await fs.writeFile(path.join(temp, "supabase-auth.json"), "invalid-encrypted-session", "utf8");
 const expiredCallback = new URL("bwe-e-ep://auth/callback");
 expiredCallback.searchParams.set("error", "server_error");
-expiredCallback.searchParams.set("error_description", "Unable to exchange external code: M.C5 AADSTS70000: The code has expired");
+expiredCallback.searchParams.set("error_description", "OAuth code has expired");
 expiredCallback.searchParams.set("sb_flow_id", "0123456789abcdef");
 let application;
 try {

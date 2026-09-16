@@ -12,7 +12,7 @@ import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { checkLauncherUpdate } from "./launcher-update.js";
-import type { LauncherUser, LoginProvider } from "../shared/types.js";
+import type { LauncherUser } from "../shared/types.js";
 import type { SyncProgress } from "../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -97,7 +97,7 @@ async function processPendingDeepLinks(): Promise<void> {
       await writeAuthLog("callback.session.delivered", {
         callbackId,
         flowId,
-        provider: sessionUser.provider,
+        provider: "discord",
         userId: authFingerprint(sessionUser.id)
       });
       for (const window of BrowserWindow.getAllWindows()) {
@@ -214,7 +214,7 @@ app.whenReady().then(async () => {
     await shell.openExternal(url.toString());
   });
   ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
-  ipcMain.handle("account:login", (_event, provider: LoginProvider) => auth.startLogin(provider));
+  ipcMain.handle("account:login", () => auth.startLogin());
   ipcMain.handle("account:cancelLogin", () => auth.cancelPendingLogin("user_cancelled"));
   ipcMain.handle("account:logout", async () => {
     await auth.signOut();
@@ -266,7 +266,7 @@ app.whenReady().then(async () => {
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
-      await writeGameLog("launch.identity.requested", { provider: sessionUser.provider });
+      await writeGameLog("launch.identity.requested", { provider: "discord" });
       const identity = await auth.createLaunchIdentity(sessionUser);
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
       const launched = await installAndLaunch(configuredManifest, synced.instanceDir, identity, progress);

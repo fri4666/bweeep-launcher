@@ -4,7 +4,6 @@ import type {
   AccessStatus,
   CreatedInvite,
   LauncherUser,
-  LoginProvider,
   LauncherUpdateStatus,
   ServerConnection,
   ServerPreset,
@@ -25,7 +24,7 @@ function WindowControls() {
 
 function ProfileAvatar({ user }: { user: LauncherUser }) {
   const [imageFailed, setImageFailed] = useState(false);
-  const showDiscordAvatar = user.provider === "discord" && Boolean(user.avatarUrl) && !imageFailed;
+  const showDiscordAvatar = Boolean(user.avatarUrl) && !imageFailed;
 
   if (showDiscordAvatar) {
     return <img src={user.avatarUrl!} alt="" onError={() => setImageFailed(true)} />;
@@ -48,7 +47,7 @@ function App() {
   const [instanceRoot, setInstanceRoot] = useState("");
   const [logs, setLogs] = useState<SyncProgress[]>([]);
   const [syncing, setSyncing] = useState(false);
-  const [loginPending, setLoginPending] = useState<LoginProvider | null>(null);
+  const [loginPending, setLoginPending] = useState(false);
   const [syncError, setSyncError] = useState("");
   const [result, setResult] = useState<SyncResult | null>(null);
   const [user, setUser] = useState<LauncherUser | null>(null);
@@ -105,12 +104,12 @@ function App() {
       setSyncProgress(event);
     });
     const unsubscribeSession = window.bweeep.onAuthSession((nextUser: LauncherUser) => {
-      setLoginPending(null);
+      setLoginPending(false);
       setUser(nextUser);
       void refreshAccessStatus(nextUser);
     });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
-      setLoginPending(null);
+      setLoginPending(false);
       setNotice(message);
     });
     const acceptInvite = (code: string) => {
@@ -174,19 +173,19 @@ function App() {
     }
   }
 
-  async function login(provider: LoginProvider) {
+  async function login() {
     if (loginPending) return;
     setNotice("");
-    setLoginPending(provider);
+    setLoginPending(true);
     try {
-      const result = await window.bweeep.login(provider);
+      const result = await window.bweeep.login();
       if (!result.configured) {
-        setLoginPending(null);
+        setLoginPending(false);
         setNotice(result.message ?? "로그인 설정이 필요합니다.");
         return;
       }
       if (result.user) {
-        setLoginPending(null);
+        setLoginPending(false);
         setUser(result.user);
         const status = await window.bweeep.accessStatus();
         setAccess(status);
@@ -195,14 +194,14 @@ function App() {
         setNotice(result.message ?? "브라우저에서 로그인을 완료해 주세요.");
       }
     } catch (error) {
-      setLoginPending(null);
+      setLoginPending(false);
       setNotice(error instanceof Error ? error.message : String(error));
     }
   }
 
   async function cancelLogin() {
     const result = await window.bweeep.cancelLogin();
-    if (result.cancelled) setLoginPending(null);
+    if (result.cancelled) setLoginPending(false);
     setNotice(result.message);
   }
 
@@ -350,16 +349,12 @@ function App() {
           <h1>로그인하고 시작하세요</h1>
           <p className="entryDescription">친구 전용 모드팩과 서버는 로그인 후에 표시됩니다.</p>
           <div className="entryChoices">
-            <button disabled={Boolean(loginPending)} onClick={() => void login("discord")}>
-              <strong>{loginPending === "discord" ? "Discord 로그인 진행 중" : "Discord로 로그인"}</strong>
-              <span>{loginPending === "discord" ? "브라우저에서 인증을 완료해 주세요" : "Discord 프로필로 참가"}</span>
-            </button>
-            <button disabled={Boolean(loginPending)} onClick={() => void login("microsoft")}>
-              <strong>{loginPending === "microsoft" ? "Microsoft 로그인 진행 중" : "Microsoft로 로그인"}</strong>
-              <span>{loginPending === "microsoft" ? "브라우저에서 인증을 완료해 주세요" : "Microsoft 프로필로 참가"}</span>
+            <button disabled={loginPending} onClick={() => void login()}>
+              <strong>{loginPending ? "Discord 로그인 진행 중" : "Discord로 로그인"}</strong>
+              <span>{loginPending ? "브라우저에서 인증을 완료해 주세요" : "Discord 프로필로 참가"}</span>
             </button>
           </div>
-          {loginPending && <button className="cancelLoginButton" onClick={() => void cancelLogin()}>로그인 취소 · 다른 방법 선택</button>}
+          {loginPending && <button className="cancelLoginButton" onClick={() => void cancelLogin()}>로그인 취소</button>}
           {notice && <p className="notice">{notice}</p>}
         </section>
       </main>
@@ -441,7 +436,7 @@ function App() {
           <div className="topbarActions">
             <button className="profileBox" onClick={() => setProfileOpen(true)}>
               <ProfileAvatar user={user} />
-              <div><strong>{user.globalName ?? user.username}</strong><small>{user.provider === "microsoft" ? "Microsoft" : "Discord"}</small></div>
+              <div><strong>{user.globalName ?? user.username}</strong><small>Discord</small></div>
             </button>
             <WindowControls />
           </div>
@@ -584,7 +579,7 @@ function App() {
           <section className="profileModal" aria-label="계정 및 서버 설정" onClick={(event) => event.stopPropagation()}>
             <header className="modalHeader">
               <div>
-                <p className="eyebrow">{user?.provider === "microsoft" ? "Microsoft 계정" : "Discord 계정"}</p>
+                <p className="eyebrow">Discord 계정</p>
                 <h2>{user?.globalName ?? user?.username ?? "계정"}</h2>
               </div>
               <button className="closeButton" onClick={() => setProfileOpen(false)}>닫기</button>
@@ -601,7 +596,7 @@ function App() {
               <button onClick={() => void saveConnection()}>서버 주소 저장</button>
             </section>
             <footer className="profileFooter">
-              <button className="logoutButton" onClick={() => void logout()}>{user?.provider === "microsoft" ? "Microsoft 로그아웃" : "Discord 로그아웃"}</button>
+              <button className="logoutButton" onClick={() => void logout()}>Discord 로그아웃</button>
             </footer>
           </section>
         </div>

@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { app, safeStorage, shell } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { AccessStatus, CreatedInvite, LauncherUser, LoginCancellationResult, LoginProvider, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
+import type { AccessStatus, CreatedInvite, LauncherUser, LoginCancellationResult, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
 import { parseAuthCallback } from "./deep-link.js";
 import { authFingerprint, writeAuthLog } from "./auth-log.js";
 import { createOfflineLaunchIdentity, type LaunchIdentity } from "./minecraft-runtime.js";
@@ -44,14 +44,21 @@ class InvalidLauncherSessionError extends Error {
   }
 }
 
+class UnsupportedAuthProviderError extends Error {
+  constructor() {
+    super("Discord 계정으로 로그인해 주세요.");
+    this.name = "UnsupportedAuthProviderError";
+  }
+}
+
 export class SupabaseAuth {
   private client: SupabaseClient | null = null;
   private loginInFlight = false;
   private activeLoginFlowId: string | null = null;
   private cancelledLoginFlowIds = new Set<string>();
 
-  async startLogin(provider: LoginProvider): Promise<LoginResult> {
-    await writeAuthLog("login.start.requested", { provider, alreadyInFlight: this.loginInFlight });
+  async startLogin(): Promise<LoginResult> {
+    await writeAuthLog("login.start.requested", { provider: "discord", alreadyInFlight: this.loginInFlight });
     const client = await this.getClient();
     if (!client) {
       return {
@@ -60,37 +67,32 @@ export class SupabaseAuth {
       };
     }
     if (this.loginInFlight) {
-      await writeAuthLog("login.start.blocked", { provider, reason: "already_in_flight" });
+      await writeAuthLog("login.start.blocked", { provider: "discord", reason: "already_in_flight" });
       return { configured: true, pending: true, message: "브라우저에서 로그인을 진행하고 있습니다." };
     }
 
-    const supabaseProvider = provider === "microsoft" ? "azure" : "discord";
     this.loginInFlight = true;
     const configuredRedirectUri = (await readConfig()).redirectUri;
     if (configuredRedirectUri && configuredRedirectUri !== defaultRedirectUri) {
       this.loginInFlight = false;
-      await writeAuthLog("login.start.failed", { provider, reason: "invalid_redirect_uri" });
+      await writeAuthLog("login.start.failed", { provider: "discord", reason: "invalid_redirect_uri" });
       throw new Error(`런처 OAuth 콜백 주소는 ${defaultRedirectUri}이어야 합니다.`);
     }
     const { data, error } = await client.auth.signInWithOAuth({
-      provider: supabaseProvider,
+      provider: "discord",
       options: {
         redirectTo: defaultRedirectUri,
-        skipBrowserRedirect: true,
-        // `profile` supplies the display-name claims used by the launcher and its
-        // stable offline game identity.
-        scopes: provider === "microsoft" ? "email profile offline_access" : undefined,
-        queryParams: provider === "microsoft" ? { prompt: "select_account" } : undefined
+        skipBrowserRedirect: true
       }
     });
     if (error || !data.url) {
       this.loginInFlight = false;
-      await writeAuthLog("login.start.failed", { provider, message: error?.message ?? "missing_oauth_url" });
+      await writeAuthLog("login.start.failed", { provider: "discord", message: error?.message ?? "missing_oauth_url" });
       throw new Error(error?.message ?? "Discord 로그인 주소를 만들지 못했습니다.");
     }
 
     await writeAuthLog("login.start.ready", {
-      provider,
+      provider: "discord",
       flowId: data.flowId ? authFingerprint(data.flowId) : null,
       authorizationUrl: authFingerprint(data.url),
       authorizationContext: summarizeAuthorizationUrl(data.url)
@@ -99,11 +101,11 @@ export class SupabaseAuth {
 
     try {
       await shell.openExternal(data.url);
-      await writeAuthLog("login.browser.opened", { provider, authorizationUrl: authFingerprint(data.url) });
-      return { configured: true, pending: true, message: `브라우저에서 ${provider === "microsoft" ? "Microsoft" : "Discord"} 로그인을 완료해 주세요.` };
+      await writeAuthLog("login.browser.opened", { provider: "discord", authorizationUrl: authFingerprint(data.url) });
+      return { configured: true, pending: true, message: "브라우저에서 Discord 로그인을 완료해 주세요." };
     } catch (error) {
       this.loginInFlight = false;
-      await writeAuthLog("login.browser.failed", { provider, message: error instanceof Error ? error.message : String(error) });
+      await writeAuthLog("login.browser.failed", { provider: "discord", message: error instanceof Error ? error.message : String(error) });
       throw error;
     }
   }
@@ -139,6 +141,10 @@ export class SupabaseAuth {
         provider: data.user.app_metadata?.provider ?? "unknown",
         userId: authFingerprint(data.user.id)
       });
+      if (data.user.app_metadata?.provider !== "discord") {
+        await client.auth.signOut({ scope: "local" });
+        throw new UnsupportedAuthProviderError();
+      }
       return toLauncherUser(data.user);
     } catch (error) {
       await writeAuthLog("callback.processing.failed", {
@@ -163,7 +169,7 @@ export class SupabaseAuth {
     this.loginInFlight = false;
     this.activeLoginFlowId = null;
     await writeAuthLog("login.flow.cancelled", { reason });
-    return { cancelled: true, message: "로그인을 취소했습니다. 다른 방법을 선택할 수 있습니다." };
+    return { cancelled: true, message: "로그인을 취소했습니다. 다시 시도할 수 있습니다." };
   }
 
   async restoreUser(): Promise<LauncherUser | null> {
@@ -171,7 +177,13 @@ export class SupabaseAuth {
     if (!client) return null;
 
     const { data } = await client.auth.getUser();
-    return data.user ? toLauncherUser(data.user) : null;
+    if (!data.user) return null;
+    if (data.user.app_metadata?.provider !== "discord") {
+      await client.auth.signOut({ scope: "local" });
+      this.client = null;
+      return null;
+    }
+    return toLauncherUser(data.user);
   }
 
   async getAccessStatus(user: LauncherUser | null): Promise<AccessStatus> {
@@ -471,20 +483,20 @@ function toLauncherUser(user: {
   user_metadata?: Record<string, unknown>;
 }): LauncherUser {
   const metadata = user.user_metadata ?? {};
-  const provider = user.app_metadata?.provider === "azure" ? "microsoft" : "discord";
+  if (user.app_metadata?.provider !== "discord") throw new UnsupportedAuthProviderError();
   const username = firstNonEmptyString(
     metadata.user_name,
     metadata.preferred_username,
     metadata.name,
     user.email
-  ) ?? (provider === "microsoft" ? "Microsoft 사용자" : "Discord 사용자");
+  ) ?? "Discord 사용자";
   const globalName = firstNonEmptyString(
     metadata.full_name,
     metadata.name,
     [metadata.given_name, metadata.family_name].filter((value): value is string => typeof value === "string").join(" ")
   );
   const avatarUrl = typeof metadata.avatar_url === "string" ? metadata.avatar_url : null;
-  return { id: user.id, username, globalName, avatarUrl, provider };
+  return { id: user.id, username, globalName, avatarUrl };
 }
 
 function firstNonEmptyString(...values: unknown[]): string | null {
