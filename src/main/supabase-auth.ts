@@ -80,7 +80,7 @@ export class SupabaseAuth {
         skipBrowserRedirect: true,
         // `profile` supplies the display-name claims. Xbox Live authentication is
         // performed later from the provider access token.
-        scopes: provider === "microsoft" ? "email profile offline_access" : undefined,
+        scopes: provider === "microsoft" ? "email profile offline_access XboxLive.signin XboxLive.offline_access" : undefined,
         queryParams: provider === "microsoft" ? { prompt: "select_account" } : undefined
       }
     });

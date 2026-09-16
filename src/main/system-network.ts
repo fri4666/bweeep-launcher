@@ -4,15 +4,29 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { net } from "electron";
+import { net, session } from "electron";
 import type { InstallFile } from "@xmcl/installer";
+
+let directSessionReady: Promise<Electron.Session> | null = null;
 
 export async function fetchWithSystemNetwork(url: string, init?: RequestInit): Promise<Response> {
   const target = requireHttpsUrl(url);
   try {
     return await net.fetch(target.toString(), { ...init, bypassCustomProtocolHandlers: true });
-  } catch (error) {
-    throw new Error(`네트워크 연결에 실패했습니다: ${target.hostname}`, { cause: error });
+  } catch (systemError) {
+    await writeNetworkAttempt("network.system.failed", target.hostname, systemError);
+    try {
+      const direct = await getDirectSession();
+      const response = await direct.fetch(target.toString(), { ...init, bypassCustomProtocolHandlers: true });
+      await writeNetworkAttempt("network.direct.succeeded", target.hostname);
+      return response;
+    } catch (directError) {
+      await writeNetworkAttempt("network.direct.failed", target.hostname, directError);
+      throw new Error(
+        `네트워크 연결에 실패했습니다: ${target.hostname} (시스템: ${networkReason(systemError)}, 직접: ${networkReason(directError)})`,
+        { cause: directError }
+      );
+    }
   }
 }
 
@@ -74,4 +88,25 @@ function requireHttpsUrl(value: string): URL {
   const url = new URL(value);
   if (url.protocol !== "https:") throw new Error("HTTPS 주소만 사용할 수 있습니다.");
   return url;
+}
+
+async function getDirectSession(): Promise<Electron.Session> {
+  if (!directSessionReady) {
+    directSessionReady = (async () => {
+      const direct = session.fromPartition("bweeep-direct-network", { cache: false });
+      await direct.setProxy({ mode: "direct" });
+      return direct;
+    })();
+  }
+  return directSessionReady;
+}
+
+async function writeNetworkAttempt(event: string, host: string, error?: unknown): Promise<void> {
+  const { writeGameLog } = await import("./game-log.js");
+  await writeGameLog(event, error ? { host, reason: networkReason(error) } : { host });
+}
+
+function networkReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/https?:\/\/[^\s]+/g, "[url]").slice(0, 160);
 }
