@@ -23,6 +23,24 @@ function WindowControls() {
   );
 }
 
+function ProfileAvatar({ user }: { user: LauncherUser }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const showDiscordAvatar = user.provider === "discord" && Boolean(user.avatarUrl) && !imageFailed;
+
+  if (showDiscordAvatar) {
+    return <img src={user.avatarUrl!} alt="" onError={() => setImageFailed(true)} />;
+  }
+
+  return (
+    <span className="avatarFallback" aria-label="기본 프로필 이미지">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="8" r="3.5" />
+        <path d="M5 20c.8-3.4 3.1-5.2 7-5.2s6.2 1.8 7 5.2" />
+      </svg>
+    </span>
+  );
+}
+
 function App() {
   const [servers, setServers] = useState<ServerPreset[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -447,7 +465,7 @@ function App() {
           </div>
           <div className="topbarActions">
             <button className="profileBox" onClick={() => setProfileOpen(true)}>
-              {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <span className="avatarFallback">{user.username.slice(0, 1).toUpperCase()}</span>}
+              <ProfileAvatar user={user} />
               <div><strong>{user.globalName ?? user.username}</strong><small>{user.provider === "microsoft" ? "Microsoft" : "Discord"}</small></div>
             </button>
             <WindowControls />

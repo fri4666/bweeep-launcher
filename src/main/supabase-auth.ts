@@ -78,9 +78,9 @@ export class SupabaseAuth {
       options: {
         redirectTo: defaultRedirectUri,
         skipBrowserRedirect: true,
-        // Keep the Supabase OAuth exchange limited to OpenID Connect scopes.
-        // Xbox Live authentication is performed later from the provider access token.
-        scopes: provider === "microsoft" ? "email offline_access" : undefined,
+        // `profile` supplies the display-name claims. Xbox Live authentication is
+        // performed later from the provider access token.
+        scopes: provider === "microsoft" ? "email profile offline_access" : undefined,
         queryParams: provider === "microsoft" ? { prompt: "select_account" } : undefined
       }
     });
@@ -482,16 +482,24 @@ function toLauncherUser(user: {
 }): LauncherUser {
   const metadata = user.user_metadata ?? {};
   const provider = user.app_metadata?.provider === "azure" ? "microsoft" : "discord";
-  const username = typeof metadata.user_name === "string"
-    ? metadata.user_name
-    : typeof metadata.preferred_username === "string"
-      ? metadata.preferred_username
-      : typeof user.email === "string" && user.email.trim()
-        ? user.email
-        : provider === "microsoft" ? "Microsoft 사용자" : "Discord 사용자";
-  const globalName = typeof metadata.full_name === "string"
-    ? metadata.full_name
-    : typeof metadata.name === "string" ? metadata.name : null;
+  const username = firstNonEmptyString(
+    metadata.user_name,
+    metadata.preferred_username,
+    metadata.name,
+    user.email
+  ) ?? (provider === "microsoft" ? "Microsoft 사용자" : "Discord 사용자");
+  const globalName = firstNonEmptyString(
+    metadata.full_name,
+    metadata.name,
+    [metadata.given_name, metadata.family_name].filter((value): value is string => typeof value === "string").join(" ")
+  );
   const avatarUrl = typeof metadata.avatar_url === "string" ? metadata.avatar_url : null;
   return { id: user.id, username, globalName, avatarUrl, provider };
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
 }
