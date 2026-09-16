@@ -1,5 +1,4 @@
 import path from "node:path";
-import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import { MinecraftFolder, Version, createMinecraftProcessWatcher, launch } from "@xmcl/core";
 import {
@@ -20,6 +19,7 @@ import {
 } from "@xmcl/installer";
 import type { ModpackManifest, SyncProgress } from "../shared/types.js";
 import { ensureCompanionMod } from "./companion-mod.js";
+import type { LaunchIdentity } from "./launch-identity.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
 
 type ProgressSink = (event: SyncProgress) => void;
@@ -77,22 +77,6 @@ export async function installAndLaunch(
   });
   watcher.once("error", () => onExit());
   return { pid: gameProcess.pid ?? 0, version: version || baseVersion };
-}
-
-export interface LaunchIdentity {
-  id: string;
-  name: string;
-  accessToken: string;
-}
-
-export function createOfflineLaunchIdentity(accountId: string, displayName: string): LaunchIdentity {
-  const digest = crypto.createHash("md5").update(`OfflinePlayer:${accountId}`).digest("hex");
-  const readable = displayName.normalize("NFKD").replace(/[^A-Za-z0-9_]/g, "").slice(0, 11);
-  return {
-    id: digest,
-    name: readable.length >= 3 ? `${readable}_${digest.slice(0, 4)}` : `Bweep_${digest.slice(0, 10)}`,
-    accessToken: crypto.randomUUID().replaceAll("-", "")
-  };
 }
 
 async function resolveRuntime(instanceDir: string, runtime: ReturnType<typeof createDefaultNodeInstallRuntime>, progress: ProgressSink): Promise<string> {

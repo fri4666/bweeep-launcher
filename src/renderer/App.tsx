@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   AccessStatus,
@@ -45,6 +45,8 @@ function App() {
   const [servers, setServers] = useState<ServerPreset[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
+  const [serverChecking, setServerChecking] = useState(false);
+  const [serverCheckedAt, setServerCheckedAt] = useState<number | null>(null);
   const [instanceRoot, setInstanceRoot] = useState("");
   const [logs, setLogs] = useState<SyncProgress[]>([]);
   const [syncing, setSyncing] = useState(false);
@@ -95,7 +97,6 @@ function App() {
         setConnection(savedConnection.value);
         setHostInput(savedConnection.value.host);
         setPortInput(String(savedConnection.value.port));
-        void refreshServerStatus(savedConnection.value);
       }
       if (updateStatus.status === "fulfilled") {
         setLauncherUpdate(updateStatus.value);
@@ -135,18 +136,8 @@ function App() {
     };
   }, []);
 
-  const selected = useMemo(
-    () => servers.find((server) => server.id === selectedId) ?? servers[0],
-    [servers, selectedId]
-  );
-
-  const canUseLauncher = Boolean(access?.allowed);
-  const gameBusy = gameStatus.state !== "idle";
-  const progressPercent = syncProgress?.total
-    ? Math.round(((syncProgress.completed ?? 0) / syncProgress.total) * 100)
-    : 0;
-
-  async function refreshServerStatus(nextConnection: ServerConnection) {
+  const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
+    setServerChecking(true);
     try {
       setServerStatus(await window.bweeep.serverStatus(nextConnection));
     } catch {
@@ -156,8 +147,47 @@ function App() {
         port: nextConnection.port,
         message: "서버 상태를 확인할 수 없음"
       });
+    } finally {
+      setServerCheckedAt(Date.now());
+      setServerChecking(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!connection) return;
+    let checkInFlight = false;
+    const check = async () => {
+      if (checkInFlight) return;
+      checkInFlight = true;
+      try {
+        await refreshServerStatus(connection);
+      } finally {
+        checkInFlight = false;
+      }
+    };
+    void check();
+    const interval = window.setInterval(() => void check(), 5_000);
+    return () => window.clearInterval(interval);
+  }, [connection, refreshServerStatus]);
+
+  const selected = useMemo(
+    () => servers.find((server) => server.id === selectedId) ?? servers[0],
+    [servers, selectedId]
+  );
+
+  const canUseLauncher = Boolean(access?.allowed);
+  const gameBusy = gameStatus.state !== "idle";
+  const serverStatusMessage = serverChecking ? "서버 연결 확인 중" : serverStatus?.message ?? "서버 확인 중";
+  const serverStatusDetail = connection
+    ? serverChecking
+      ? `${connection.host}:${connection.port} · 실시간 검사 중`
+      : serverCheckedAt
+        ? `${connection.host}:${connection.port} · ${serverStatus?.latencyMs ?? "-"}ms · ${new Date(serverCheckedAt).toLocaleTimeString("ko-KR", { hour12: false })} 확인`
+        : `${connection.host}:${connection.port} · 검사 대기 중`
+    : "연결 정보 확인 중";
+  const progressPercent = syncProgress?.total
+    ? Math.round(((syncProgress.completed ?? 0) / syncProgress.total) * 100)
+    : 0;
 
   async function refreshAccessStatus(fallbackUser: LauncherUser | null = user) {
     setNotice("");
@@ -270,7 +300,6 @@ function App() {
       setConnection(saved);
       setHostInput(saved.host);
       setPortInput(String(saved.port));
-      await refreshServerStatus(saved);
       setNotice("서버 주소를 저장했습니다.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -306,7 +335,6 @@ function App() {
       setLogs([]);
       setResult(null);
       setSyncProgress(null);
-      await refreshServerStatus(saved);
       setNotice("런처 설정을 기본값으로 되돌렸습니다.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -437,8 +465,8 @@ function App() {
       <section className="content">
         <header className="topbar">
           <div className="searchStub">
-            <span className={serverStatus?.online ? "statusDot online" : "statusDot"} />
-            <div><strong>{serverStatus?.message ?? "서버 확인 중"}</strong><small>{connection ? `${connection.host}:${connection.port}` : "연결 정보 확인 중"}</small></div>
+            <span className={`statusDot ${serverChecking ? "checking" : serverStatus?.online ? "online" : ""}`} />
+            <div><strong>{serverStatusMessage}</strong><small>{serverStatusDetail}</small></div>
           </div>
           <div className="topbarActions">
             <button className="profileBox" onClick={() => setProfileOpen(true)}>
@@ -463,7 +491,7 @@ function App() {
           <div className="actionDock" aria-live="polite">
             <section className={`updatePanel ${syncing ? "isSyncing" : result ? "isReady" : syncError ? "isError" : ""}`}>
                 <div className="updatePanelTop">
-                  <span>{syncing ? "업데이트 중" : syncError ? "업데이트 실패" : result ? "준비 완료" : serverStatus?.message ?? "서버 확인 중"}</span>
+                  <span>{syncing ? "업데이트 중" : syncError ? "업데이트 실패" : result ? "준비 완료" : serverStatusMessage}</span>
                   {syncing && <strong>{progressPercent}%</strong>}
                 </div>
                 <strong className="updateTitle">
@@ -489,7 +517,7 @@ function App() {
           </div>
         </section>
         <section className="serverSummary" aria-label="모드팩 정보">
-          <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatus?.message ?? "확인 중"}</strong></article>
+          <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatusMessage}</strong><small>{serverCheckedAt && !serverChecking ? `${serverStatus?.latencyMs ?? "-"}ms · ${new Date(serverCheckedAt).toLocaleTimeString("ko-KR", { hour12: false })}` : "실시간 확인"}</small></article>
           <article className="quickFact"><span className="factIcon">◆</span><span>모드팩</span><strong>{selected?.name ?? "없음"}</strong></article>
           <article className="quickFact"><span className="factIcon">▰</span><span>Minecraft</span><strong>{selected?.minecraftVersion ?? "-"}</strong></article>
           <article className="quickFact"><span className="factIcon">◈</span><span>모드 로더</span><strong>{selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong></article>

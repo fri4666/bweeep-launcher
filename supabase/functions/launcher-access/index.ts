@@ -145,7 +145,7 @@ async function handleRequest(request: Request): Promise<Response> {
       }
 
       const ticket = createGameTicket();
-      const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+      const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
       await supabaseAdmin.from("launcher_game_tickets").delete().lt("expires_at", new Date().toISOString());
       const { error: insertError } = await supabaseAdmin.from("launcher_game_tickets").insert({
         ticket_hash: await sha256(ticket),

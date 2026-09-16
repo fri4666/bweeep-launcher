@@ -5,7 +5,7 @@ import path from "node:path";
 import type { AccessStatus, CreatedInvite, LauncherUser, LoginCancellationResult, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
 import { parseAuthCallback } from "./deep-link.js";
 import { authFingerprint, writeAuthLog } from "./auth-log.js";
-import { createOfflineLaunchIdentity, type LaunchIdentity } from "./minecraft-runtime.js";
+import { createOfflineLaunchIdentity, type LaunchIdentity } from "./launch-identity.js";
 
 interface SupabaseConfig {
   url?: string;
@@ -268,7 +268,7 @@ export class SupabaseAuth {
 
   async createGameLaunchAuthorization(user: LauncherUser | null): Promise<GameLaunchAuthorization> {
     if (!user) throw new Error("런처 로그인이 필요합니다.");
-    const identity = createOfflineLaunchIdentity(user.id, user.globalName ?? user.username);
+    const identity = createOfflineLaunchIdentity(user.id, user.username);
     const data = await this.invokeFunction<FunctionGameTicket>(
       { action: "gameTicket", gameName: identity.name },
       "게임 서버 인증표를 만들지 못했습니다."

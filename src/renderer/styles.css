@@ -60,23 +60,48 @@ input:focus-visible {
 
 .brand {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 2px;
+  text-align: center;
+}
+
+.brand > div {
+  width: 100%;
 }
 
 .brandMark {
+  position: relative;
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
+  width: 116px;
+  height: 116px;
+  flex: 0 0 116px;
+}
+
+.brandMark::after {
+  position: absolute;
+  right: 7px;
+  bottom: 1px;
+  left: 7px;
+  height: 18px;
+  content: "";
+  background: rgba(0, 0, 0, 0.48);
+  border-radius: 50%;
+  filter: blur(8px);
+  transform: scaleX(0.86);
 }
 
 .brandMark img {
+  position: relative;
+  z-index: 1;
   display: block;
-  width: 44px;
-  height: 44px;
+  width: 116px;
+  height: 116px;
   object-fit: contain;
   image-rendering: pixelated;
+  filter: drop-shadow(0 10px 8px rgba(0, 0, 0, 0.32));
+  transform: scale(1.8);
 }
 
 .brandWord {
@@ -301,6 +326,16 @@ h3 {
   box-shadow: 0 0 0 4px rgba(132, 173, 114, 0.12);
 }
 
+.statusDot.checking {
+  background: #d9b072;
+  box-shadow: 0 0 0 4px rgba(217, 176, 114, 0.14);
+  animation: statusPulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes statusPulse {
+  to { opacity: 0.45; transform: scale(0.82); }
+}
+
 .topbarActions {
   display: flex;
   align-items: center;
@@ -500,11 +535,13 @@ h3 {
 }
 
 .entryCard > img {
-  width: 72px;
-  height: 72px;
-  margin-bottom: 18px;
+  width: 160px;
+  height: 160px;
+  margin-bottom: 26px;
   object-fit: contain;
   image-rendering: pixelated;
+  filter: drop-shadow(0 18px 13px rgba(0, 0, 0, 0.48));
+  transform: scale(1.7);
 }
 
 .entryCard h1 {
@@ -771,7 +808,7 @@ button:disabled {
 }
 
 .factIcon {
-  grid-row: span 2;
+  grid-row: span 3;
   align-self: center;
   color: #d9b072;
   font-size: 15px;
@@ -788,6 +825,13 @@ button:disabled {
   color: #e4e1da;
   font-size: 13px;
   line-height: 1.35;
+}
+
+.quickFact small {
+  grid-column: 2;
+  margin-top: 2px;
+  color: #77756f;
+  font-size: 10px;
 }
 
 .modalBackdrop {

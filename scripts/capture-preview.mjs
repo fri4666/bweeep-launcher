@@ -18,6 +18,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   };
   window.__exitGame = () => emitGameStatus({ state: "idle" });
   window.__copiedText = null;
+  window.__serverStatusCalls = 0;
   const result = {
     manifest: {
       schemaVersion: 1,
@@ -47,13 +48,16 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       }
     ],
     defaultInstanceRoot: async () => "C:\\Bweeep\\instances",
-    serverStatus: async () => ({
-      online: true,
-      host: "server.fri4666.com",
-      port: 25565,
-      latencyMs: 18,
-      message: "서버 연결 가능"
-    }),
+    serverStatus: async () => {
+      window.__serverStatusCalls += 1;
+      return {
+        online: true,
+        host: "server.fri4666.com",
+        port: 25565,
+        latencyMs: 18,
+        message: "서버 연결 가능"
+      };
+    },
     accessStatus: async () => ({
       loggedIn: previewSignedIn,
       allowed: previewSignedIn && !previewAccessUnavailable && !previewAccessDenied,
@@ -151,6 +155,8 @@ if (accessUnavailable) {
   await page.getByRole("button", { name: "게임 시작" }).waitFor();
   interactionChecks.push("invite-code-paste");
 } else if (signedIn) {
+  await page.waitForFunction(() => window.__serverStatusCalls >= 2, null, { timeout: 7_000 });
+  interactionChecks.push("live-server-polling");
   await page.getByRole("button", { name: "설정" }).click();
   await page.waitForTimeout(100);
   await page.getByRole("button", { name: "10명용 초대 만들기" }).click();

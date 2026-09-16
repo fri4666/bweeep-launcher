@@ -1,6 +1,6 @@
 {
   "name": "bweeep-launcher",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "description": "붸에엡 Minecraft modpack launcher",
   "author": "fri4666",
@@ -57,7 +57,7 @@
     },
     "artifactName": "Bweeep-Setup-${version}.${ext}",
     "asar": true,
-    "icon": "build/icon.ico",
+    "icon": "build/icon-source-v2.png",
     "protocols": [
       {
         "name": "Bweeep Invite Link",
