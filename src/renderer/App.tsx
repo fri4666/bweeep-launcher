@@ -30,6 +30,8 @@ function App() {
   const [instanceRoot, setInstanceRoot] = useState("");
   const [logs, setLogs] = useState<SyncProgress[]>([]);
   const [syncing, setSyncing] = useState(false);
+  const [loginPending, setLoginPending] = useState<LoginProvider | null>(null);
+  const [syncError, setSyncError] = useState("");
   const [result, setResult] = useState<SyncResult | null>(null);
   const [user, setUser] = useState<LauncherUser | null>(null);
   const [access, setAccess] = useState<AccessStatus | null>(null);
@@ -85,10 +87,14 @@ function App() {
       setSyncProgress(event);
     });
     const unsubscribeSession = window.bweeep.onAuthSession((nextUser: LauncherUser) => {
+      setLoginPending(null);
       setUser(nextUser);
       void refreshAccessStatus(nextUser);
     });
-    const unsubscribeError = window.bweeep.onAuthError(setNotice);
+    const unsubscribeError = window.bweeep.onAuthError((message) => {
+      setLoginPending(null);
+      setNotice(message);
+    });
     const acceptInvite = (code: string) => {
       setInviteInput(code);
       setSettingsOpen(true);
@@ -151,14 +157,18 @@ function App() {
   }
 
   async function login(provider: LoginProvider) {
+    if (loginPending) return;
     setNotice("");
+    setLoginPending(provider);
     try {
       const result = await window.bweeep.login(provider);
       if (!result.configured) {
+        setLoginPending(null);
         setNotice(result.message ?? "로그인 설정이 필요합니다.");
         return;
       }
       if (result.user) {
+        setLoginPending(null);
         setUser(result.user);
         const status = await window.bweeep.accessStatus();
         setAccess(status);
@@ -167,8 +177,15 @@ function App() {
         setNotice(result.message ?? "브라우저에서 로그인을 완료해 주세요.");
       }
     } catch (error) {
+      setLoginPending(null);
       setNotice(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  async function cancelLogin() {
+    const result = await window.bweeep.cancelLogin();
+    if (result.cancelled) setLoginPending(null);
+    setNotice(result.message);
   }
 
   async function redeemInvite() {
@@ -276,6 +293,7 @@ function App() {
     if (!selected || !instanceRoot.trim() || !canUseLauncher) return;
     setSyncing(true);
     setLogs([]);
+    setSyncError("");
     setResult(null);
     setSyncProgress(null);
     try {
@@ -285,9 +303,11 @@ function App() {
       });
       setResult(next);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSyncError(message);
       setLogs((current) => [
         ...current,
-        { kind: "error", message: error instanceof Error ? error.message : String(error) }
+        { kind: "error", message }
       ]);
     } finally {
       setSyncing(false);
@@ -298,6 +318,7 @@ function App() {
     if (!selected || !instanceRoot.trim() || !canUseLauncher) return;
     setSyncing(true);
     setLogs([]);
+    setSyncError("");
     setResult(null);
     setSyncProgress(null);
     try {
@@ -305,6 +326,7 @@ function App() {
       setNotice(`Minecraft를 시작했습니다. (PID ${next.pid})`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      setSyncError(message);
       setLogs((current) => [...current, { kind: "error", message }]);
       setNotice(message);
     } finally {
@@ -335,15 +357,16 @@ function App() {
           <h1>로그인하고 시작하세요</h1>
           <p className="entryDescription">친구 전용 모드팩과 서버는 로그인 후에 표시됩니다.</p>
           <div className="entryChoices">
-            <button onClick={() => void login("discord")}>
-              <strong>Discord로 로그인</strong>
-              <span>Discord 프로필로 참가</span>
+            <button disabled={Boolean(loginPending)} onClick={() => void login("discord")}>
+              <strong>{loginPending === "discord" ? "Discord 로그인 진행 중" : "Discord로 로그인"}</strong>
+              <span>{loginPending === "discord" ? "브라우저에서 인증을 완료해 주세요" : "Discord 프로필로 참가"}</span>
             </button>
-            <button onClick={() => void login("microsoft")}>
-              <strong>Microsoft로 로그인</strong>
-              <span>Minecraft Java 프로필로 참가</span>
+            <button disabled={Boolean(loginPending)} onClick={() => void login("microsoft")}>
+              <strong>{loginPending === "microsoft" ? "Microsoft 로그인 진행 중" : "Microsoft로 로그인"}</strong>
+              <span>{loginPending === "microsoft" ? "브라우저에서 인증을 완료해 주세요" : "Minecraft Java 프로필로 참가"}</span>
             </button>
           </div>
+          {loginPending && <button className="cancelLoginButton" onClick={() => void cancelLogin()}>로그인 취소 · 다른 방법 선택</button>}
           {notice && <p className="notice">{notice}</p>}
         </section>
       </main>
@@ -443,14 +466,15 @@ function App() {
             </div>
           </div>
           <div className="actionDock" aria-live="polite">
-            <section className={`updatePanel ${syncing ? "isSyncing" : result ? "isReady" : ""}`}>
+            <section className={`updatePanel ${syncing ? "isSyncing" : result ? "isReady" : syncError ? "isError" : ""}`}>
                 <div className="updatePanelTop">
-                  <span>{syncing ? "업데이트 중" : result ? "준비 완료" : serverStatus?.message ?? "서버 확인 중"}</span>
+                  <span>{syncing ? "업데이트 중" : syncError ? "업데이트 실패" : result ? "준비 완료" : serverStatus?.message ?? "서버 확인 중"}</span>
                   {syncing && <strong>{progressPercent}%</strong>}
                 </div>
                 <strong className="updateTitle">
                   {syncing
                     ? `${syncProgress?.total ?? 0}개 파일 중 ${syncProgress?.completed ?? 0}개 처리`
+                    : syncError ? "업데이트를 완료하지 못했어요"
                     : result ? "같은 버전으로 준비됐어요" : connection ? `${connection.host}:${connection.port}` : "연결 정보 확인 중"}
                 </strong>
                 {syncing ? (
@@ -458,12 +482,14 @@ function App() {
                     <div className="progressTrack"><i style={{ width: `${progressPercent}%` }} /></div>
                     <p>{syncProgress?.filePath ?? "서버 파일 목록을 확인하는 중"}</p>
                   </>
+                ) : syncError ? (
+                  <p>{syncError}</p>
                 ) : result ? (
                   <p>다운로드 {result?.downloaded ?? 0}개 · 기존 파일 {result?.skipped ?? 0}개 유지</p>
                 ) : <p>실행하면 필요한 파일만 자동으로 맞춥니다.</p>}
               </section>
             <button className="launchButton" disabled={!canUseLauncher || syncing} onClick={launchSelected}>
-              {syncing ? "업데이트 중" : "게임 시작"}
+              {syncing ? "업데이트 중" : syncError ? "다시 시도" : "게임 시작"}
             </button>
           </div>
         </section>

@@ -45,7 +45,9 @@ export async function installAndLaunch(
     version,
     accessToken: identity.accessToken,
     gameProfile: { id: identity.id, name: identity.name },
-    userType: "legacy",
+    // @xmcl defaults to the current Microsoft account type ("msa").
+    // Only the Discord-derived offline identity must override that default.
+    ...(identity.userType === "legacy" ? { userType: "legacy" as const } : {}),
     quickPlayMultiplayer: `${manifest.server.host}:${manifest.server.port}`,
     server: { ip: manifest.server.host, port: manifest.server.port },
     minMemory: 2048,

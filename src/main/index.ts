@@ -5,7 +5,7 @@ import os from "node:os";
 import { getServerPresets } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
-import { SupabaseAuth } from "./supabase-auth.js";
+import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
 import { installAndLaunch } from "./minecraft-runtime.js";
 import { AuthCallbackError, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
@@ -57,7 +57,18 @@ function queueDeepLink(url: string, source: "argv" | "second-instance" | "open-u
     }
     queuedAuthCallbacks.add(callbackId);
     pendingAuthUrls.push(url);
-    void writeAuthLog("callback.queued", { callbackId, source, queueDepth: pendingAuthUrls.length });
+    const parsedUrl = new URL(url);
+    void writeAuthLog("callback.queued", {
+      callbackId,
+      source,
+      queueDepth: pendingAuthUrls.length,
+      callbackProtocol: parsedUrl.protocol,
+      callbackHost: parsedUrl.hostname,
+      callbackPath: parsedUrl.pathname,
+      parameterNames: [...parsedUrl.searchParams.keys()].sort(),
+      flowId: parsedUrl.searchParams.get("sb_flow_id") ? authFingerprint(parsedUrl.searchParams.get("sb_flow_id")!) : null,
+      stateId: parsedUrl.searchParams.get("state") ? authFingerprint(parsedUrl.searchParams.get("state")!) : null
+    });
   }
   if (app.isReady()) schedulePendingDeepLinks();
 }
@@ -92,6 +103,11 @@ async function processPendingDeepLinks(): Promise<void> {
         window.webContents.send("auth:session", sessionUser);
       }
     } catch (error) {
+      await auth.cancelPendingLogin(error instanceof AuthCallbackError ? error.category : "exchange_error");
+      if (error instanceof LoginCancelledError) {
+        await writeAuthLog("callback.cancelled_ignored", { callbackId });
+        continue;
+      }
       if (error instanceof AuthCallbackError && error.flowId) {
         const flowId = authFingerprint(error.flowId);
         if (completedAuthFlows.has(flowId)) {
@@ -102,6 +118,7 @@ async function processPendingDeepLinks(): Promise<void> {
       await writeAuthLog("callback.error.delivered", {
         callbackId,
         category: error instanceof AuthCallbackError ? error.category : "exchange_error",
+        ...(error instanceof AuthCallbackError ? error.diagnostics : {}),
         message: error instanceof Error ? error.message : String(error)
       });
       notifyAuthError(error);
@@ -202,6 +219,7 @@ app.whenReady().then(() => {
     return syncModpack({ instanceDir: request.instanceDir, manifest }, progress);
   });
   ipcMain.handle("account:login", (_event, provider: LoginProvider) => auth.startLogin(provider));
+  ipcMain.handle("account:cancelLogin", () => auth.cancelPendingLogin("user_cancelled"));
   ipcMain.handle("account:logout", async () => {
     await auth.signOut();
     sessionUser = null;

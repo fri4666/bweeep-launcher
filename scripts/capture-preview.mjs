@@ -55,7 +55,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       reason: previewAccessUnavailable ? "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요." : previewAccessDenied ? "초대 코드가 필요합니다." : previewSignedIn ? "초대 확인 완료" : "로그인이 필요합니다.",
       user: previewSignedIn ? { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, provider: "discord" } : undefined
     }),
-    login: async () => ({ configured: true, user: null }),
+    login: async () => ({ configured: true, pending: true, user: null, message: "브라우저에서 Discord 로그인을 완료해 주세요." }),
+    cancelLogin: async () => ({ cancelled: true, message: "로그인을 취소했습니다. 다른 방법을 선택할 수 있습니다." }),
     logout: async () => ({ loggedIn: false, allowed: false, isAdmin: false, reason: "로그아웃했습니다." }),
     redeemInvite: async (code) => {
       if (code !== "BWEEP-123456789ABC-123456789ABC") throw new Error(`초대 코드가 정규화되지 않았습니다: ${code}`);
@@ -159,6 +160,16 @@ if (accessUnavailable) {
   await page.waitForTimeout(480);
   await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
 } else {
+  await page.getByRole("button", { name: "Discord로 로그인" }).click();
+  await page.getByRole("button", { name: "Discord 로그인 진행 중" }).waitFor();
+  if (!(await page.getByRole("button", { name: "Microsoft로 로그인" }).isDisabled())) {
+    throw new Error("other login provider remained enabled during OAuth");
+  }
+  await page.getByRole("button", { name: "로그인 취소 · 다른 방법 선택" }).click();
+  if (await page.getByRole("button", { name: "Discord로 로그인" }).isDisabled()) {
+    throw new Error("login providers did not unlock after cancellation");
+  }
+  interactionChecks.push("login-lock-and-cancel");
   await page.screenshot({ path: "previews/bweeep-launcher-login-preview.png" });
 }
 

@@ -85,6 +85,11 @@ export interface LoginResult {
   message?: string;
 }
 
+export interface LoginCancellationResult {
+  cancelled: boolean;
+  message: string;
+}
+
 export interface AccessStatus {
   loggedIn: boolean;
   allowed: boolean;

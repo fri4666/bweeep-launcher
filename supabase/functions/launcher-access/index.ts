@@ -8,6 +8,24 @@ type RequestBody =
   | { action: "createInvite"; expiresInDays?: number; maxUses?: number }
   | { action: "manifest"; packId: string };
 
+interface ModpackFile {
+  path: string;
+  size: number;
+  sha256: string;
+  url: string;
+}
+
+interface ModpackManifest {
+  schemaVersion: number;
+  id: string;
+  name: string;
+  version: string;
+  minecraftVersion: string;
+  loader: { kind: string; version: string };
+  server: { host: string; port: number };
+  files: ModpackFile[];
+}
+
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 
 export default {
@@ -52,11 +70,14 @@ async function handleRequest(request: Request): Promise<Response> {
       auth: { autoRefreshToken: false, persistSession: false }
     });
 
-    let body: RequestBody;
+    let body: unknown;
     try {
-      body = (await request.json()) as RequestBody;
+      body = await request.json();
     } catch {
       return json({ message: "JSON 요청 본문이 필요합니다." }, 400);
+    }
+    if (!isRequestBody(body)) {
+      return json({ message: "지원하지 않는 요청입니다." }, 400);
     }
 
     const { data: membership, error: membershipError } = await supabaseAdmin
@@ -117,7 +138,8 @@ async function handleRequest(request: Request): Promise<Response> {
         return json({ message: "활성 모드팩 release를 찾지 못했습니다." }, 404);
       }
 
-      return json({ manifest: data.manifest, version: data.version });
+      const manifest = await resolveManifestDownloads(supabaseAdmin, data.manifest);
+      return json({ manifest, version: data.version });
     }
 
     const expiresInDays = clamp(body.expiresInDays, 14, 1, 30);
@@ -144,6 +166,15 @@ function clamp(value: unknown, fallback: number, min: number, max: number): numb
   return Math.min(Math.max(value, min), max);
 }
 
+function isRequestBody(value: unknown): value is RequestBody {
+  if (!value || typeof value !== "object" || !("action" in value)) return false;
+  const body = value as Record<string, unknown>;
+  if (body.action === "status") return true;
+  if (body.action === "redeem") return typeof body.code === "string";
+  if (body.action === "manifest") return typeof body.packId === "string";
+  return body.action === "createInvite";
+}
+
 function createInviteCode(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(12));
   return `BWEEP-${toHex(bytes.slice(0, 6))}-${toHex(bytes.slice(6))}`;
@@ -156,4 +187,48 @@ async function sha256(value: string): Promise<string> {
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+async function resolveManifestDownloads(
+  supabase: ReturnType<typeof createClient>,
+  rawManifest: unknown
+): Promise<ModpackManifest> {
+  if (!isModpackManifest(rawManifest)) {
+    throw new Error("Stored launcher manifest has an invalid shape.");
+  }
+
+  const files = await Promise.all(rawManifest.files.map(async (file) => {
+    const storageObject = parseStorageObjectUrl(file.url);
+    if (!storageObject) return file;
+
+    const { data, error } = await supabase.storage
+      .from(storageObject.bucket)
+      .createSignedUrl(storageObject.path, 15 * 60);
+    if (error || !data?.signedUrl) {
+      throw new Error(`Unable to sign modpack file ${file.path}.`);
+    }
+    return { ...file, url: data.signedUrl };
+  }));
+
+  return { ...rawManifest, files };
+}
+
+function parseStorageObjectUrl(value: string): { bucket: string; path: string } | null {
+  if (!value.startsWith("storage://")) return null;
+  const url = new URL(value);
+  const bucket = url.hostname;
+  const path = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/i.test(bucket) || !path || path.includes("..")) {
+    throw new Error("Stored launcher manifest contains an invalid storage object URL.");
+  }
+  return { bucket, path };
+}
+
+function isModpackManifest(value: unknown): value is ModpackManifest {
+  if (!value || typeof value !== "object") return false;
+  const manifest = value as Partial<ModpackManifest>;
+  return Array.isArray(manifest.files) && manifest.files.every((file) =>
+    file && typeof file.path === "string" && typeof file.url === "string" &&
+    typeof file.size === "number" && typeof file.sha256 === "string"
+  );
 }

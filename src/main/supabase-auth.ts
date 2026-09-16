@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { app, safeStorage, shell } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { AccessStatus, CreatedInvite, LauncherUser, LoginProvider, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
+import type { AccessStatus, CreatedInvite, LauncherUser, LoginCancellationResult, LoginProvider, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
 import { parseAuthCallback } from "./deep-link.js";
 import { authFingerprint, writeAuthLog } from "./auth-log.js";
 import { createDiscordLaunchIdentity, type LaunchIdentity } from "./minecraft-runtime.js";
@@ -48,6 +48,8 @@ class InvalidLauncherSessionError extends Error {
 export class SupabaseAuth {
   private client: SupabaseClient | null = null;
   private loginInFlight = false;
+  private activeLoginFlowId: string | null = null;
+  private cancelledLoginFlowIds = new Set<string>();
 
   async startLogin(provider: LoginProvider): Promise<LoginResult> {
     await writeAuthLog("login.start.requested", { provider, alreadyInFlight: this.loginInFlight });
@@ -65,10 +67,16 @@ export class SupabaseAuth {
 
     const supabaseProvider = provider === "microsoft" ? "azure" : "discord";
     this.loginInFlight = true;
+    const configuredRedirectUri = (await readConfig()).redirectUri;
+    if (configuredRedirectUri && configuredRedirectUri !== defaultRedirectUri) {
+      this.loginInFlight = false;
+      await writeAuthLog("login.start.failed", { provider, reason: "invalid_redirect_uri" });
+      throw new Error(`런처 OAuth 콜백 주소는 ${defaultRedirectUri}이어야 합니다.`);
+    }
     const { data, error } = await client.auth.signInWithOAuth({
       provider: supabaseProvider,
       options: {
-        redirectTo: (await readConfig()).redirectUri ?? defaultRedirectUri,
+        redirectTo: defaultRedirectUri,
         skipBrowserRedirect: true,
         scopes: provider === "microsoft" ? "email offline_access XboxLive.signin" : undefined,
         queryParams: provider === "microsoft" ? { prompt: "select_account" } : undefined
@@ -83,8 +91,10 @@ export class SupabaseAuth {
     await writeAuthLog("login.start.ready", {
       provider,
       flowId: data.flowId ? authFingerprint(data.flowId) : null,
-      authorizationUrl: authFingerprint(data.url)
+      authorizationUrl: authFingerprint(data.url),
+      authorizationContext: summarizeAuthorizationUrl(data.url)
     });
+    this.activeLoginFlowId = data.flowId ?? null;
 
     try {
       await shell.openExternal(data.url);
@@ -98,11 +108,16 @@ export class SupabaseAuth {
   }
 
   async completeCallback(rawUrl: string): Promise<LauncherUser> {
+    let ownsActiveFlow = false;
     try {
       const client = await this.requireClient();
       const callbackId = authFingerprint(rawUrl);
       await writeAuthLog("callback.exchange.started", { callbackId });
       const { code, flowId } = parseAuthCallback(rawUrl);
+      if (flowId && this.cancelledLoginFlowIds.has(flowId)) {
+        throw new LoginCancelledError();
+      }
+      ownsActiveFlow = this.loginInFlight && (!this.activeLoginFlowId || this.activeLoginFlowId === flowId);
       const codeId = authFingerprint(code);
       const safeFlowId = flowId ? authFingerprint(flowId) : null;
       await writeAuthLog("callback.exchange.requested", { callbackId, codeId, flowId: safeFlowId });
@@ -132,8 +147,22 @@ export class SupabaseAuth {
       });
       throw error;
     } finally {
-      this.loginInFlight = false;
+      if (ownsActiveFlow) {
+        this.loginInFlight = false;
+        this.activeLoginFlowId = null;
+      }
     }
+  }
+
+  async cancelPendingLogin(reason: string, flowId: string | null = null): Promise<LoginCancellationResult> {
+    if (!this.loginInFlight || (flowId && this.activeLoginFlowId && flowId !== this.activeLoginFlowId)) {
+      return { cancelled: false, message: "진행 중인 로그인이 없습니다." };
+    }
+    if (this.activeLoginFlowId) this.cancelledLoginFlowIds.add(this.activeLoginFlowId);
+    this.loginInFlight = false;
+    this.activeLoginFlowId = null;
+    await writeAuthLog("login.flow.cancelled", { reason });
+    return { cancelled: true, message: "로그인을 취소했습니다. 다른 방법을 선택할 수 있습니다." };
   }
 
   async restoreUser(): Promise<LauncherUser | null> {
@@ -293,6 +322,26 @@ export class SupabaseAuth {
       throw new InvalidLauncherSessionError();
     }
     return accessToken;
+  }
+}
+
+function summarizeAuthorizationUrl(rawUrl: string): Record<string, unknown> {
+  const url = new URL(rawUrl);
+  const redirectTo = url.searchParams.get("redirect_to");
+  return {
+    host: url.hostname,
+    path: url.pathname,
+    parameterNames: [...url.searchParams.keys()].sort(),
+    redirectTo,
+    redirectToMatchesLauncher: redirectTo === defaultRedirectUri,
+    stateId: url.searchParams.get("state") ? authFingerprint(url.searchParams.get("state")!) : null
+  };
+}
+
+export class LoginCancelledError extends Error {
+  constructor() {
+    super("취소된 로그인 요청입니다.");
+    this.name = "LoginCancelledError";
   }
 }
 

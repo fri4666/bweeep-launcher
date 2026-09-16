@@ -547,6 +547,26 @@ h3 {
   transform: translateY(0);
 }
 
+.entryChoices button:disabled {
+  cursor: wait;
+  opacity: 0.56;
+}
+
+.cancelLoginButton {
+  width: 100%;
+  margin-top: 10px;
+  padding: 11px 14px;
+  color: #d6c2a0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--control-radius);
+}
+
+.cancelLoginButton:hover {
+  color: #25221d;
+  background: #d9b072;
+}
+
 .entryChoices span {
   font-size: 12px;
   opacity: 0.72;
@@ -672,6 +692,15 @@ h3 {
 
 .updatePanel.isReady .updateTitle {
   color: #e6c28b;
+}
+
+.updatePanel.isError .updateTitle {
+  color: #f0a49b;
+}
+
+.updatePanel.isError p {
+  color: #f0b7ae;
+  white-space: normal;
 }
 
 .launchButton {
