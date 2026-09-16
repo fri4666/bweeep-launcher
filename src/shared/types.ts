@@ -123,11 +123,12 @@ export interface GameStatus {
 
 export interface LauncherUpdate {
   version: string;
-  downloadUrl: string;
   notes: string[];
 }
 
 export interface LauncherUpdateStatus {
-  state: "current" | "available" | "unavailable";
+  state: "checking" | "current" | "downloading" | "ready" | "installing" | "error";
   update?: LauncherUpdate;
+  percent?: number;
+  message?: string;
 }

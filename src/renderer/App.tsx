@@ -100,7 +100,7 @@ function App() {
       }
       if (updateStatus.status === "fulfilled") {
         setLauncherUpdate(updateStatus.value);
-        setUpdateOpen(updateStatus.value.state === "available");
+        setUpdateOpen(shouldShowUpdate(updateStatus.value));
       }
       if (initialGameStatus.status === "fulfilled") setGameStatus(initialGameStatus.value);
     });
@@ -114,6 +114,10 @@ function App() {
       void refreshAccessStatus(nextUser);
     });
     const unsubscribeGameStatus = window.bweeep.onGameStatus(setGameStatus);
+    const unsubscribeLauncherUpdate = window.bweeep.onLauncherUpdate((status) => {
+      setLauncherUpdate(status);
+      setUpdateOpen(shouldShowUpdate(status));
+    });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
       setNotice(message);
@@ -131,6 +135,7 @@ function App() {
       unsubscribeProgress();
       unsubscribeSession();
       unsubscribeGameStatus();
+      unsubscribeLauncherUpdate();
       unsubscribeError();
       unsubscribeInvite();
     };
@@ -182,7 +187,7 @@ function App() {
     ? serverChecking
       ? `${connection.host}:${connection.port} · 실시간 검사 중`
       : serverCheckedAt
-        ? `${connection.host}:${connection.port} · ${serverStatus?.latencyMs ?? "-"}ms · ${new Date(serverCheckedAt).toLocaleTimeString("ko-KR", { hour12: false })} 확인`
+        ? `${connection.host}:${connection.port} · ${serverStatus?.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)} 확인`
         : `${connection.host}:${connection.port} · 검사 대기 중`
     : "연결 정보 확인 중";
   const progressPercent = syncProgress?.total
@@ -517,7 +522,7 @@ function App() {
           </div>
         </section>
         <section className="serverSummary" aria-label="모드팩 정보">
-          <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatusMessage}</strong><small>{serverCheckedAt && !serverChecking ? `${serverStatus?.latencyMs ?? "-"}ms · ${new Date(serverCheckedAt).toLocaleTimeString("ko-KR", { hour12: false })}` : "실시간 확인"}</small></article>
+          <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatusMessage}</strong><small>{serverCheckedAt && !serverChecking ? `${serverStatus?.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)}` : "실시간 확인"}</small></article>
           <article className="quickFact"><span className="factIcon">◆</span><span>모드팩</span><strong>{selected?.name ?? "없음"}</strong></article>
           <article className="quickFact"><span className="factIcon">▰</span><span>Minecraft</span><strong>{selected?.minecraftVersion ?? "-"}</strong></article>
           <article className="quickFact"><span className="factIcon">◈</span><span>모드 로더</span><strong>{selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong></article>
@@ -637,17 +642,29 @@ function App() {
         </div>
       )}
 
-      {updateOpen && launcherUpdate?.update && (
-        <div className="modalBackdrop" onClick={() => setUpdateOpen(false)}>
+      {updateOpen && launcherUpdate && (
+        <div className="modalBackdrop">
           <section className="updateModal" aria-label="런처 업데이트" onClick={(event) => event.stopPropagation()}>
             <p className="eyebrow">Bweeep update</p>
-            <h2>새 런처 버전이 있어요</h2>
-            <p className="updateVersion">v{launcherUpdate.update.version}</p>
-            {launcherUpdate.update.notes.length > 0 && <ul>{launcherUpdate.update.notes.map((note) => <li key={note}>{note}</li>)}</ul>}
-            <div className="updateActions">
-              <button className="launchButton" onClick={() => void window.bweeep.openExternal(launcherUpdate.update!.downloadUrl)}>다운로드</button>
-              <button className="closeButton" onClick={() => setUpdateOpen(false)}>나중에</button>
-            </div>
+            <h2>{launcherUpdate.state === "error" ? "자동 업데이트에 실패했어요" : "런처를 자동 업데이트하고 있어요"}</h2>
+            {launcherUpdate.update && <p className="updateVersion">v{launcherUpdate.update.version}</p>}
+            {launcherUpdate.state === "downloading" && (
+              <>
+                <p>새 버전을 받는 중입니다. 완료되면 런처가 자동으로 재시작됩니다.</p>
+                <div className="progressTrack"><i style={{ width: `${launcherUpdate.percent ?? 0}%` }} /></div>
+                <small>{launcherUpdate.percent ?? 0}%</small>
+              </>
+            )}
+            {launcherUpdate.state === "ready" && <p>{gameBusy ? "게임이 종료되면 업데이트를 설치합니다." : "다운로드를 마쳤습니다. 잠시 후 자동으로 재시작합니다."}</p>}
+            {launcherUpdate.state === "installing" && <p>업데이트를 설치하고 다시 시작하는 중입니다.</p>}
+            {launcherUpdate.state === "error" && <p>{launcherUpdate.message ?? "자동 업데이트에 실패했습니다."}</p>}
+            {launcherUpdate.update && launcherUpdate.update.notes.length > 0 && <ul>{launcherUpdate.update.notes.map((note) => <li key={note}>{note}</li>)}</ul>}
+            {launcherUpdate.state === "error" && (
+              <div className="updateActions">
+                <button className="launchButton" onClick={() => void window.bweeep.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest")}>릴리스 페이지 열기</button>
+                <button className="closeButton" onClick={() => setUpdateOpen(false)}>닫기</button>
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -658,6 +675,20 @@ function App() {
 
 function normalizeInviteCode(value: string): string {
   return value.trim().toUpperCase();
+}
+
+function shouldShowUpdate(status: LauncherUpdateStatus): boolean {
+  return ["downloading", "ready", "installing", "error"].includes(status.state);
+}
+
+function formatRelativeTime(timestamp: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1_000));
+  if (seconds < 60) return "방금 전";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}분 전`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  return `${Math.floor(hours / 24)}일 전`;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

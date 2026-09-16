@@ -106,6 +106,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     onAuthSession: () => () => {},
     onAuthError: () => () => {},
     onInviteReceived: () => () => {},
+    onLauncherUpdate: () => () => {},
     onProgress: (listener) => {
       listeners.push(listener);
       return () => {
@@ -157,6 +158,11 @@ if (accessUnavailable) {
 } else if (signedIn) {
   await page.waitForFunction(() => window.__serverStatusCalls >= 2, null, { timeout: 7_000 });
   interactionChecks.push("live-server-polling");
+  const serverFact = await page.locator(".quickFact").filter({ hasText: "서버 상태" }).innerText();
+  if (!serverFact.includes("방금 전") || /\d{1,2}시\s*\d{1,2}분|\d{1,2}:\d{2}/.test(serverFact)) {
+    throw new Error(`server checked time is not relative: ${serverFact}`);
+  }
+  interactionChecks.push("relative-server-time");
   await page.getByRole("button", { name: "설정" }).click();
   await page.waitForTimeout(100);
   await page.getByRole("button", { name: "10명용 초대 만들기" }).click();

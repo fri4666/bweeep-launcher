@@ -1,6 +1,6 @@
 {
   "name": "bweeep-launcher",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "description": "붸에엡 Minecraft modpack launcher",
   "author": "fri4666",
@@ -24,6 +24,7 @@
     "@supabase/supabase-js": "^2.116.0",
     "@xmcl/core": "^2.16.2",
     "@xmcl/installer": "^6.3.3",
+    "electron-updater": "6.8.9",
     "yauzl": "npm:@xmcl/yauzl@2.10.0"
   },
   "devDependencies": {
@@ -56,6 +57,13 @@
       "output": "release-installer"
     },
     "artifactName": "Bweeep-Setup-${version}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "fri4666",
+        "repo": "bweeep-launcher"
+      }
+    ],
     "asar": true,
     "icon": "build/icon-source-v2.png",
     "protocols": [

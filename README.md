@@ -75,22 +75,12 @@ The first admin can join through the normal launcher flow. Once a person has red
 
 ## Launcher release updates
 
-The launcher checks `resources/launcher-update.json` during development. In a packaged build, place an override at `bweeep-config/launcher-update.json` next to `Bweeep.exe` so the endpoint can change without rebuilding the app:
+Packaged releases use `electron-updater` with the public GitHub Releases feed. The launcher checks at startup and every 30 minutes, downloads a newer NSIS release automatically, waits for Minecraft to exit when necessary, then installs and restarts itself. Upload all three generated assets for every release:
 
-```json
-{
-  "metadataUrl": "https://downloads.example.com/bweeep/latest.json"
-}
-```
+- `Bweeep-Setup-<version>.exe`
+- `Bweeep-Setup-<version>.exe.blockmap`
+- `latest.yml`
 
-The HTTPS metadata endpoint should return only a public download link and release notes:
-
-```json
-{
-  "version": "0.1.1",
-  "downloadUrl": "https://downloads.example.com/bweeep/Bweeep-win32-x64.zip",
-  "notes": ["초대 코드 흐름을 개선했습니다.", "서버 연결 설정을 추가했습니다."]
-}
-```
+`v0.1.14` is the bootstrap release for this updater, so users on `v0.1.13` or older must install it once manually. Later releases update automatically. Development builds skip remote update checks.
 
 The old `discord.local.json` and `access-policy.json` files are only legacy prototype artifacts and are no longer read by the launcher.

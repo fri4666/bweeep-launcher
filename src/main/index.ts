@@ -11,8 +11,8 @@ import { AuthCallbackError, parseAuthCallback, parseInviteLink } from "./deep-li
 import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
-import { checkLauncherUpdate } from "./launcher-update.js";
-import type { GameStatus, LauncherUser, SyncProgress } from "../shared/types.js";
+import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
+import type { GameStatus, LauncherUpdateStatus, LauncherUser, SyncProgress } from "../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
@@ -30,6 +30,13 @@ function setGameStatus(status: GameStatus): void {
   gameStatus = status;
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send("game:status", status);
+  }
+  if (status.state === "idle") installPendingLauncherUpdate();
+}
+
+function publishLauncherUpdate(status: LauncherUpdateStatus): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("launcher:updateStatus", status);
   }
 }
 
@@ -259,7 +266,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("server:connection", () => readServerConnection(defaultServer));
   ipcMain.handle("server:saveConnection", (_event, connection: unknown) => writeServerConnection(connection, defaultServer));
   ipcMain.handle("server:resetConnection", () => resetServerConnection(defaultServer));
-  ipcMain.handle("launcher:checkUpdate", () => checkLauncherUpdate());
+  ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:status", () => gameStatus);
@@ -311,6 +318,7 @@ app.whenReady().then(async () => {
       // The renderer will show its normal signed-out state when a persisted session cannot be restored.
     }
     await createWindow();
+    startLauncherUpdates(publishLauncherUpdate, () => gameStatus.state === "idle");
     schedulePendingDeepLinks();
   })();
 

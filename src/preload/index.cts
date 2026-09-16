@@ -47,6 +47,11 @@ const api = {
     ipcRenderer.on("game:status", listener);
     return () => ipcRenderer.off("game:status", listener);
   },
+  onLauncherUpdate: (callback: (status: LauncherUpdateStatus) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, status: LauncherUpdateStatus) => callback(status);
+    ipcRenderer.on("launcher:updateStatus", listener);
+    return () => ipcRenderer.off("launcher:updateStatus", listener);
+  },
   onAuthSession: (callback: (user: LauncherUser) => void) => {
     const listener = (_: Electron.IpcRendererEvent, user: LauncherUser) => callback(user);
     ipcRenderer.on("auth:session", listener);

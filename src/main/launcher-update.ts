@@ -1,52 +1,102 @@
 import { app } from "electron";
-import fsp from "node:fs/promises";
-import path from "node:path";
+import electronUpdater from "electron-updater";
 import type { LauncherUpdate, LauncherUpdateStatus } from "../shared/types.js";
 
-interface UpdateConfig {
-  metadataUrl?: string;
+const { autoUpdater } = electronUpdater;
+
+const CHECK_INTERVAL_MS = 30 * 60_000;
+let status: LauncherUpdateStatus = { state: "checking" };
+let started = false;
+let installScheduled = false;
+let publishStatus: (next: LauncherUpdateStatus) => void = () => undefined;
+let canInstallNow: () => boolean = () => true;
+
+export function getLauncherUpdateStatus(): LauncherUpdateStatus {
+  return status;
 }
 
-export async function checkLauncherUpdate(): Promise<LauncherUpdateStatus> {
-  const config = await readConfig();
-  if (!config.metadataUrl) return { state: "unavailable" };
+export function startLauncherUpdates(
+  publish: (next: LauncherUpdateStatus) => void,
+  canInstall: () => boolean
+): void {
+  publishStatus = publish;
+  canInstallNow = canInstall;
+  if (started) return;
+  started = true;
 
-  try {
-    const response = await fetch(config.metadataUrl, { signal: AbortSignal.timeout(4_000) });
-    if (!response.ok) return { state: "unavailable" };
-    const candidate = await response.json() as Partial<LauncherUpdate>;
-    if (!isUpdate(candidate)) return { state: "unavailable" };
-    const update: LauncherUpdate = { version: candidate.version, downloadUrl: candidate.downloadUrl, notes: candidate.notes ?? [] };
-    return compareVersions(update.version, app.getVersion()) > 0 ? { state: "available", update } : { state: "current" };
-  } catch {
-    return { state: "unavailable" };
+  if (!app.isPackaged) {
+    setStatus({ state: "current" });
+    return;
   }
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.on("checking-for-update", () => setStatus({ state: "checking" }));
+  autoUpdater.on("update-not-available", () => setStatus({ state: "current" }));
+  autoUpdater.on("update-available", (info) => {
+    setStatus({ state: "downloading", update: toLauncherUpdate(info), percent: 0 });
+  });
+  autoUpdater.on("download-progress", (progress) => {
+    setStatus({
+      state: "downloading",
+      update: status.update,
+      percent: Math.max(0, Math.min(100, Math.round(progress.percent)))
+    });
+  });
+  autoUpdater.on("update-downloaded", (event) => {
+    setStatus({ state: "ready", update: toLauncherUpdate(event) });
+    installPendingLauncherUpdate();
+  });
+  autoUpdater.on("error", (error) => {
+    if (status.state === "installing") return;
+    setStatus({ state: "error", update: status.update, message: safeUpdateError(error) });
+  });
+
+  void checkForUpdates();
+  const interval = setInterval(() => void checkForUpdates(), CHECK_INTERVAL_MS);
+  interval.unref();
 }
 
-function isUpdate(value: Partial<LauncherUpdate>): value is LauncherUpdate {
-  return typeof value.version === "string" && /^\d+\.\d+\.\d+$/.test(value.version) &&
-    typeof value.downloadUrl === "string" && /^https:\/\//i.test(value.downloadUrl) &&
-    (value.notes === undefined || (Array.isArray(value.notes) && value.notes.every((note) => typeof note === "string")));
+export function installPendingLauncherUpdate(): void {
+  if (status.state !== "ready" || installScheduled || !canInstallNow()) return;
+  installScheduled = true;
+  setStatus({ state: "installing", update: status.update });
+  setTimeout(() => {
+    try {
+      autoUpdater.quitAndInstall(true, true);
+    } catch (error) {
+      installScheduled = false;
+      setStatus({ state: "error", update: status.update, message: safeUpdateError(error) });
+    }
+  }, 1_500);
 }
 
-function compareVersions(left: string, right: string): number {
-  const a = left.split(".").map(Number);
-  const b = right.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] !== b[index]) return a[index] - b[index];
-  }
-  return 0;
-}
-
-async function readConfig(): Promise<UpdateConfig> {
-  const external = app.isPackaged
-    ? path.join(path.dirname(process.execPath), "bweeep-config", "launcher-update.json")
-    : path.join(process.cwd(), "resources", "launcher-update.json");
+async function checkForUpdates(): Promise<void> {
+  if (["downloading", "ready", "installing"].includes(status.state)) return;
   try {
-    return JSON.parse(await fsp.readFile(external, "utf8")) as UpdateConfig;
+    await autoUpdater.checkForUpdates();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    if (!app.isPackaged) return {};
-    return JSON.parse(await fsp.readFile(path.join(app.getAppPath(), "resources", "launcher-update.json"), "utf8")) as UpdateConfig;
+    setStatus({ state: "error", update: status.update, message: safeUpdateError(error) });
   }
+}
+
+function setStatus(next: LauncherUpdateStatus): void {
+  status = next;
+  publishStatus(next);
+}
+
+function toLauncherUpdate(info: {
+  version: string;
+  releaseNotes?: string | readonly { note?: string | null }[] | null;
+}): LauncherUpdate {
+  const notes = typeof info.releaseNotes === "string"
+    ? [info.releaseNotes]
+    : (info.releaseNotes ?? []).flatMap((entry) => entry.note ? [entry.note] : []);
+  return { version: info.version, notes };
+}
+
+function safeUpdateError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/https?:\/\/\S+/gi, "업데이트 서버").slice(0, 180) || "자동 업데이트에 실패했습니다.";
 }
