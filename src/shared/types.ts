@@ -114,6 +114,13 @@ export interface LaunchResult {
   version: string;
 }
 
+export type GameLifecycleState = "idle" | "starting" | "running";
+
+export interface GameStatus {
+  state: GameLifecycleState;
+  pid?: number;
+}
+
 export interface LauncherUpdate {
   version: string;
   downloadUrl: string;

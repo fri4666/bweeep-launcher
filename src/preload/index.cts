@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron") as typeof import("ele
 import type {
   AccessStatus,
   CreatedInvite,
+  GameStatus,
   LauncherUser,
   LoginCancellationResult,
   LoginResult,
@@ -30,6 +31,7 @@ const api = {
   resetServerConnection: () => ipcRenderer.invoke("server:resetConnection") as Promise<ServerConnection>,
   checkLauncherUpdate: () => ipcRenderer.invoke("launcher:checkUpdate") as Promise<LauncherUpdateStatus>,
   launchGame: (request: { packId: string; instanceDir: string }) => ipcRenderer.invoke("game:launch", request) as Promise<LaunchResult>,
+  gameStatus: () => ipcRenderer.invoke("game:status") as Promise<GameStatus>,
   openPath: (target: string) => ipcRenderer.invoke("shell:openPath", target) as Promise<string>,
   openExternal: (target: string) => ipcRenderer.invoke("shell:openExternal", target) as Promise<void>,
   copyText: (value: string) => ipcRenderer.invoke("clipboard:writeText", value) as Promise<void>,
@@ -39,6 +41,11 @@ const api = {
     const listener = (_: Electron.IpcRendererEvent, payload: SyncProgress) => callback(payload);
     ipcRenderer.on("modpack:progress", listener);
     return () => ipcRenderer.off("modpack:progress", listener);
+  },
+  onGameStatus: (callback: (status: GameStatus) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, status: GameStatus) => callback(status);
+    ipcRenderer.on("game:status", listener);
+    return () => ipcRenderer.off("game:status", listener);
   },
   onAuthSession: (callback: (user: LauncherUser) => void) => {
     const listener = (_: Electron.IpcRendererEvent, user: LauncherUser) => callback(user);

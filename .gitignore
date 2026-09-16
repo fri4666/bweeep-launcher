@@ -8,3 +8,5 @@ previews/
 create-aeronautics/
 resources/*.local.json
 supabase/.temp/
+companion-mod/.gradle/
+companion-mod/build/

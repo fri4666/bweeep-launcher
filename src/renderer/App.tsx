@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import type {
   AccessStatus,
   CreatedInvite,
+  GameStatus,
   LauncherUser,
   LauncherUpdateStatus,
   ServerConnection,
@@ -66,6 +67,7 @@ function App() {
   const [portInput, setPortInput] = useState("");
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
 
   useEffect(() => {
     void Promise.allSettled([
@@ -73,8 +75,9 @@ function App() {
       window.bweeep.defaultInstanceRoot(),
       window.bweeep.accessStatus(),
       window.bweeep.serverConnection(),
-      window.bweeep.checkLauncherUpdate()
-    ]).then(([serverList, root, status, savedConnection, updateStatus]) => {
+      window.bweeep.checkLauncherUpdate(),
+      window.bweeep.gameStatus()
+    ]).then(([serverList, root, status, savedConnection, updateStatus, initialGameStatus]) => {
       if (serverList.status === "fulfilled") {
         setServers(serverList.value);
         setSelectedId(serverList.value[0]?.id ?? "");
@@ -98,6 +101,7 @@ function App() {
         setLauncherUpdate(updateStatus.value);
         setUpdateOpen(updateStatus.value.state === "available");
       }
+      if (initialGameStatus.status === "fulfilled") setGameStatus(initialGameStatus.value);
     });
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
       setLogs((current) => [...current, event]);
@@ -108,6 +112,7 @@ function App() {
       setUser(nextUser);
       void refreshAccessStatus(nextUser);
     });
+    const unsubscribeGameStatus = window.bweeep.onGameStatus(setGameStatus);
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
       setNotice(message);
@@ -124,6 +129,7 @@ function App() {
     return () => {
       unsubscribeProgress();
       unsubscribeSession();
+      unsubscribeGameStatus();
       unsubscribeError();
       unsubscribeInvite();
     };
@@ -135,6 +141,7 @@ function App() {
   );
 
   const canUseLauncher = Boolean(access?.allowed);
+  const gameBusy = gameStatus.state !== "idle";
   const progressPercent = syncProgress?.total
     ? Math.round(((syncProgress.completed ?? 0) / syncProgress.total) * 100)
     : 0;
@@ -307,7 +314,7 @@ function App() {
   }
 
   async function launchSelected() {
-    if (!selected || !instanceRoot.trim() || !canUseLauncher) return;
+    if (!selected || !instanceRoot.trim() || !canUseLauncher || gameBusy) return;
     setSyncing(true);
     setLogs([]);
     setSyncError("");
@@ -476,8 +483,8 @@ function App() {
                   <p>다운로드 {result?.downloaded ?? 0}개 · 기존 파일 {result?.skipped ?? 0}개 유지</p>
                 ) : <p>실행하면 필요한 파일만 자동으로 맞춥니다.</p>}
               </section>
-            <button className="launchButton" disabled={!canUseLauncher || syncing} onClick={launchSelected}>
-              {syncing ? "업데이트 중" : syncError ? "다시 시도" : "게임 시작"}
+            <button className="launchButton" disabled={!canUseLauncher || syncing || gameBusy} onClick={launchSelected}>
+              {gameStatus.state === "running" ? "게임 중" : gameStatus.state === "starting" ? "게임 시작 중" : syncError ? "다시 시도" : "게임 시작"}
             </button>
           </div>
         </section>

@@ -1,5 +1,6 @@
 import path from "node:path";
 import crypto from "node:crypto";
+import fsp from "node:fs/promises";
 import { MinecraftFolder, Version, createMinecraftProcessWatcher, launch } from "@xmcl/core";
 import {
   createDefaultNodeInstallRuntime,
@@ -18,6 +19,7 @@ import {
   resolveNeoForgedInstallerFile
 } from "@xmcl/installer";
 import type { ModpackManifest, SyncProgress } from "../shared/types.js";
+import { ensureCompanionMod } from "./companion-mod.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
 
 type ProgressSink = (event: SyncProgress) => void;
@@ -26,7 +28,9 @@ export async function installAndLaunch(
   manifest: ModpackManifest,
   instanceDir: string,
   identity: LaunchIdentity,
-  progress: ProgressSink
+  companionModPath: string,
+  progress: ProgressSink,
+  onExit: () => void
 ): Promise<{ pid: number; version: string }> {
   if (manifest.loader.kind !== "neoforge") {
     throw new Error("현재 붸에엡은 NeoForge 모드팩 실행을 지원합니다.");
@@ -40,6 +44,9 @@ export async function installAndLaunch(
   const javaPath = await resolveRuntime(instanceDir, runtime, progress);
   const baseVersion = await installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, progress);
   const version = await installNeoForge(minecraft, manifest, javaPath, runtime, progress);
+  await ensureCompanionMod(instanceDir, companionModPath);
+  const quickPlayPath = path.join(instanceDir, "quickPlay", "bweeep.json");
+  await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
   progress({ kind: "info", message: "Minecraft 실행 중" });
   const process = await launch({
@@ -51,13 +58,19 @@ export async function installAndLaunch(
     gameProfile: { id: identity.id, name: identity.name },
     userType: "legacy",
     quickPlayMultiplayer: `${manifest.server.host}:${manifest.server.port}`,
-    server: { ip: manifest.server.host, port: manifest.server.port },
+    extraMCArgs: ["--quickPlayPath", quickPlayPath],
     minMemory: 2048,
     maxMemory: 6144
   });
-  createMinecraftProcessWatcher(process).on("minecraft-exit", ({ code, crashReport }) => {
-    progress({ kind: "error", message: crashReport || `Minecraft가 종료되었습니다. (코드 ${code})` });
+  const watcher = createMinecraftProcessWatcher(process);
+  watcher.once("minecraft-exit", ({ code, crashReport }) => {
+    progress({
+      kind: crashReport || (typeof code === "number" && code !== 0) ? "error" : "info",
+      message: crashReport || `Minecraft가 종료되었습니다. (코드 ${code ?? "없음"})`
+    });
+    onExit();
   });
+  watcher.once("error", () => onExit());
   return { pid: process.pid ?? 0, version: version || baseVersion };
 }
 

@@ -12,8 +12,7 @@ import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { checkLauncherUpdate } from "./launcher-update.js";
-import type { LauncherUser } from "../shared/types.js";
-import type { SyncProgress } from "../shared/types.js";
+import type { GameStatus, LauncherUser, SyncProgress } from "../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
@@ -24,6 +23,15 @@ const completedAuthFlows = new Set<string>();
 let deepLinkProcessing: Promise<void> | null = null;
 const pendingInviteCodes: string[] = [];
 let inviteReceiverReady = false;
+let gameStatus: GameStatus = { state: "idle" };
+let gameRunId = 0;
+
+function setGameStatus(status: GameStatus): void {
+  gameStatus = status;
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("game:status", status);
+  }
+}
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -254,7 +262,13 @@ app.whenReady().then(async () => {
   ipcMain.handle("launcher:checkUpdate", () => checkLauncherUpdate());
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
+  ipcMain.handle("game:status", () => gameStatus);
   ipcMain.handle("game:launch", async (event, request: { packId: string; instanceDir: string }) => {
+    if (gameStatus.state !== "idle") {
+      throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
+    }
+    const runId = ++gameRunId;
+    setGameStatus({ state: "starting" });
     const progress = (payload: SyncProgress) => event.sender.send("modpack:progress", payload);
     await writeGameLog("launch.started", { packId: request.packId });
     try {
@@ -269,10 +283,18 @@ app.whenReady().then(async () => {
       await writeGameLog("launch.identity.requested", { provider: "discord" });
       const identity = await auth.createLaunchIdentity(sessionUser);
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
-      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, identity, progress);
+      const companionModPath = path.join(app.getAppPath(), "resources", "client-mods", "bweeep-client-1.0.0.jar");
+      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, identity, companionModPath, progress, () => {
+        if (gameRunId === runId) setGameStatus({ state: "idle" });
+        void writeGameLog("launch.minecraft.exited", { packId: request.packId });
+      });
+      if (gameRunId === runId) {
+        setGameStatus({ state: "running", pid: launched.pid });
+      }
       await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
       return { ...launched, instanceDir: synced.instanceDir };
     } catch (error) {
+      if (gameRunId === runId) setGameStatus({ state: "idle" });
       const details = gameErrorDetails(error);
       await writeGameLog("launch.failed", details);
       throw new Error(`${details.message} (로그: ${gameLogPath()})`);

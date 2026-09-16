@@ -10,6 +10,13 @@ page.on("pageerror", (error) => errors.push(error.message));
 
 await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied }) => {
   const listeners = [];
+  const gameStatusListeners = [];
+  let gameStatus = { state: "idle" };
+  const emitGameStatus = (status) => {
+    gameStatus = status;
+    gameStatusListeners.forEach((listener) => listener(status));
+  };
+  window.__exitGame = () => emitGameStatus({ state: "idle" });
   window.__copiedText = null;
   const result = {
     manifest: {
@@ -71,7 +78,9 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     saveServerConnection: async (connection) => connection,
     resetServerConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
     checkLauncherUpdate: async () => ({ state: "current" }),
+    gameStatus: async () => gameStatus,
     launchGame: async () => {
+      emitGameStatus({ state: "starting" });
       listeners.forEach((listener) => listener({ kind: "info", message: "Create Aeronautics 동기화 시작", completed: 0, total: 3 }));
       await new Promise((resolve) => setTimeout(resolve, 90));
       listeners.forEach((listener) => listener({ kind: "download", message: "다운로드: mods/create.jar", completed: 0, total: 3, filePath: "mods/create.jar" }));
@@ -81,6 +90,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       listeners.forEach((listener) => listener({ kind: "download", message: "다운로드: mods/aeronautics.jar", completed: 1, total: 3, filePath: "mods/aeronautics.jar" }));
       await new Promise((resolve) => setTimeout(resolve, 600));
       listeners.forEach((listener) => listener({ kind: "done", message: "완료", completed: 3, total: 3 }));
+      emitGameStatus({ state: "running", pid: 4242 });
       return result;
     },
     openPath: async () => "",
@@ -97,6 +107,13 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       return () => {
         const index = listeners.indexOf(listener);
         if (index >= 0) listeners.splice(index, 1);
+      };
+    },
+    onGameStatus: (listener) => {
+      gameStatusListeners.push(listener);
+      return () => {
+        const index = gameStatusListeners.indexOf(listener);
+        if (index >= 0) gameStatusListeners.splice(index, 1);
       };
     }
   };
@@ -159,8 +176,16 @@ if (accessUnavailable) {
   await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
   await page.locator(".settingsModal .closeButton").click();
   await page.getByRole("button", { name: "게임 시작" }).click();
+  await page.getByRole("button", { name: "게임 시작 중" }).waitFor();
+  if (!(await page.getByRole("button", { name: "게임 시작 중" }).isDisabled())) throw new Error("launch button was not locked while starting");
   await page.waitForTimeout(480);
   await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
+  await page.getByRole("button", { name: "게임 중" }).waitFor();
+  if (!(await page.getByRole("button", { name: "게임 중" }).isDisabled())) throw new Error("launch button was not locked while running");
+  await page.evaluate(() => window.__exitGame());
+  await page.getByRole("button", { name: "게임 시작" }).waitFor();
+  if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after exit");
+  interactionChecks.push("game-lifecycle-lock");
 } else {
   await page.getByRole("button", { name: "Discord로 로그인" }).click();
   await page.getByRole("button", { name: "Discord 로그인 진행 중" }).waitFor();
