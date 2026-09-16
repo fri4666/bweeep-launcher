@@ -14,14 +14,14 @@ export async function fetchWithSystemNetwork(url: string, init?: RequestInit): P
   try {
     return await net.fetch(target.toString(), { ...init, bypassCustomProtocolHandlers: true });
   } catch (systemError) {
-    await writeNetworkAttempt("network.system.failed", target.hostname, systemError);
+    await writeNetworkAttempt("network.system.failed", target, systemError);
     try {
       const direct = await getDirectSession();
       const response = await direct.fetch(target.toString(), { ...init, bypassCustomProtocolHandlers: true });
-      await writeNetworkAttempt("network.direct.succeeded", target.hostname);
+      await writeNetworkAttempt("network.direct.succeeded", target);
       return response;
     } catch (directError) {
-      await writeNetworkAttempt("network.direct.failed", target.hostname, directError);
+      await writeNetworkAttempt("network.direct.failed", target, directError);
       throw new Error(
         `네트워크 연결에 실패했습니다: ${target.hostname} (시스템: ${networkReason(systemError)}, 직접: ${networkReason(directError)})`,
         { cause: directError }
@@ -101,9 +101,31 @@ async function getDirectSession(): Promise<Electron.Session> {
   return directSessionReady;
 }
 
-async function writeNetworkAttempt(event: string, host: string, error?: unknown): Promise<void> {
+async function writeNetworkAttempt(event: string, target: URL, error?: unknown): Promise<void> {
   const { writeGameLog } = await import("./game-log.js");
-  await writeGameLog(event, error ? { host, reason: networkReason(error) } : { host });
+  const diagnostics = await diagnoseSystemRoute(target);
+  await writeGameLog(event, {
+    host: target.hostname,
+    ...diagnostics,
+    ...(error ? { reason: networkReason(error) } : {})
+  });
+}
+
+async function diagnoseSystemRoute(target: URL): Promise<Record<string, unknown>> {
+  try {
+    const [host, proxy] = await Promise.all([
+      session.defaultSession.resolveHost(target.hostname),
+      session.defaultSession.resolveProxy(target.toString())
+    ]);
+    return {
+      dns: host.endpoints.length > 0 ? "resolved" : "empty",
+      ipv4: host.endpoints.filter((endpoint) => endpoint.family === "ipv4").length,
+      ipv6: host.endpoints.filter((endpoint) => endpoint.family === "ipv6").length,
+      proxy: proxy === "DIRECT" ? "direct" : "configured"
+    };
+  } catch (error) {
+    return { diagnostics: "unavailable", diagnosticsReason: networkReason(error) };
+  }
 }
 
 function networkReason(error: unknown): string {

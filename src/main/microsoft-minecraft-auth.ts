@@ -63,7 +63,11 @@ export async function createMicrosoftLaunchIdentity(microsoftAccessToken: string
 async function request<T>(url: string, body: unknown): Promise<T> {
   const response = await fetchWithSystemNetwork(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "x-xbl-contract-version": "1"
+    },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000)
   });
