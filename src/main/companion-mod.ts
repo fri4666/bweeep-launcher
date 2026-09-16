@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
-const COMPANION_MOD_SHA256 = "c6630b840fc457e9c37e01f7aaf7ebc478fd2c9b7d0e03f38b8d501de594f251";
+const COMPANION_MOD_SHA256 = "6a0dcf577c5d43e7a5afd8f312277b7baea3c22263ea6476e3e45a95420ebc2f";
 
 export async function ensureCompanionMod(instanceDir: string, sourcePath: string): Promise<void> {
   const contents = await fsp.readFile(sourcePath);

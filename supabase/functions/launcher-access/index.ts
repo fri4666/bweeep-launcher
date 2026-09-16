@@ -1,12 +1,15 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
 import { getBearerToken } from "./authorization.ts";
+import { createGameTicket, isGameName, isGameTicket } from "./game-ticket.ts";
 
 type RequestBody =
   | { action: "status" }
   | { action: "redeem"; code: string }
   | { action: "createInvite"; expiresInDays?: number; maxUses?: number }
-  | { action: "manifest"; packId: string };
+  | { action: "manifest"; packId: string }
+  | { action: "gameTicket"; gameName: string }
+  | { action: "consumeGameTicket"; ticket: string; gameName: string };
 
 interface ModpackFile {
   path: string;
@@ -44,41 +47,54 @@ async function handleRequest(request: Request): Promise<Response> {
     return json({ message: "POST 요청만 지원합니다." }, 405);
   }
 
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error("Supabase function environment is missing required credentials.");
+    return json({ message: "서버 인증 설정을 확인하지 못했습니다." }, 500);
+  }
+
+  const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false }
+  });
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ message: "JSON 요청 본문이 필요합니다." }, 400);
+  }
+  if (!isRequestBody(body)) {
+    return json({ message: "지원하지 않는 요청입니다." }, 400);
+  }
+
+  if (body.action === "consumeGameTicket") {
+    const { data, error } = await supabaseAdmin.rpc("consume_launcher_game_ticket", {
+      p_ticket_hash: await sha256(body.ticket),
+      p_game_name: body.gameName
+    });
+    const consumed = data?.[0];
+    if (error) {
+      console.error("game ticket consumption failed", error);
+      return json({ message: "게임 서버 인증을 확인하지 못했습니다." }, 500);
+    }
+    if (!consumed) return json({ ok: false, message: "만료되었거나 이미 사용한 인증표입니다." }, 401);
+    return json({
+      ok: true,
+      userId: consumed.user_id,
+      discordId: consumed.discord_id,
+      role: consumed.member_role
+    });
+  }
+
   const accessToken = getBearerToken(request);
   if (!accessToken) return json({ code: "MISSING_BEARER_TOKEN", message: "로그인 토큰이 필요합니다." }, 401);
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!supabaseUrl || !serviceRoleKey) {
-      console.error("Supabase function environment is missing required credentials.");
-      return json({ message: "서버 인증 설정을 확인하지 못했습니다." }, 500);
-    }
-
-    // Do not use the request's apikey for user authentication.  The launcher sends
-    // both headers (as Supabase requires), and @supabase/server can select the
-    // publishable key before the user bearer token on current key formats.
-    const authClient = createClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false }
-    });
-    const { data: authData, error: authError } = await authClient.auth.getClaims(accessToken);
-    const userId = typeof authData?.claims?.sub === "string" ? authData.claims.sub : null;
-    if (authError || !userId) {
-      return json({ code: "INVALID_BEARER_TOKEN", message: "로그인 세션을 확인할 수 없습니다." }, 401);
-    }
-
-    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false }
-    });
-
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return json({ message: "JSON 요청 본문이 필요합니다." }, 400);
-    }
-    if (!isRequestBody(body)) {
-      return json({ message: "지원하지 않는 요청입니다." }, 400);
-    }
+  // The gateway JWT check is disabled for current asymmetric keys, so the
+  // function validates the user token explicitly before any member operation.
+  const { data: authData, error: authError } = await supabaseAdmin.auth.getClaims(accessToken);
+  const userId = typeof authData?.claims?.sub === "string" ? authData.claims.sub : null;
+  if (authError || !userId) {
+    return json({ code: "INVALID_BEARER_TOKEN", message: "로그인 세션을 확인할 수 없습니다." }, 401);
+  }
 
     const { data: membership, error: membershipError } = await supabaseAdmin
       .from("launcher_members")
@@ -118,6 +134,32 @@ async function handleRequest(request: Request): Promise<Response> {
 
     if (!membership) {
       return json({ message: "초대 코드가 필요합니다." }, 403);
+    }
+
+    if (body.action === "gameTicket") {
+      const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(userId);
+      const discordIdentity = userData.user?.identities?.find((identity) => identity.provider === "discord");
+      const discordId = discordIdentity?.id;
+      if (userError || !discordId || !/^\d{15,22}$/.test(discordId)) {
+        return json({ message: "Discord 계정 연결을 확인하지 못했습니다." }, 403);
+      }
+
+      const ticket = createGameTicket();
+      const expiresAt = new Date(Date.now() + 90_000).toISOString();
+      await supabaseAdmin.from("launcher_game_tickets").delete().lt("expires_at", new Date().toISOString());
+      const { error: insertError } = await supabaseAdmin.from("launcher_game_tickets").insert({
+        ticket_hash: await sha256(ticket),
+        user_id: userId,
+        discord_id: discordId,
+        role: membership.role === "admin" ? "admin" : "member",
+        game_name: body.gameName,
+        expires_at: expiresAt
+      });
+      if (insertError) {
+        console.error("game ticket creation failed", insertError);
+        return json({ message: "게임 서버 인증표를 만들지 못했습니다." }, 500);
+      }
+      return json({ ticket, expiresAt });
     }
 
     if (body.action === "manifest") {
@@ -172,6 +214,8 @@ function isRequestBody(value: unknown): value is RequestBody {
   if (body.action === "status") return true;
   if (body.action === "redeem") return typeof body.code === "string";
   if (body.action === "manifest") return typeof body.packId === "string";
+  if (body.action === "gameTicket") return isGameName(body.gameName);
+  if (body.action === "consumeGameTicket") return isGameTicket(body.ticket) && isGameName(body.gameName);
   return body.action === "createInvite";
 }
 

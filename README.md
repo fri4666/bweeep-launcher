@@ -11,6 +11,7 @@
 - Invite gate and protected Manifest delivery: Supabase Edge Function with database-backed access and one-time invite codes. Every approved member can create and copy a `BWEEP-…` code for the next friend.
 - Game launch: installs Minecraft 1.21.1, Java 21, and NeoForge 21.1.228 into the selected instance and starts the modded client.
 - Discord launch: creates a stable offline Minecraft profile derived from the Discord account and display name.
+- Server authentication: issues a 90-second, one-use ticket bound to the verified Discord provider ID, database role, and exact game name. The bundled Bweeep Bridge mod consumes it before allowing play.
 - Account menu: shows the Discord profile, stores a server host/port override, and signs out locally.
 - Settings: keeps the install location and sync log, and can reset launcher settings without deleting installed modpack files or the Discord account.
 - Launcher updates: fetches optional HTTPS release metadata and shows a download popup when a newer version is published.
@@ -57,7 +58,7 @@ The publishable key is safe to ship with the launcher. Do not add a Supabase sec
 
 ## Server authentication mode
 
-The server stays on `online-mode=false` so Discord-derived offline profiles can join without a separate Mojang login. Keep the server port restricted to friends and use server-side access controls when it becomes publicly reachable.
+The server stays on `online-mode=false` so Discord-derived offline profiles can join without a separate Mojang login. Install the bundled `bweeep-client-1.1.0.jar` on both the client and dedicated NeoForge server. A direct client without the bridge cannot complete the required payload negotiation; a joined player is held without OP until the server consumes a matching one-use Supabase ticket. The server grants OP only when that ticket carries the `admin` role and removes OP again on disconnect. `ops.json` should therefore remain empty while no authenticated administrator is online.
 
 ## Windows package
 

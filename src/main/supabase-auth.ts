@@ -35,6 +35,16 @@ interface FunctionManifest {
   version: string;
 }
 
+interface FunctionGameTicket {
+  ticket: string;
+  expiresAt: string;
+}
+
+export interface GameLaunchAuthorization {
+  identity: LaunchIdentity;
+  ticket: string;
+}
+
 const defaultRedirectUri = "bwe-e-ep://auth/callback";
 
 class InvalidLauncherSessionError extends Error {
@@ -256,9 +266,15 @@ export class SupabaseAuth {
     return data.manifest;
   }
 
-  async createLaunchIdentity(user: LauncherUser | null): Promise<LaunchIdentity> {
+  async createGameLaunchAuthorization(user: LauncherUser | null): Promise<GameLaunchAuthorization> {
     if (!user) throw new Error("런처 로그인이 필요합니다.");
-    return createOfflineLaunchIdentity(user.id, user.globalName ?? user.username);
+    const identity = createOfflineLaunchIdentity(user.id, user.globalName ?? user.username);
+    const data = await this.invokeFunction<FunctionGameTicket>(
+      { action: "gameTicket", gameName: identity.name },
+      "게임 서버 인증표를 만들지 못했습니다."
+    );
+    if (!data.ticket || !data.expiresAt) throw new Error("게임 서버 인증표를 확인하지 못했습니다.");
+    return { identity, ticket: data.ticket };
   }
 
   private async getClient(): Promise<SupabaseClient | null> {

@@ -28,6 +28,7 @@ export async function installAndLaunch(
   manifest: ModpackManifest,
   instanceDir: string,
   identity: LaunchIdentity,
+  gameTicket: string,
   companionModPath: string,
   progress: ProgressSink,
   onExit: () => void
@@ -49,7 +50,7 @@ export async function installAndLaunch(
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
   progress({ kind: "info", message: "Minecraft 실행 중" });
-  const process = await launch({
+  const gameProcess = await launch({
     gamePath: instanceDir,
     resourcePath: instanceDir,
     javaPath,
@@ -59,10 +60,13 @@ export async function installAndLaunch(
     userType: "legacy",
     quickPlayMultiplayer: `${manifest.server.host}:${manifest.server.port}`,
     extraMCArgs: ["--quickPlayPath", quickPlayPath],
+    extraExecOption: {
+      env: { ...process.env, BWEEP_GAME_TICKET: gameTicket }
+    },
     minMemory: 2048,
     maxMemory: 6144
   });
-  const watcher = createMinecraftProcessWatcher(process);
+  const watcher = createMinecraftProcessWatcher(gameProcess);
   watcher.once("minecraft-exit", ({ code, crashReport }) => {
     progress({
       kind: crashReport || (typeof code === "number" && code !== 0) ? "error" : "info",
@@ -71,7 +75,7 @@ export async function installAndLaunch(
     onExit();
   });
   watcher.once("error", () => onExit());
-  return { pid: process.pid ?? 0, version: version || baseVersion };
+  return { pid: gameProcess.pid ?? 0, version: version || baseVersion };
 }
 
 export interface LaunchIdentity {

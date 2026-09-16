@@ -4,11 +4,11 @@ license="All Rights Reserved"
 
 [[mods]]
 modId="bweeep_client"
-version="1.0.0"
-displayName="Bweeep Client"
+version="1.1.0"
+displayName="Bweeep Bridge"
 authors="fri4666"
 description='''
-Keeps the Bweeep launcher client attached to its private server session.
+Authenticates Bweeep launcher sessions and keeps the client attached to its private server.
 '''
 
 [[dependencies.bweeep_client]]
@@ -16,11 +16,11 @@ modId="neoforge"
 type="required"
 versionRange="[21.1.228,)"
 ordering="NONE"
-side="CLIENT"
+side="BOTH"
 
 [[dependencies.bweeep_client]]
 modId="minecraft"
 type="required"
 versionRange="[1.21.1]"
 ordering="NONE"
-side="CLIENT"
+side="BOTH"

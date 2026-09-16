@@ -281,10 +281,10 @@ app.whenReady().then(async () => {
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       await writeGameLog("launch.identity.requested", { provider: "discord" });
-      const identity = await auth.createLaunchIdentity(sessionUser);
+      const authorization = await auth.createGameLaunchAuthorization(sessionUser);
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
-      const companionModPath = path.join(app.getAppPath(), "resources", "client-mods", "bweeep-client-1.0.0.jar");
-      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, identity, companionModPath, progress, () => {
+      const companionModPath = path.join(app.getAppPath(), "resources", "client-mods", "bweeep-client-1.1.0.jar");
+      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, authorization.identity, authorization.ticket, companionModPath, progress, () => {
         if (gameRunId === runId) setGameStatus({ state: "idle" });
         void writeGameLog("launch.minecraft.exited", { packId: request.packId });
       });
