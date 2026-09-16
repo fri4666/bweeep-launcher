@@ -1,0 +1,86 @@
+# 붸에엡
+
+붸에엡 is a personal Minecraft modpack launcher for friends. It reads a server manifest, compares local files by SHA-256, downloads only missing or changed mods, and prepares a launchable instance folder.
+
+## Current status
+
+- Desktop shell: Electron + React.
+- Pack sync: files are SHA-256 verified from the protected Supabase Manifest.
+- Default pack: Create Aeronautics on `server.fri4666.com:25565`.
+- Account: Discord-only Supabase Auth OAuth with PKCE and the `bwe-e-ep://auth/callback` desktop callback.
+- Invite gate and protected Manifest delivery: Supabase Edge Function with database-backed access and one-time invite codes. Every approved member can create and copy a `BWEEP-…` code for the next friend.
+- Game launch: installs Minecraft 1.21.1, Java 21, and NeoForge 21.1.228 into the selected instance and starts the modded client.
+- Discord launch: creates a stable offline Minecraft profile derived from the Discord account and display name.
+- Server authentication: issues a 90-second, one-use ticket bound to the verified Discord provider ID, database role, and exact game name. The bundled Bweeep Bridge mod consumes it before allowing play.
+- Account menu: shows the Discord profile, stores a server host/port override, and signs out locally.
+- Settings: keeps the install location and sync log, and can reset launcher settings without deleting installed modpack files or the Discord account.
+- Launcher updates: fetches optional HTTPS release metadata and shows a download popup when a newer version is published.
+
+## Development
+
+```bash
+cd /mnt/e/Projects/bweeep-launcher
+npm install
+npm run typecheck
+npm run dev
+```
+
+## Manifest model
+
+Each server exposes a `modpack-manifest.json` with Minecraft version, loader version, server address, and a list of files with URL, size, and SHA-256. The launcher installs the pack into `%APPDATA%/Bweeep/instances/<pack-id>` by default.
+
+## Supabase + Discord setup
+
+1. Create a Supabase project, then link this repository and apply the schema:
+
+```bash
+npx supabase login
+npx supabase link --project-ref YOUR_PROJECT_REF
+npx supabase db push
+npx supabase functions deploy launcher-access
+```
+
+2. In Supabase Dashboard, enable the Discord provider under **Authentication > Providers**. Discord's Developer Portal client secret belongs in Supabase only; it must never be placed in the Electron app.
+
+3. Add `bwe-e-ep://auth/callback` to Supabase **Authentication > URL Configuration > Redirect URLs** and to the Discord application redirect URLs.
+
+4. For development, create `resources/supabase.local.json` from `resources/supabase.example.json`. The packaged launcher already includes this public Supabase configuration; `bweeep-config/supabase.local.json` next to `Bweeep.exe` can override it when changing projects:
+
+```json
+{
+  "url": "https://YOUR_PROJECT.supabase.co",
+  "publishableKey": "sb_publishable_YOUR_KEY",
+  "redirectUri": "bwe-e-ep://auth/callback"
+}
+```
+
+The publishable key is safe to ship with the launcher. Do not add a Supabase secret key, service-role key, or Discord client secret to any launcher resource file.
+
+## Server authentication mode
+
+The server stays on `online-mode=false` so Discord-derived offline profiles can join without a separate Mojang login. Install the bundled `bweeep-client-1.1.0.jar` on both the client and dedicated NeoForge server. A direct client without the bridge cannot complete the required payload negotiation; a joined player is held without OP until the server consumes a matching one-use Supabase ticket. The server grants OP only when that ticket carries the `admin` role and removes OP again on disconnect. `ops.json` should therefore remain empty while no authenticated administrator is online.
+
+## Windows package
+
+Run `npm run package:win` in WSL to create `release-installer/Bweeep-Setup-<version>.exe`. The installer lets each player choose an installation folder and creates Bweeep shortcuts in the Start menu and on the desktop. Use `npm run package:portable` when a ZIP-style portable folder is needed instead.
+
+5. After the first owner signs in, promote that Supabase Auth user to the first launcher admin in the SQL Editor:
+
+```sql
+insert into public.launcher_members (user_id, role)
+values ('YOUR_SUPABASE_AUTH_USER_UUID', 'admin');
+```
+
+The first admin can join through the normal launcher flow. Once a person has redeemed an invite code, that member can create their own limited-use invite codes from the launcher. The Edge Function hashes every code before storage, redeems it atomically, and only returns an active modpack Manifest to members.
+
+## Launcher release updates
+
+Packaged releases use `electron-updater` with the public GitHub Releases feed. The launcher checks at startup and every 30 minutes, downloads a newer NSIS release automatically, waits for Minecraft to exit when necessary, then installs and restarts itself. Upload all three generated assets for every release:
+
+- `Bweeep-Setup-<version>.exe`
+- `Bweeep-Setup-<version>.exe.blockmap`
+- `latest.yml`
+
+`v0.1.14` is the bootstrap release for this updater, so users on `v0.1.13` or older must install it once manually. Later releases update automatically. Development builds skip remote update checks.
+
+The old `discord.local.json` and `access-policy.json` files are only legacy prototype artifacts and are no longer read by the launcher.
