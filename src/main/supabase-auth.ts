@@ -78,7 +78,9 @@ export class SupabaseAuth {
       options: {
         redirectTo: defaultRedirectUri,
         skipBrowserRedirect: true,
-        scopes: provider === "microsoft" ? "email offline_access XboxLive.signin" : undefined,
+        // Keep the Supabase OAuth exchange limited to OpenID Connect scopes.
+        // Xbox Live authentication is performed later from the provider access token.
+        scopes: provider === "microsoft" ? "email offline_access" : undefined,
         queryParams: provider === "microsoft" ? { prompt: "select_account" } : undefined
       }
     });
