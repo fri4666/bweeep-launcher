@@ -474,14 +474,21 @@ function localConfigPath(filename: string): string {
     : path.join(process.cwd(), "resources", filename);
 }
 
-function toLauncherUser(user: { id: string; app_metadata?: Record<string, unknown>; user_metadata?: Record<string, unknown> }): LauncherUser {
+function toLauncherUser(user: {
+  id: string;
+  email?: string | null;
+  app_metadata?: Record<string, unknown>;
+  user_metadata?: Record<string, unknown>;
+}): LauncherUser {
   const metadata = user.user_metadata ?? {};
   const provider = user.app_metadata?.provider === "azure" ? "microsoft" : "discord";
   const username = typeof metadata.user_name === "string"
     ? metadata.user_name
     : typeof metadata.preferred_username === "string"
       ? metadata.preferred_username
-      : provider === "microsoft" ? "Microsoft 사용자" : "Discord 사용자";
+      : typeof user.email === "string" && user.email.trim()
+        ? user.email
+        : provider === "microsoft" ? "Microsoft 사용자" : "Discord 사용자";
   const globalName = typeof metadata.full_name === "string"
     ? metadata.full_name
     : typeof metadata.name === "string" ? metadata.name : null;
