@@ -49,9 +49,7 @@ export async function installAndLaunch(
     version,
     accessToken: identity.accessToken,
     gameProfile: { id: identity.id, name: identity.name },
-    // @xmcl defaults to the current Microsoft account type ("msa").
-    // Only the Discord-derived offline identity must override that default.
-    ...(identity.userType === "legacy" ? { userType: "legacy" as const } : {}),
+    userType: "legacy",
     quickPlayMultiplayer: `${manifest.server.host}:${manifest.server.port}`,
     server: { ip: manifest.server.host, port: manifest.server.port },
     minMemory: 2048,
@@ -67,17 +65,15 @@ export interface LaunchIdentity {
   id: string;
   name: string;
   accessToken: string;
-  userType: "legacy" | "msa";
 }
 
-export function createDiscordLaunchIdentity(discordUserId: string, displayName: string): LaunchIdentity {
-  const digest = crypto.createHash("md5").update(`OfflinePlayer:${discordUserId}`).digest("hex");
+export function createOfflineLaunchIdentity(accountId: string, displayName: string): LaunchIdentity {
+  const digest = crypto.createHash("md5").update(`OfflinePlayer:${accountId}`).digest("hex");
   const readable = displayName.normalize("NFKD").replace(/[^A-Za-z0-9_]/g, "").slice(0, 11);
   return {
     id: digest,
     name: readable.length >= 3 ? `${readable}_${digest.slice(0, 4)}` : `Bweep_${digest.slice(0, 10)}`,
-    accessToken: crypto.randomUUID().replaceAll("-", ""),
-    userType: "legacy"
+    accessToken: crypto.randomUUID().replaceAll("-", "")
   };
 }
 
@@ -99,7 +95,7 @@ async function resolveRuntime(instanceDir: string, runtime: ReturnType<typeof cr
   const response = await fetchWithSystemNetwork("https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json");
   if (!response.ok) throw new Error("Java 런타임 목록을 가져오지 못했습니다.");
   const catalog = await response.json() as Record<string, Record<string, Array<unknown>>>;
-  const targets = catalog[platform]?.["java-runtime-gamma"] ?? catalog[platform]?.["java-runtime-beta"];
+  const targets = catalog[platform]?.["java-runtime-delta"];
   if (!targets?.[0]) throw new Error("이 PC용 Java 21 런타임을 찾지 못했습니다.");
   await executeInstallWorkflow(
     createJavaRuntimeInstallWorkflow({ target: targets[0] as Parameters<typeof createJavaRuntimeInstallWorkflow>[0]["target"], destination: path.dirname(path.dirname(bundled)) }),

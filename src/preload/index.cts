@@ -12,9 +12,7 @@ import type {
   ServerConnection,
   ServerPreset,
   ServerStatus,
-  SyncProgress,
-  SyncRequest,
-  SyncResult
+  SyncProgress
 } from "../shared/types.js";
 
 const api = {
@@ -32,7 +30,6 @@ const api = {
   saveServerConnection: (connection: ServerConnection) => ipcRenderer.invoke("server:saveConnection", connection) as Promise<ServerConnection>,
   resetServerConnection: () => ipcRenderer.invoke("server:resetConnection") as Promise<ServerConnection>,
   checkLauncherUpdate: () => ipcRenderer.invoke("launcher:checkUpdate") as Promise<LauncherUpdateStatus>,
-  syncModpack: (request: { packId: string; instanceDir: string }) => ipcRenderer.invoke("modpack:sync", request) as Promise<SyncResult>,
   launchGame: (request: { packId: string; instanceDir: string }) => ipcRenderer.invoke("game:launch", request) as Promise<LaunchResult>,
   openPath: (target: string) => ipcRenderer.invoke("shell:openPath", target) as Promise<string>,
   openExternal: (target: string) => ipcRenderer.invoke("shell:openExternal", target) as Promise<void>,

@@ -1,6 +1,6 @@
 {
   "name": "bweeep-launcher",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "붸에엡 Minecraft modpack launcher",
   "author": "fri4666",
@@ -67,17 +67,20 @@
       }
     ],
     "files": [
-      "**/*",
-      "!Bweeep-Setup-*.exe",
-      "!Bweeep-Setup-*.blockmap",
-      "!release/**",
-      "!release-installer*/**",
-      "!previews/**",
-      "!create-aeronautics/**",
-      "!supabase/**",
-      "!scripts/**",
-      "!src/**",
-      "!.vscode/**"
+      "dist/**/*",
+      "resources/**/*",
+      "package.json",
+      "!node_modules/@esbuild/**",
+      "!node_modules/@types/**",
+      "!node_modules/esbuild/**",
+      "!node_modules/typescript/**",
+      "!node_modules/**/*.map",
+      "!node_modules/**/*.md",
+      "!node_modules/**/*.ts",
+      "!node_modules/**/test{,s}/**",
+      "!node_modules/**/docs/**",
+      "!node_modules/**/examples/**",
+      "!node_modules/**/migrations/**"
     ],
     "nsis": {
       "include": "build/installer.nsh",

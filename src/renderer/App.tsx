@@ -307,31 +307,6 @@ function App() {
     }
   }
 
-  async function syncSelected() {
-    if (!selected || !instanceRoot.trim() || !canUseLauncher) return;
-    setSyncing(true);
-    setLogs([]);
-    setSyncError("");
-    setResult(null);
-    setSyncProgress(null);
-    try {
-      const next = await window.bweeep.syncModpack({
-        packId: selected.packId,
-        instanceDir: instanceRoot.trim()
-      });
-      setResult(next);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSyncError(message);
-      setLogs((current) => [
-        ...current,
-        { kind: "error", message }
-      ]);
-    } finally {
-      setSyncing(false);
-    }
-  }
-
   async function launchSelected() {
     if (!selected || !instanceRoot.trim() || !canUseLauncher) return;
     setSyncing(true);
@@ -381,7 +356,7 @@ function App() {
             </button>
             <button disabled={Boolean(loginPending)} onClick={() => void login("microsoft")}>
               <strong>{loginPending === "microsoft" ? "Microsoft 로그인 진행 중" : "Microsoft로 로그인"}</strong>
-              <span>{loginPending === "microsoft" ? "브라우저에서 인증을 완료해 주세요" : "Minecraft Java 프로필로 참가"}</span>
+              <span>{loginPending === "microsoft" ? "브라우저에서 인증을 완료해 주세요" : "Microsoft 프로필로 참가"}</span>
             </button>
           </div>
           {loginPending && <button className="cancelLoginButton" onClick={() => void cancelLogin()}>로그인 취소 · 다른 방법 선택</button>}

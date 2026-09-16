@@ -11,7 +11,7 @@
 - Invite gate and protected Manifest delivery: Supabase Edge Function with database-backed access and one-time invite codes. Every approved member can create and copy a `BWEEP-…` code for the next friend.
 - Game launch: installs Minecraft 1.21.1, Java 21, and NeoForge 21.1.228 into the selected instance, then starts directly into the server.
 - Discord launch: creates a stable offline Minecraft profile derived from the Discord account and display name.
-- Microsoft launch: verifies Minecraft: Java Edition ownership through Microsoft, Xbox, XSTS, and Minecraft Services, then launches with the account's actual Minecraft profile name and UUID.
+- Microsoft launch: uses the verified Supabase Microsoft identity to create a stable offline game profile for the private offline-mode server.
 - Account menu: shows the Discord profile, stores a server host/port override, and signs out locally.
 - Settings: keeps the install location and sync log, and can reset launcher settings without deleting installed modpack files or the Discord account.
 - Launcher updates: fetches optional HTTPS release metadata and shows a download popup when a newer version is published.
@@ -42,7 +42,7 @@ npx supabase functions deploy launcher-access
 
 2. In Supabase Dashboard, enable the Discord provider under **Authentication > Providers**. Discord's Developer Portal client secret belongs in Supabase only; it must never be placed in the Electron app.
 
-3. To offer Microsoft as an alternative login, register an Azure Entra app that supports both organizational and personal Microsoft accounts. Add `https://YOUR_PROJECT.supabase.co/auth/v1/callback` as its Web redirect URI, then enable Azure (Microsoft) in Supabase Auth with the Azure Client ID and Client Secret. Keep **Allow users without an email** disabled. The launcher requests `email`, `offline_access`, and `XboxLive.signin` when the user selects Microsoft.
+3. To offer Microsoft as an alternative login, register an Azure Entra app that supports both organizational and personal Microsoft accounts. Add `https://YOUR_PROJECT.supabase.co/auth/v1/callback` as its Web redirect URI, then enable Azure (Microsoft) in Supabase Auth with the Azure Client ID and Client Secret. Keep **Allow users without an email** disabled. The launcher requests `email`, `profile`, and `offline_access` when the user selects Microsoft.
 
 4. Add `bwe-e-ep://auth/callback` to Supabase **Authentication > URL Configuration > Redirect URLs** and to the Discord application redirect URLs.
 

@@ -5,8 +5,7 @@ import path from "node:path";
 import type { AccessStatus, CreatedInvite, LauncherUser, LoginCancellationResult, LoginProvider, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
 import { parseAuthCallback } from "./deep-link.js";
 import { authFingerprint, writeAuthLog } from "./auth-log.js";
-import { createDiscordLaunchIdentity, type LaunchIdentity } from "./minecraft-runtime.js";
-import { createMicrosoftLaunchIdentity } from "./microsoft-minecraft-auth.js";
+import { createOfflineLaunchIdentity, type LaunchIdentity } from "./minecraft-runtime.js";
 
 interface SupabaseConfig {
   url?: string;
@@ -78,9 +77,9 @@ export class SupabaseAuth {
       options: {
         redirectTo: defaultRedirectUri,
         skipBrowserRedirect: true,
-        // `profile` supplies the display-name claims. Xbox Live authentication is
-        // performed later from the provider access token.
-        scopes: provider === "microsoft" ? "email profile offline_access XboxLive.signin XboxLive.offline_access" : undefined,
+        // `profile` supplies the display-name claims used by the launcher and its
+        // stable offline game identity.
+        scopes: provider === "microsoft" ? "email profile offline_access" : undefined,
         queryParams: provider === "microsoft" ? { prompt: "select_account" } : undefined
       }
     });
@@ -247,16 +246,7 @@ export class SupabaseAuth {
 
   async createLaunchIdentity(user: LauncherUser | null): Promise<LaunchIdentity> {
     if (!user) throw new Error("런처 로그인이 필요합니다.");
-    if (user.provider === "discord") {
-      return createDiscordLaunchIdentity(user.id, user.globalName ?? user.username);
-    }
-
-    const client = await this.requireClient();
-    const { data, error } = await client.auth.getSession();
-    if (error || !data.session?.provider_token) {
-      throw new Error("Microsoft 게임 인증이 만료되었습니다. Microsoft로 다시 로그인해 주세요.");
-    }
-    return createMicrosoftLaunchIdentity(data.session.provider_token);
+    return createOfflineLaunchIdentity(user.id, user.globalName ?? user.username);
   }
 
   private async getClient(): Promise<SupabaseClient | null> {

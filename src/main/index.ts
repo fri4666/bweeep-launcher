@@ -214,12 +214,6 @@ app.whenReady().then(async () => {
     await shell.openExternal(url.toString());
   });
   ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
-  ipcMain.handle("modpack:sync", async (event, request: { packId: string; instanceDir: string }) => {
-    const progress = (payload: SyncProgress) => event.sender.send("modpack:progress", payload);
-    const manifest = await auth.getManifest(sessionUser, request.packId);
-    assertManifest(manifest);
-    return syncModpack({ instanceDir: request.instanceDir, manifest }, progress);
-  });
   ipcMain.handle("account:login", (_event, provider: LoginProvider) => auth.startLogin(provider));
   ipcMain.handle("account:cancelLogin", () => auth.cancelPendingLogin("user_cancelled"));
   ipcMain.handle("account:logout", async () => {
