@@ -1,12 +1,13 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { app } from "electron";
 import type { ModpackManifest, ServerPreset } from "../shared/types.js";
 import { assertManifest } from "./sync.js";
 
 /** Derive UI labels from the same manifest that controls installation. */
 export async function getServerPresets(): Promise<ServerPreset[]> {
-  const directory = path.join(app.getAppPath(), "resources", "manifests");
+  const directory = await findManifestDirectory();
   const files = (await fsp.readdir(directory)).filter((name) => name.endsWith(".json")).sort();
   const manifests = await Promise.all(files.map(async (file) => {
     const manifest = JSON.parse(await fsp.readFile(path.join(directory, file), "utf8")) as ModpackManifest;
@@ -25,4 +26,20 @@ export async function getServerPresets(): Promise<ServerPreset[]> {
     serverLoader: manifest.serverLoader,
     environment: manifest.audience === "testers" ? "test" : "production"
   }));
+}
+
+async function findManifestDirectory(): Promise<string> {
+  const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.join(app.getAppPath(), "resources", "manifests"),
+    path.resolve(moduleDirectory, "../../../resources", "manifests")
+  ];
+  for (const candidate of candidates) {
+    try {
+      if ((await fsp.stat(candidate)).isDirectory()) return candidate;
+    } catch {
+      // Try the next location. Startup tests load the main module through a bootstrap script.
+    }
+  }
+  throw new Error("사용 가능한 서버 manifest 디렉터리를 찾지 못했습니다.");
 }
