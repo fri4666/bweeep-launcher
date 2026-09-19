@@ -14,9 +14,10 @@ import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
-import { captureSharedOptions, prepareUserContent, userContentRoot } from "./user-content.js";
+import { captureSharedOptions, prepareUserContent, userContentPaths } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUpdateStatus, LauncherUser, ServerPreset, SyncProgress } from "../shared/types.js";
+import { bundledFeatureMods } from "./client-feature-mods.js";
 import type { ModpackManifest } from "../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -317,9 +318,14 @@ app.whenReady().then(async () => {
   ipcMain.handle("paths:defaultInstanceRoot", () =>
     defaultInstanceRoot()
   );
-  ipcMain.handle("paths:userContentRoot", (_event, instanceRoot: unknown) => {
+  ipcMain.handle("paths:userContent", async (_event, request: { instanceRoot?: unknown; minecraftVersion?: unknown; loaderKind?: unknown }) => {
+    const { instanceRoot, minecraftVersion, loaderKind } = request ?? {};
     if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    return userContentRoot(instanceRoot);
+    if (typeof minecraftVersion !== "string" || !/^[A-Za-z0-9._-]+$/.test(minecraftVersion)) throw new Error("Minecraft 버전 정보가 올바르지 않습니다.");
+    if (!["vanilla", "fabric", "neoforge", "forge"].includes(String(loaderKind))) throw new Error("클라이언트 로더 정보가 올바르지 않습니다.");
+    const paths = userContentPaths(instanceRoot, loaderKind as ModpackManifest["loader"]["kind"], minecraftVersion);
+    await Promise.all([fsp.mkdir(paths.userModsDir, { recursive: true }), fsp.mkdir(paths.shaderpacksDir, { recursive: true })]);
+    return paths;
   });
   ipcMain.handle("shell:openPath", async (_event, target: string) => {
     return shell.openPath(target);
@@ -395,26 +401,17 @@ app.whenReady().then(async () => {
       assertManifest(manifest);
       const server = await readServerConnection(defaultServer);
       const configuredManifest = { ...manifest, server };
+      const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), configuredManifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
-      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir);
+      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, configuredManifest);
       progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 적용 · 서버 전용 모드 ${userContent.removedManagedMods}개 정리` });
+      if (userContent.blockedMods.length > 0) {
+        progress({ kind: "error", message: `서버 필수 모드와 이름이 겹쳐 적용하지 않음: ${userContent.blockedMods.join(", ")}` });
+      }
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
-      const clientModsDir = path.join(app.getAppPath(), "resources", "client-mods");
-      const bundledClientMods = configuredManifest.loader.kind === "neoforge" ? [
-        {
-          sourcePath: path.join(clientModsDir, "bweeep-client-1.2.0.jar"),
-          targetName: "bweeep-client.jar",
-          sha256: "4c8840d126f1939a1e66182cc086f3293bd0a8f75d5780d89df94ba23f02e70b"
-        },
-        {
-          sourcePath: path.join(clientModsDir, "bweeep-display-name-0.2.0.jar"),
-          targetName: "bweeep-display-name.jar",
-          sha256: "23f0c716cc8cb857ecf384f648a5c493745dd1bc9f53d1ab04ca9c40b632fed2"
-        }
-      ] : [];
       const getLaunchAuthorization = configuredManifest.loader.kind === "vanilla"
         ? async () => ({
             identity: createOfflineLaunchIdentity(launchUser.id, launchUser.gameName, launchUser.globalName, launchUser.username),

@@ -367,8 +367,13 @@ function App() {
 
   async function openPersonalFolder(kind: "mods" | "shaderpacks") {
     try {
-      const root = await window.bweeep.userContentRoot(instanceRoot.trim());
-      await window.bweeep.openPath(`${root}\\${kind}`);
+      if (!selected) throw new Error("선택한 서버 정보를 찾지 못했습니다.");
+      const paths = await window.bweeep.userContentPaths({
+        instanceRoot: instanceRoot.trim(),
+        minecraftVersion: selected.minecraftVersion,
+        loaderKind: selected.loader.kind
+      });
+      await window.bweeep.openPath(kind === "mods" ? paths.userModsDir : paths.shaderpacksDir);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "내 콘텐츠 폴더를 열지 못했습니다.");
     }
@@ -735,13 +740,13 @@ function App() {
             <section className="panel connectionPanel">
               <div className="panelHeader">
                 <h3>내 모드와 셰이더</h3>
-                <span>여기에 넣은 파일은 서버 전환 후에도 유지됩니다.</span>
+                <span>{selected ? `${selected.minecraftVersion} · ${selected.loader.kind} 전용으로 보관됩니다.` : "서버 전환 후에도 유지됩니다."}</span>
               </div>
               <div className="updateActions">
                 <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("mods")}>내 모드 폴더 열기</button>
                 <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("shaderpacks")}>셰이더 폴더 열기</button>
               </div>
-              <p className="notice">모드는 .jar, 셰이더는 .zip 파일을 넣으세요. 현재 Minecraft 버전과 로더에 맞는 파일만 사용해야 합니다.</p>
+              <p className="notice">모드는 .jar, 셰이더는 .zip 파일을 넣으세요. 서버 필수 모드와 파일명이 같으면 내 파일은 적용하지 않습니다.</p>
             </section>
             <section className="panel connectionPanel">
               <div className="panelHeader">
