@@ -4,6 +4,7 @@ import type { ModpackManifest, UserContentStatus } from "../shared/types.js";
 
 const USER_MODS_FILE = ".bweeep-user-mods.json";
 const USER_SHADERS_FILE = ".bweeep-user-shaders.json";
+const GAME_OPTION_FILE = /^options(?:[a-z0-9_-]+)?\.txt$/i;
 
 export interface UserContentPaths {
   userModsDir: string;
@@ -14,15 +15,14 @@ export interface UserContentPaths {
 export async function prepareUserContent(instanceRoot: string, instanceDir: string, manifest: ModpackManifest): Promise<UserContentStatus> {
   const root = path.resolve(instanceRoot, ".bweeep-user-content");
   const { userModsDir, shaderpacksDir } = userContentPaths(instanceRoot, manifest.loader.kind, manifest.minecraftVersion);
-  const sharedOptionsPath = path.join(root, "options.txt");
+  const sharedOptionsPath = path.join(root, "settings", "options.txt");
   const modsDir = path.join(instanceDir, "mods");
   const instanceShaders = path.join(instanceDir, "shaderpacks");
   await Promise.all([fsp.mkdir(userModsDir, { recursive: true }), fsp.mkdir(shaderpacksDir, { recursive: true }), fsp.mkdir(modsDir, { recursive: true }), fsp.mkdir(instanceShaders, { recursive: true })]);
 
-  // A newly changed instance exports its input settings for later servers; a new
-  // instance imports the shared copy before Minecraft starts.
-  const instanceOptions = path.join(instanceDir, "options.txt");
-  if (await exists(sharedOptionsPath)) await fsp.copyFile(sharedOptionsPath, instanceOptions);
+  // Key bindings, sensitivity, accessibility, chat, sound and video settings
+  // are stored in options*.txt. Keep every such base-game file across servers.
+  await restoreGameOptions(path.join(root, "settings"), instanceDir);
 
   const desiredMods = await jarFiles(userModsDir);
   const managedModNames = new Set(manifest.files
@@ -62,11 +62,11 @@ export async function prepareUserContent(instanceRoot: string, instanceDir: stri
 }
 
 export async function captureSharedOptions(instanceRoot: string, instanceDir: string): Promise<void> {
-  const instanceOptions = path.join(instanceDir, "options.txt");
-  if (!await exists(instanceOptions)) return;
-  const target = path.join(userContentRoot(instanceRoot), "options.txt");
-  await fsp.mkdir(path.dirname(target), { recursive: true });
-  await fsp.copyFile(instanceOptions, target);
+  const settingsDir = path.join(userContentRoot(instanceRoot), "settings");
+  await fsp.mkdir(settingsDir, { recursive: true });
+  for (const fileName of await gameOptionFiles(instanceDir)) {
+    await fsp.copyFile(path.join(instanceDir, fileName), path.join(settingsDir, fileName));
+  }
 }
 
 export function userContentRoot(instanceRoot: string): string {
@@ -94,13 +94,26 @@ async function zipFiles(folder: string): Promise<string[]> {
     .map((entry) => path.join(folder, entry.name));
 }
 
-async function exists(filePath: string): Promise<boolean> {
-  try { await fsp.access(filePath); return true; } catch { return false; }
-}
-
 async function readStringArray(filePath: string): Promise<string[]> {
   try {
     const value: unknown = JSON.parse(await fsp.readFile(filePath, "utf8"));
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && !item.includes("/") && !item.includes("\\")) : [];
   } catch { return []; }
+}
+
+async function restoreGameOptions(settingsDir: string, instanceDir: string): Promise<void> {
+  for (const fileName of await gameOptionFiles(settingsDir)) {
+    await fsp.copyFile(path.join(settingsDir, fileName), path.join(instanceDir, fileName));
+  }
+}
+
+async function gameOptionFiles(directory: string): Promise<string[]> {
+  try {
+    return (await fsp.readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && GAME_OPTION_FILE.test(entry.name))
+      .map((entry) => entry.name);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
 }

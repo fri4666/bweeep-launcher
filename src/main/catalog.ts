@@ -21,7 +21,7 @@ export async function getServerPresets(channel: LauncherChannel = "production"):
   }).map((manifest) => ({
     id: manifest.id,
     name: manifest.name,
-    description: `Minecraft ${manifest.minecraftVersion} · ${manifest.loader.kind === "vanilla" ? "Vanilla" : `${manifest.loader.kind} ${manifest.loader.version}`}`,
+    description: describeManifest(manifest),
     packId: manifest.id,
     server: manifest.server,
     minecraftVersion: manifest.minecraftVersion,
@@ -30,6 +30,14 @@ export async function getServerPresets(channel: LauncherChannel = "production"):
     serverLoader: manifest.serverLoader,
     environment: manifest.audience === "testers" ? "test" : "production"
   }));
+}
+
+function describeManifest(manifest: ModpackManifest): string {
+  const client = manifest.loader.kind === "vanilla" ? "Vanilla" : `${manifest.loader.kind} ${manifest.loader.version}`;
+  const server = manifest.serverLoader
+    ? `${manifest.serverLoader.kind} ${manifest.serverLoader.version}`
+    : client;
+  return `Minecraft ${manifest.minecraftVersion} · 클라이언트 ${client} · 서버 ${server}`;
 }
 
 async function findManifestDirectory(): Promise<string> {
