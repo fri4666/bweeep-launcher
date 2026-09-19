@@ -1,0 +1,10 @@
+{
+  "item.bweeep_client.name_token": "Server Name Token",
+  "screen.bweeep_client.connecting": "CONNECTING · ENTER AFTER CHOOSING A NAME",
+  "screen.bweeep_client.title": "Choose your server display name",
+  "screen.bweeep_client.hint": "Letters, numbers, spaces, underscore; 2-16 characters",
+  "screen.bweeep_client.review": "Continue with this name",
+  "screen.bweeep_client.confirm": "Set once and confirm",
+  "screen.bweeep_client.back": "Check again",
+  "screen.bweeep_client.saving": "Saving securely to Supabase…"
+}
