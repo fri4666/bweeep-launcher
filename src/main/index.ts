@@ -2,7 +2,6 @@ import { app, BrowserWindow, clipboard, ipcMain, session, shell } from "electron
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import os from "node:os";
 import { getServerPresets } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
@@ -15,6 +14,7 @@ import { readServerConnection, resetServerConnection, writeServerConnection } fr
 import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { captureSharedOptions, prepareUserContent, userContentRoot } from "./user-content.js";
+import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUpdateStatus, LauncherUser, SyncProgress } from "../shared/types.js";
 import type { ModpackManifest } from "../shared/types.js";
 
@@ -58,21 +58,22 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 function registerDeepLinkProtocol(): void {
+  const scheme = launcherProtocolScheme();
   if (process.defaultApp && process.argv[1]) {
-    app.setAsDefaultProtocolClient("bwe-e-ep", process.execPath, [path.resolve(process.argv[1])]);
+    app.setAsDefaultProtocolClient(scheme, process.execPath, [path.resolve(process.argv[1])]);
   } else {
-    app.setAsDefaultProtocolClient("bwe-e-ep");
+    app.setAsDefaultProtocolClient(scheme);
   }
 }
 
 function collectDeepLink(argv: readonly string[]): string | undefined {
-  return argv.find((arg) => arg.startsWith("bwe-e-ep://"));
+  return argv.find((arg) => arg.startsWith(`${launcherProtocolScheme()}://`));
 }
 
 function queueDeepLink(url: string, source: "argv" | "second-instance" | "open-url"): void {
-  if (url.startsWith("bwe-e-ep://invite/")) {
+  if (url.startsWith(`${launcherProtocolScheme()}://invite/`)) {
     try {
-      pendingInviteCodes.push(parseInviteLink(url));
+      pendingInviteCodes.push(parseInviteLink(url, launcherProtocolScheme()));
     } catch (error) {
       notifyAuthError(error);
     }
@@ -116,7 +117,7 @@ async function processPendingDeepLinks(): Promise<void> {
     if (!url) continue;
     const callbackId = authFingerprint(url);
     try {
-      const callback = parseAuthCallback(url);
+      const callback = parseAuthCallback(url, launcherProtocolScheme());
       const flowId = callback.flowId ? authFingerprint(callback.flowId) : null;
       sessionUser = await auth.completeCallback(url);
       if (flowId) completedAuthFlows.add(flowId);
@@ -195,7 +196,7 @@ async function createWindow(): Promise<BrowserWindow> {
     height: 740,
     minWidth: 920,
     minHeight: 620,
-    title: "붸에엡",
+    title: launcherWindowTitle(),
     frame: false,
     thickFrame: false,
     roundedCorners: false,
@@ -225,13 +226,14 @@ async function createWindow(): Promise<BrowserWindow> {
 
 app.whenReady().then(async () => {
   await session.defaultSession.setProxy({ mode: "system" });
-  const serverPresets = await getServerPresets();
+  const launcherChannel = getLauncherChannel();
+  const serverPresets = await getServerPresets(launcherChannel);
   const defaultServer = serverPresets[0]?.server;
   if (!defaultServer) throw new Error("사용 가능한 서버 manifest가 없습니다.");
-  ipcMain.handle("catalog:list", () => getServerPresets());
+  ipcMain.handle("catalog:list", () => getServerPresets(launcherChannel));
   ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
   ipcMain.handle("paths:defaultInstanceRoot", () =>
-    path.join(os.homedir(), "AppData", "Roaming", "Bweeep", "instances")
+    defaultInstanceRoot()
   );
   ipcMain.handle("paths:userContentRoot", (_event, instanceRoot: unknown) => {
     if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");

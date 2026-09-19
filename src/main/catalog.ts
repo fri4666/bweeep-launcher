@@ -4,9 +4,10 @@ import { fileURLToPath } from "node:url";
 import { app } from "electron";
 import type { ModpackManifest, ServerPreset } from "../shared/types.js";
 import { assertManifest } from "./sync.js";
+import type { LauncherChannel } from "./launcher-channel.js";
 
 /** Derive UI labels from the same manifest that controls installation. */
-export async function getServerPresets(): Promise<ServerPreset[]> {
+export async function getServerPresets(channel: LauncherChannel = "production"): Promise<ServerPreset[]> {
   const directory = await findManifestDirectory();
   const files = (await fsp.readdir(directory)).filter((name) => name.endsWith(".json")).sort();
   const manifests = await Promise.all(files.map(async (file) => {
@@ -14,7 +15,10 @@ export async function getServerPresets(): Promise<ServerPreset[]> {
     assertManifest(manifest);
     return manifest;
   }));
-  return manifests.sort((left, right) => Number(Boolean(right.default)) - Number(Boolean(left.default))).map((manifest) => ({
+  return manifests.sort((left, right) => {
+    if (channel === "test") return Number(right.audience === "testers") - Number(left.audience === "testers");
+    return Number(Boolean(right.default)) - Number(Boolean(left.default));
+  }).map((manifest) => ({
     id: manifest.id,
     name: manifest.name,
     description: `Minecraft ${manifest.minecraftVersion} · ${manifest.loader.kind === "vanilla" ? "Vanilla" : `${manifest.loader.kind} ${manifest.loader.version}`}`,

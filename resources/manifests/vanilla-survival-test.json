@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "vanilla-survival-test",
+  "name": "Vanilla Survival Test",
+  "audience": "testers",
+  "version": "2026.09.20-test.1",
+  "minecraftVersion": "26.3",
+  "java": {
+    "majorVersion": 25,
+    "component": "java-runtime-epsilon"
+  },
+  "loader": {
+    "kind": "vanilla",
+    "version": "none"
+  },
+  "serverLoader": {
+    "kind": "vanilla",
+    "version": "26.3"
+  },
+  "server": {
+    "host": "server.fri4666.com",
+    "port": 25566
+  },
+  "notes": "Isolated test server. Test launcher updates use the test release channel.",
+  "files": []
+}
