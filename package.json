@@ -14,6 +14,7 @@
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json && vite build",
     "package:portable": "npm run build && electron-packager . Bweeep --platform=win32 --arch=x64 --out=release --overwrite --asar --ignore=^/release --ignore=^/previews",
     "package:win": "npm run build && electron-builder --win nsis --x64",
+    "package:win:test": "npm run build && electron-builder --win nsis --x64 --config.appId=com.fri4666.bweeep.test --config.productName=\"Bweeep Test\" --config.directories.output=release-installer-test --config.artifactName=Bweeep-Test-Setup-\\${version}.\\${ext} --config.extraMetadata.bweeepChannel=test --config.generateUpdatesFilesForAllChannels=true --config.publish[0].channel=test --config.nsis.shortcutName=\"Bweeep Test\" --config.protocols[0].name=\"Bweeep Test Invite Link\" --config.protocols[0].schemes[0]=bwe-e-ep-test",
     "package:win:arm64": "npm run build && electron-builder --win nsis --arm64 --config.directories.output=release-installer-arm64",
     "package:win:all": "npm run package:win && npm run package:win:arm64",
     "verify:electron-startup": "npm run build && node scripts/verify-electron-startup.mjs",

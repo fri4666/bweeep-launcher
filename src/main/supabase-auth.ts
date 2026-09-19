@@ -6,6 +6,7 @@ import type { AccessStatus, CreatedInvite, LauncherUser, LoginCancellationResult
 import { parseAuthCallback } from "./deep-link.js";
 import { authFingerprint, writeAuthLog } from "./auth-log.js";
 import { createOfflineLaunchIdentity, type LaunchIdentity } from "./launch-identity.js";
+import { launcherProtocolScheme } from "./launcher-channel.js";
 
 interface SupabaseConfig {
   url?: string;
@@ -52,7 +53,7 @@ export interface GameLaunchAuthorization {
   ticket: string;
 }
 
-const defaultRedirectUri = "bwe-e-ep://auth/callback";
+const defaultRedirectUri = `${launcherProtocolScheme()}://auth/callback`;
 
 class InvalidLauncherSessionError extends Error {
   constructor() {
@@ -90,15 +91,16 @@ export class SupabaseAuth {
 
     this.loginInFlight = true;
     const configuredRedirectUri = (await readConfig()).redirectUri;
-    if (configuredRedirectUri && configuredRedirectUri !== defaultRedirectUri) {
+    const redirectUri = defaultRedirectUri;
+    if (configuredRedirectUri && configuredRedirectUri !== redirectUri) {
       this.loginInFlight = false;
       await writeAuthLog("login.start.failed", { provider: "discord", reason: "invalid_redirect_uri" });
-      throw new Error(`런처 OAuth 콜백 주소는 ${defaultRedirectUri}이어야 합니다.`);
+      throw new Error(`런처 OAuth 콜백 주소는 ${redirectUri}이어야 합니다.`);
     }
     const { data, error } = await client.auth.signInWithOAuth({
       provider: "discord",
       options: {
-        redirectTo: defaultRedirectUri,
+        redirectTo: redirectUri,
         skipBrowserRedirect: true
       }
     });
@@ -133,7 +135,7 @@ export class SupabaseAuth {
       const client = await this.requireClient();
       const callbackId = authFingerprint(rawUrl);
       await writeAuthLog("callback.exchange.started", { callbackId });
-      const { code, flowId } = parseAuthCallback(rawUrl);
+      const { code, flowId } = parseAuthCallback(rawUrl, launcherProtocolScheme());
       if (flowId && this.cancelledLoginFlowIds.has(flowId)) {
         throw new LoginCancelledError();
       }

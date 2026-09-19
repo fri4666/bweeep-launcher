@@ -22,9 +22,9 @@ export class AuthCallbackError extends Error {
 
 const inviteCodePattern = /^BWEEP-[A-F0-9]{12}-[A-F0-9]{12}$/;
 
-export function parseAuthCallback(rawUrl: string): AuthCallback {
+export function parseAuthCallback(rawUrl: string, scheme = "bwe-e-ep"): AuthCallback {
   const url = new URL(rawUrl);
-  if (url.protocol !== "bwe-e-ep:" || url.hostname !== "auth" || url.pathname !== "/callback") {
+  if (url.protocol !== `${scheme}:` || url.hostname !== "auth" || url.pathname !== "/callback") {
     throw new AuthCallbackError("허용되지 않은 로그인 콜백 주소입니다.", null, "invalid_callback", emptyDiagnostics());
   }
 
@@ -76,9 +76,9 @@ function fingerprint(value: string | null): string | null {
   return `len:${value.length}:h:${(hash >>> 0).toString(16)}`;
 }
 
-export function parseInviteLink(rawUrl: string): string {
+export function parseInviteLink(rawUrl: string, scheme = "bwe-e-ep"): string {
   const url = new URL(rawUrl);
-  if (url.protocol !== "bwe-e-ep:" || url.hostname !== "invite") {
+  if (url.protocol !== `${scheme}:` || url.hostname !== "invite") {
     throw new Error("허용되지 않은 초대 링크입니다.");
   }
 

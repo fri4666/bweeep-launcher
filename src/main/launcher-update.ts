@@ -1,6 +1,7 @@
 import { app } from "electron";
 import electronUpdater from "electron-updater";
 import type { LauncherUpdate, LauncherUpdateStatus } from "../shared/types.js";
+import { getLauncherChannel } from "./launcher-channel.js";
 
 const { autoUpdater } = electronUpdater;
 
@@ -31,7 +32,9 @@ export function startLauncherUpdates(
 
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.allowPrerelease = false;
+  const testChannel = getLauncherChannel() === "test";
+  autoUpdater.channel = testChannel ? "test" : "latest";
+  autoUpdater.allowPrerelease = testChannel;
   autoUpdater.on("checking-for-update", () => setStatus({ state: "checking" }));
   autoUpdater.on("update-not-available", () => setStatus({ state: "current" }));
   autoUpdater.on("update-available", (info) => {
