@@ -15,3 +15,4 @@ create table if not exists public.launcher_environment_access (
 
 alter table public.launcher_environment_access enable row level security;
 revoke all on public.launcher_environment_access from anon, authenticated;
+grant select on public.launcher_environment_access to service_role;
