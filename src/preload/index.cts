@@ -19,7 +19,8 @@ const api = {
   listServers: () => ipcRenderer.invoke("catalog:list") as Promise<ServerPreset[]>,
   serverStatus: (server: { host: string; port: number }) => ipcRenderer.invoke("server:status", server) as Promise<ServerStatus>,
   defaultInstanceRoot: () => ipcRenderer.invoke("paths:defaultInstanceRoot") as Promise<string>,
-  userContentRoot: (instanceRoot: string) => ipcRenderer.invoke("paths:userContentRoot", instanceRoot) as Promise<string>,
+  userContentPaths: (request: { instanceRoot: string; minecraftVersion: string; loaderKind: ServerPreset["loader"]["kind"] }) =>
+    ipcRenderer.invoke("paths:userContent", request) as Promise<{ userModsDir: string; shaderpacksDir: string }>,
   login: () => ipcRenderer.invoke("account:login") as Promise<LoginResult>,
   cancelLogin: () => ipcRenderer.invoke("account:cancelLogin") as Promise<LoginCancellationResult>,
   logout: () => ipcRenderer.invoke("account:logout") as Promise<AccessStatus>,

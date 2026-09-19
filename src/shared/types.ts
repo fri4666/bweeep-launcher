@@ -30,6 +30,10 @@ export interface ModpackManifest {
     kind: ServerSoftwareKind;
     version: string;
   };
+  clientFeatures?: {
+    /** Requires a matching Bweeep client bridge and locks the game after a disconnect. */
+    connectionLock: boolean;
+  };
   server: {
     host: string;
     port: number;
@@ -159,4 +163,5 @@ export interface UserContentStatus {
   sharedOptionsPath: string;
   copiedMods: number;
   removedManagedMods: number;
+  blockedMods: string[];
 }
