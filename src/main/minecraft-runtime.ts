@@ -101,7 +101,7 @@ async function installFabric(
     side: "client",
     fetch: fetchWithSystemNetwork
   }), runtime, {
-    onEvent: (event) => progress({ kind: "info", stage: "Fabric", message: `Fabric 처리: ${event.type}` })
+    onEvent: (event) => publishInstallerEvent(progress, "Fabric", event)
   });
   return installed;
 }
@@ -148,7 +148,7 @@ async function resolveRuntime(
   await executeInstallWorkflow(
     createJavaRuntimeInstallWorkflow({ target: targets[0] as Parameters<typeof createJavaRuntimeInstallWorkflow>[0]["target"], destination: path.dirname(path.dirname(bundled)) }),
     runtime,
-    { onEvent: (event) => progress({ kind: "info", stage: "Java 런타임", message: `Java 파일 처리: ${event.type}` }) }
+    { onEvent: (event) => publishInstallerEvent(progress, "Java 런타임", event) }
   );
   const java = await resolveJava(bundled);
   if (!java || java.majorVersion < requiredJava.majorVersion) {
@@ -175,12 +175,12 @@ async function installMinecraftBase(
   ].filter((file): file is NonNullable<typeof file> => Boolean(file));
   progress({ kind: "info", stage: "라이브러리", message: `게임 파일과 라이브러리 ${baseFiles.length}개를 준비하는 중` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-base", type: "files", files: baseFiles }] }, runtime, {
-    onEvent: (event) => progress({ kind: "info", stage: "라이브러리", message: `라이브러리 처리: ${event.type}` })
+    onEvent: (event) => publishInstallerEvent(progress, "라이브러리", event)
   });
   const assetFiles = await resolveAssetObjectInstallFiles(resolved, minecraft);
   progress({ kind: "info", stage: "게임 리소스", message: `게임 리소스 ${assetFiles.length}개를 준비하는 중` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-assets", type: "files", files: assetFiles }] }, runtime, {
-    onEvent: (event) => progress({ kind: "info", stage: "게임 리소스", message: `게임 리소스 처리: ${event.type}` })
+    onEvent: (event) => publishInstallerEvent(progress, "게임 리소스", event)
   });
   return resolved.id;
 }
@@ -206,7 +206,20 @@ async function installNeoForge(
       side: "client"
     }),
     runtime,
-    { onEvent: (event) => progress({ kind: "info", stage: "NeoForge", message: `NeoForge 처리: ${event.type}` }) }
+    { onEvent: (event) => publishInstallerEvent(progress, "NeoForge", event) }
   );
   return installed.version;
+}
+
+function publishInstallerEvent(progress: ProgressSink, stage: string, event: unknown): void {
+  progress({ kind: "info", stage, message: `${stage}: ${installEventDetail(event)}` });
+}
+
+function installEventDetail(event: unknown): string {
+  if (!event || typeof event !== "object") return "설치 작업 처리 중";
+  const record = event as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type : "작업";
+  const target = [record.filePath, record.path, record.file, record.id, record.name]
+    .find((value): value is string => typeof value === "string" && value.length > 0);
+  return target ? `${type} · ${target}` : type;
 }

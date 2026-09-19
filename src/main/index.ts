@@ -390,7 +390,18 @@ app.whenReady().then(async () => {
     }
     const runId = ++gameRunId;
     setGameStatus({ state: "starting" });
-    const progress = (payload: SyncProgress) => event.sender.send("modpack:progress", payload);
+    const progress = (payload: SyncProgress) => {
+      event.sender.send("modpack:progress", payload);
+      void writeGameLog("launch.progress", {
+        kind: payload.kind,
+        stage: payload.stage ?? null,
+        message: payload.message,
+        elapsedMs: payload.elapsedMs ?? null,
+        completed: payload.completed ?? null,
+        total: payload.total ?? null,
+        filePath: payload.filePath ?? null
+      });
+    };
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });

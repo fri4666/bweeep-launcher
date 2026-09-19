@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { bundledFeatureMods } from "../dist/src/main/client-feature-mods.js";
-import { prepareUserContent } from "../dist/src/main/user-content.js";
+import { captureSharedOptions, prepareUserContent } from "../dist/src/main/user-content.js";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "bweeep-user-content-"));
 try {
@@ -32,6 +32,16 @@ try {
   assert.deepEqual(result.blockedMods, ["required.jar"]);
   assert.equal(await fs.readFile(path.join(instance, "mods", "required.jar"), "utf8"), "server-owned");
   assert.equal(await fs.readFile(path.join(instance, "mods", "shader-helper.jar"), "utf8"), "personal-ok");
+  await Promise.all([
+    fs.writeFile(path.join(instance, "options.txt"), "sensitivity:0.42\nkey_key.jump:key.keyboard.space"),
+    fs.writeFile(path.join(instance, "optionsof.txt"), "ofFastRender:true")
+  ]);
+  await captureSharedOptions(root, instance);
+  const switchedInstance = path.join(root, "switched-pack");
+  await fs.mkdir(switchedInstance, { recursive: true });
+  await prepareUserContent(root, switchedInstance, { ...manifest, id: "switched-pack" });
+  assert.equal(await fs.readFile(path.join(switchedInstance, "options.txt"), "utf8"), "sensitivity:0.42\nkey_key.jump:key.keyboard.space");
+  assert.equal(await fs.readFile(path.join(switchedInstance, "optionsof.txt"), "utf8"), "ofFastRender:true");
   assert.equal(bundledFeatureMods("/resources", { ...manifest, clientFeatures: { connectionLock: true } }).length, 2);
   assert.throws(() => bundledFeatureMods("/resources", {
     ...manifest,
