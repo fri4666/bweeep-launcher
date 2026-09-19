@@ -1,6 +1,11 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
 import { getBearerToken } from "./authorization.ts";
+import {
+  createDisplaySessionToken,
+  isDisplaySessionToken,
+  normalizeDisplayName
+} from "./display-name.ts";
 import { createGameTicket, isGameName, isGameTicket } from "./game-ticket.ts";
 
 type RequestBody =
@@ -8,8 +13,10 @@ type RequestBody =
   | { action: "redeem"; code: string }
   | { action: "createInvite"; expiresInDays?: number; maxUses?: number }
   | { action: "manifest"; packId: string }
+  | { action: "setGameProfile"; gameName: string }
   | { action: "gameTicket"; gameName: string }
-  | { action: "consumeGameTicket"; ticket: string; gameName: string };
+  | { action: "consumeGameTicket"; ticket: string; gameName: string }
+  | { action: "setDisplayName"; sessionToken: string; displayName: string };
 
 interface ModpackFile {
   path: string;
@@ -22,8 +29,10 @@ interface ModpackManifest {
   schemaVersion: number;
   id: string;
   name: string;
+  audience?: "members" | "testers";
   version: string;
   minecraftVersion: string;
+  java: { majorVersion: number; component: string };
   loader: { kind: string; version: string };
   server: { host: string; port: number };
   files: ModpackFile[];
@@ -78,11 +87,60 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ message: "게임 서버 인증을 확인하지 못했습니다." }, 500);
     }
     if (!consumed) return json({ ok: false, message: "만료되었거나 이미 사용한 인증표입니다." }, 401);
+    const displaySessionToken = createDisplaySessionToken();
+    const now = new Date();
+    const displaySessionExpiresAt = new Date(now.getTime() + 2 * 60 * 60_000).toISOString();
+    await supabaseAdmin.from("launcher_game_sessions").delete().lt("expires_at", now.toISOString());
+    const { error: sessionError } = await supabaseAdmin.from("launcher_game_sessions").insert({
+      session_hash: await sha256(displaySessionToken),
+      user_id: consumed.user_id,
+      expires_at: displaySessionExpiresAt
+    });
+    if (sessionError) {
+      console.error("display session creation failed", sessionError);
+      return json({ message: "이름 설정 세션을 만들지 못했습니다." }, 500);
+    }
+    const { data: savedName, error: savedNameError } = await supabaseAdmin
+      .from("launcher_display_names")
+      .select("display_name")
+      .eq("user_id", consumed.user_id)
+      .maybeSingle();
+    if (savedNameError) {
+      console.error("display name lookup failed", savedNameError);
+      return json({ message: "저장된 서버 이름을 확인하지 못했습니다." }, 500);
+    }
     return json({
       ok: true,
       userId: consumed.user_id,
       discordId: consumed.discord_id,
-      role: consumed.member_role
+      role: consumed.member_role,
+      displaySessionToken,
+      displaySessionExpiresAt,
+      displayName: savedName?.display_name ?? null
+    });
+  }
+
+  if (body.action === "setDisplayName") {
+    const displayName = normalizeDisplayName(body.displayName);
+    if (!displayName) {
+      return json({ ok: false, message: "이름은 한글·영문·숫자·공백·밑줄로 2~16자여야 합니다." }, 400);
+    }
+    const { data, error } = await supabaseAdmin.rpc("set_launcher_display_name_once", {
+      p_session_hash: await sha256(body.sessionToken),
+      p_display_name: displayName
+    });
+    if (error) {
+      console.error("display name save failed", error);
+      return json({ ok: false, message: "서버 이름을 저장하지 못했습니다." }, 500);
+    }
+    const result = data?.[0];
+    if (!result) {
+      return json({ ok: false, message: "이름 설정 시간이 만료되었습니다. 다시 접속해주세요." }, 401);
+    }
+    return json({
+      ok: Boolean(result.ok),
+      displayName: result.saved_name,
+      alreadySet: Boolean(result.already_set)
     });
   }
 
@@ -107,11 +165,34 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ message: "권한 정보를 조회하지 못했습니다." }, 500);
     }
 
+    const { data: testAccess, error: testAccessError } = await supabaseAdmin
+      .from("launcher_environment_access")
+      .select("environment")
+      .eq("user_id", userId)
+      .eq("environment", "test")
+      .maybeSingle();
+    if (testAccessError) {
+      console.error("launcher test access query failed", testAccessError);
+      return json({ message: "테스트 서버 권한을 조회하지 못했습니다." }, 500);
+    }
+    const testAllowed = membership?.role === "admin" || Boolean(testAccess);
+
     if (body.action === "status") {
+      const { data: profile, error: profileError } = await supabaseAdmin
+        .from("launcher_profiles")
+        .select("game_name")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (profileError) {
+        console.error("launcher profile query failed", profileError);
+        return json({ message: "게임 프로필을 조회하지 못했습니다." }, 500);
+      }
       return json({
         allowed: Boolean(membership),
         isAdmin: membership?.role === "admin",
-        reason: membership ? "런처 사용 권한이 있습니다." : "초대 코드가 필요합니다."
+        testAllowed,
+        reason: membership ? "런처 사용 권한이 있습니다." : "초대 코드가 필요합니다.",
+        gameName: profile?.game_name ?? null
       });
     }
 
@@ -134,6 +215,20 @@ async function handleRequest(request: Request): Promise<Response> {
 
     if (!membership) {
       return json({ message: "초대 코드가 필요합니다." }, 403);
+    }
+
+    if (body.action === "setGameProfile") {
+      if (!isGameName(body.gameName)) {
+        return json({ message: "인게임 이름은 영문·숫자·밑줄 3~16자로 입력해 주세요." }, 400);
+      }
+      const { error } = await supabaseAdmin
+        .from("launcher_profiles")
+        .upsert({ user_id: userId, game_name: body.gameName }, { onConflict: "user_id" });
+      if (error) {
+        console.error("launcher profile save failed", error);
+        return json({ message: "인게임 이름을 저장하지 못했습니다." }, 500);
+      }
+      return json({ ok: true, gameName: body.gameName });
     }
 
     if (body.action === "gameTicket") {
@@ -181,6 +276,9 @@ async function handleRequest(request: Request): Promise<Response> {
       }
 
       const manifest = await resolveManifestDownloads(supabaseAdmin, data.manifest);
+      if (manifest.audience === "testers" && !testAllowed) {
+        return json({ message: "테스트 서버는 지정된 테스터만 접속할 수 있습니다." }, 403);
+      }
       return json({ manifest, version: data.version });
     }
 
@@ -214,8 +312,12 @@ function isRequestBody(value: unknown): value is RequestBody {
   if (body.action === "status") return true;
   if (body.action === "redeem") return typeof body.code === "string";
   if (body.action === "manifest") return typeof body.packId === "string";
+  if (body.action === "setGameProfile") return isGameName(body.gameName);
   if (body.action === "gameTicket") return isGameName(body.gameName);
   if (body.action === "consumeGameTicket") return isGameTicket(body.ticket) && isGameName(body.gameName);
+  if (body.action === "setDisplayName") {
+    return isDisplaySessionToken(body.sessionToken) && typeof body.displayName === "string";
+  }
   return body.action === "createInvite";
 }
 
@@ -271,7 +373,10 @@ function parseStorageObjectUrl(value: string): { bucket: string; path: string } 
 function isModpackManifest(value: unknown): value is ModpackManifest {
   if (!value || typeof value !== "object") return false;
   const manifest = value as Partial<ModpackManifest>;
-  return Array.isArray(manifest.files) && manifest.files.every((file) =>
+  return typeof manifest.id === "string" && typeof manifest.minecraftVersion === "string" &&
+    typeof manifest.loader?.kind === "string" && typeof manifest.loader.version === "string" &&
+    Number.isSafeInteger(manifest.java?.majorVersion) && manifest.java.majorVersion >= 21 &&
+    typeof manifest.java.component === "string" && Array.isArray(manifest.files) && manifest.files.every((file) =>
     file && typeof file.path === "string" && typeof file.url === "string" &&
     typeof file.size === "number" && typeof file.sha256 === "string"
   );

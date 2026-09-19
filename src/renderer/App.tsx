@@ -70,6 +70,7 @@ function App() {
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
+  const [gameNameInput, setGameNameInput] = useState("");
 
   useEffect(() => {
     void Promise.allSettled([
@@ -88,6 +89,7 @@ function App() {
       if (status.status === "fulfilled") {
         setAccess(status.value);
         setUser(status.value.user ?? null);
+        setGameNameInput(status.value.user?.gameName ?? "");
         if (status.value.unavailable) setNotice(status.value.reason);
       } else {
         setAccess({ loggedIn: false, allowed: false, isAdmin: false, unavailable: true, reason: "로그인 상태를 확인하지 못했습니다." });
@@ -175,9 +177,13 @@ function App() {
     return () => window.clearInterval(interval);
   }, [connection, refreshServerStatus]);
 
+  const availableServers = useMemo(
+    () => servers.filter((server) => server.environment !== "test" || access?.testAllowed === true),
+    [servers, access?.testAllowed]
+  );
   const selected = useMemo(
-    () => servers.find((server) => server.id === selectedId) ?? servers[0],
-    [servers, selectedId]
+    () => availableServers.find((server) => server.id === selectedId) ?? availableServers[0],
+    [availableServers, selectedId]
   );
 
   const canUseLauncher = Boolean(access?.allowed);
@@ -185,10 +191,12 @@ function App() {
   const serverStatusMessage = serverChecking ? "서버 연결 확인 중" : serverStatus?.message ?? "서버 확인 중";
   const serverStatusDetail = connection
     ? serverChecking
-      ? `${connection.host}:${connection.port} · 실시간 검사 중`
+      ? "실시간 검사 중"
       : serverCheckedAt
-        ? `${connection.host}:${connection.port} · ${serverStatus?.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)} 확인`
-        : `${connection.host}:${connection.port} · 검사 대기 중`
+        ? serverStatus?.online
+          ? `${serverStatus.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)} 확인`
+          : ""
+        : "검사 대기 중"
     : "연결 정보 확인 중";
   const progressPercent = syncProgress?.total
     ? Math.round(((syncProgress.completed ?? 0) / syncProgress.total) * 100)
@@ -200,6 +208,7 @@ function App() {
       const status = await window.bweeep.accessStatus();
       setAccess(status);
       setUser(status.user ?? fallbackUser);
+      setGameNameInput(status.user?.gameName ?? fallbackUser?.gameName ?? "");
       setNotice(status.reason);
     } catch (error) {
       const message = error instanceof Error ? error.message : "접근 권한을 확인하지 못했습니다.";
@@ -311,6 +320,20 @@ function App() {
     }
   }
 
+  async function selectServer(nextId: string) {
+    const next = servers.find((server) => server.id === nextId);
+    if (!next) return;
+    setSelectedId(nextId);
+    setConnection(next.server);
+    setHostInput(next.server.host);
+    setPortInput(String(next.server.port));
+    try {
+      await window.bweeep.saveServerConnection(next.server);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "서버 선택을 저장하지 못했습니다.");
+    }
+  }
+
   async function logout() {
     try {
       const status = await window.bweeep.logout();
@@ -323,6 +346,27 @@ function App() {
       setNotice(status.reason);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function saveGameProfile() {
+    try {
+      const saved = await window.bweeep.setGameProfile(gameNameInput.trim());
+      setUser(saved);
+      setAccess((current) => current ? { ...current, user: saved } : current);
+      setGameNameInput(saved.gameName ?? "");
+      setNotice("인게임 이름을 저장했습니다. 다음 실행부터 적용됩니다.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "인게임 이름을 저장하지 못했습니다.");
+    }
+  }
+
+  async function openPersonalFolder(kind: "mods" | "shaderpacks") {
+    try {
+      const root = await window.bweeep.userContentRoot(instanceRoot.trim());
+      await window.bweeep.openPath(`${root}\\${kind}`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "내 콘텐츠 폴더를 열지 못했습니다.");
     }
   }
 
@@ -387,7 +431,7 @@ function App() {
           <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
           <p className="eyebrow">Bweeep launcher</p>
           <h1>로그인하고 시작하세요</h1>
-          <p className="entryDescription">친구 전용 모드팩과 서버는 로그인 후에 표시됩니다.</p>
+          <p className="entryDescription">친구 전용 생존 서버는 로그인 후에 표시됩니다.</p>
           <div className="entryChoices">
             <button disabled={loginPending} onClick={() => void login()}>
               <strong>{loginPending ? "Discord 로그인 진행 중" : "Discord로 로그인"}</strong>
@@ -448,7 +492,7 @@ function App() {
             <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
           </span>
           <div>
-            <p className="eyebrow">모드팩 런처</p>
+            <p className="eyebrow">Minecraft 런처</p>
             <h1 className="brandWord">붸에엡</h1>
           </div>
         </div>
@@ -461,8 +505,8 @@ function App() {
         <div className="supportPanel">
           <div>
             <span className="accessStamp">서버 멤버 전용</span>
-            <strong>함께 떠나는 모드팩</strong>
-            <p>초대받은 친구들과 같은 모드팩으로 바로 시작할 수 있어요.</p>
+            <strong>함께 떠나는 생존 서버</strong>
+            <p>초대받은 친구들과 같은 Minecraft 버전으로 바로 시작할 수 있어요.</p>
           </div>
         </div>
       </aside>
@@ -484,13 +528,18 @@ function App() {
         <section className="hero">
           <div className="heroBackdrop" />
           <div className="heroCopy">
-            <p className="eyebrow">Create Aeronautics</p>
+            <p className="eyebrow">순정 생존 서버</p>
             <h2>{selected?.name ?? "서버 없음"}</h2>
-            <p>서버에 맞는 모드팩을 검사하고, 다른 파일만 받아서 같은 환경으로 맞춥니다.</p>
+            <p>서버에 맞는 Minecraft 버전을 준비하고, 바로 같은 월드로 접속합니다.</p>
+            <label className="serverPicker">서버 선택
+              <select value={selected?.id ?? ""} onChange={(event) => void selectServer(event.target.value)}>
+                {availableServers.map((server) => <option key={server.id} value={server.id}>{server.environment === "test" ? "테스트 서버 · " : "본 서버 · "}{server.name} · Minecraft {server.minecraftVersion}</option>)}
+              </select>
+            </label>
             <div className="chips">
-              <span>Minecraft 1.21.1</span>
-              <span>NeoForge</span>
-              <span>서버 멤버 전용</span>
+              <span>Minecraft {selected?.minecraftVersion ?? "-"}</span>
+              <span>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected?.loader.kind ?? "-"}</span>
+              <span>{selected?.environment === "test" ? "지정 테스터 전용" : "서버 멤버 전용"}</span>
             </div>
           </div>
           <div className="actionDock" aria-live="polite">
@@ -503,7 +552,7 @@ function App() {
                   {syncing
                     ? `${syncProgress?.total ?? 0}개 파일 중 ${syncProgress?.completed ?? 0}개 처리`
                     : syncError ? "업데이트를 완료하지 못했어요"
-                    : result ? "같은 버전으로 준비됐어요" : connection ? `${connection.host}:${connection.port}` : "연결 정보 확인 중"}
+                    : result ? "같은 버전으로 준비됐어요" : connection ? "전용 서버 연결 준비" : "연결 정보 확인 중"}
                 </strong>
                 {syncing ? (
                   <>
@@ -521,11 +570,11 @@ function App() {
             </button>
           </div>
         </section>
-        <section className="serverSummary" aria-label="모드팩 정보">
-          <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatusMessage}</strong><small>{serverCheckedAt && !serverChecking ? `${serverStatus?.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)}` : "실시간 확인"}</small></article>
-          <article className="quickFact"><span className="factIcon">◆</span><span>모드팩</span><strong>{selected?.name ?? "없음"}</strong></article>
+        <section className="serverSummary" aria-label="서버 정보">
+          <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatusMessage}</strong><small>{serverCheckedAt && !serverChecking && serverStatus?.online ? `${serverStatus.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)}` : serverStatus?.online ? "실시간 확인" : ""}</small></article>
+          <article className="quickFact"><span className="factIcon">◆</span><span>게임</span><strong>{selected?.name ?? "없음"}</strong></article>
           <article className="quickFact"><span className="factIcon">▰</span><span>Minecraft</span><strong>{selected?.minecraftVersion ?? "-"}</strong></article>
-          <article className="quickFact"><span className="factIcon">◈</span><span>모드 로더</span><strong>{selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong></article>
+          <article className="quickFact"><span className="factIcon">◈</span><span>실행 방식</span><strong>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong></article>
         </section>
       </section>
 
@@ -626,6 +675,27 @@ function App() {
             </header>
             <section className="panel connectionPanel">
               <div className="panelHeader">
+                <h3>인게임 프로필</h3>
+                <span>Discord 계정에 연결되어 모든 서버에서 사용됩니다.</span>
+              </div>
+              <div className="connectionFields">
+                <label>인게임 이름<input maxLength={16} value={gameNameInput} placeholder="영문·숫자·밑줄 3~16자" onChange={(event: React.ChangeEvent<HTMLInputElement>) => setGameNameInput(event.target.value)} /></label>
+              </div>
+              <button disabled={!/^[A-Za-z0-9_]{3,16}$/.test(gameNameInput.trim())} onClick={() => void saveGameProfile()}>인게임 이름 저장</button>
+            </section>
+            <section className="panel connectionPanel">
+              <div className="panelHeader">
+                <h3>내 모드와 셰이더</h3>
+                <span>여기에 넣은 파일은 서버 전환 후에도 유지됩니다.</span>
+              </div>
+              <div className="updateActions">
+                <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("mods")}>내 모드 폴더 열기</button>
+                <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("shaderpacks")}>셰이더 폴더 열기</button>
+              </div>
+              <p className="notice">모드는 .jar, 셰이더는 .zip 파일을 넣으세요. 현재 Minecraft 버전과 로더에 맞는 파일만 사용해야 합니다.</p>
+            </section>
+            <section className="panel connectionPanel">
+              <div className="panelHeader">
                 <h3>서버 연결</h3>
                 <span>게임 실행과 상태 확인에 사용됩니다.</span>
               </div>
@@ -646,7 +716,7 @@ function App() {
         <div className="modalBackdrop">
           <section className="updateModal" aria-label="런처 업데이트" onClick={(event) => event.stopPropagation()}>
             <p className="eyebrow">Bweeep update</p>
-            <h2>{launcherUpdate.state === "error" ? "자동 업데이트에 실패했어요" : "런처를 자동 업데이트하고 있어요"}</h2>
+            <h2>{launcherUpdate.state === "error" ? "업데이트에 실패했어요" : launcherUpdate.state === "available" ? "새 런처 업데이트가 있어요" : "런처를 업데이트하고 있어요"}</h2>
             {launcherUpdate.update && <p className="updateVersion">v{launcherUpdate.update.version}</p>}
             {launcherUpdate.state === "downloading" && (
               <>
@@ -655,13 +725,15 @@ function App() {
                 <small>{launcherUpdate.percent ?? 0}%</small>
               </>
             )}
+            {launcherUpdate.state === "available" && <p>여러 버그를 수정하고 안정성을 개선한 새 버전입니다.</p>}
             {launcherUpdate.state === "ready" && <p>{gameBusy ? "게임이 종료되면 업데이트를 설치합니다." : "다운로드를 마쳤습니다. 잠시 후 자동으로 재시작합니다."}</p>}
             {launcherUpdate.state === "installing" && <p>업데이트를 설치하고 다시 시작하는 중입니다.</p>}
             {launcherUpdate.state === "error" && <p>{launcherUpdate.message ?? "자동 업데이트에 실패했습니다."}</p>}
             {launcherUpdate.update && launcherUpdate.update.notes.length > 0 && <ul>{launcherUpdate.update.notes.map((note) => <li key={note}>{note}</li>)}</ul>}
-            {launcherUpdate.state === "error" && (
+            {(launcherUpdate.state === "available" || launcherUpdate.state === "error") && (
               <div className="updateActions">
-                <button className="launchButton" onClick={() => void window.bweeep.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest")}>릴리스 페이지 열기</button>
+                {launcherUpdate.state === "available" && <button className="launchButton" onClick={() => void window.bweeep.downloadLauncherUpdate()}>업데이트하기</button>}
+                {launcherUpdate.state === "error" && <button className="launchButton" onClick={() => void window.bweeep.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest")}>릴리스 페이지 열기</button>}
                 <button className="closeButton" onClick={() => setUpdateOpen(false)}>닫기</button>
               </div>
             )}
@@ -678,7 +750,7 @@ function normalizeInviteCode(value: string): string {
 }
 
 function shouldShowUpdate(status: LauncherUpdateStatus): boolean {
-  return ["downloading", "ready", "installing", "error"].includes(status.state);
+  return ["available", "downloading", "ready", "installing", "error"].includes(status.state);
 }
 
 function formatRelativeTime(timestamp: number, now = Date.now()): string {

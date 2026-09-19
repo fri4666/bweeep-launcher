@@ -158,6 +158,11 @@ if (accessUnavailable) {
 } else if (signedIn) {
   await page.waitForFunction(() => window.__serverStatusCalls >= 2, null, { timeout: 7_000 });
   interactionChecks.push("live-server-polling");
+  const mainText = await page.locator("main").innerText();
+  if (mainText.includes("server.fri4666.com") || mainText.includes(":25565")) {
+    throw new Error("server address is visible on the main screen");
+  }
+  interactionChecks.push("server-address-hidden");
   const serverFact = await page.locator(".quickFact").filter({ hasText: "서버 상태" }).innerText();
   if (!serverFact.includes("방금 전") || /\d{1,2}시\s*\d{1,2}분|\d{1,2}:\d{2}/.test(serverFact)) {
     throw new Error(`server checked time is not relative: ${serverFact}`);

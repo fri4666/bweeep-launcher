@@ -13,14 +13,14 @@ export async function checkServer(server: { host: string; port: number }): Promi
         online,
         host,
         port,
-        latencyMs: Math.round(performance.now() - startedAt),
-        message
+        ...(online ? { latencyMs: Math.round(performance.now() - startedAt) } : {}),
+        message: online ? message : "연결 끊김"
       });
     };
 
     socket.setTimeout(3500);
     socket.once("connect", () => finish(true, "서버 연결 가능"));
-    socket.once("timeout", () => finish(false, "서버 응답 없음"));
-    socket.once("error", () => finish(false, "서버에 연결할 수 없음"));
+    socket.once("timeout", () => finish(false, "연결 끊김"));
+    socket.once("error", () => finish(false, "연결 끊김"));
   });
 }

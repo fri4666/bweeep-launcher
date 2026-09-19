@@ -4,7 +4,15 @@
   "name": "Create Aeronautics",
   "version": "2026.09.14",
   "minecraftVersion": "1.21.1",
+  "java": {
+    "majorVersion": 21,
+    "component": "java-runtime-delta"
+  },
   "loader": {
+    "kind": "neoforge",
+    "version": "21.1.228"
+  },
+  "serverLoader": {
     "kind": "neoforge",
     "version": "21.1.228"
   },

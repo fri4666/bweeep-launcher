@@ -16,7 +16,14 @@ interface SupabaseConfig {
 interface FunctionStatus {
   allowed: boolean;
   isAdmin: boolean;
+  testAllowed?: boolean;
   reason: string;
+  gameName?: string | null;
+}
+
+interface FunctionGameProfile {
+  ok: boolean;
+  gameName: string;
 }
 
 interface FunctionInviteResult extends FunctionStatus {
@@ -208,7 +215,14 @@ export class SupabaseAuth {
 
     try {
       const data = await this.invokeFunction<FunctionStatus>({ action: "status" }, "접근 권한을 확인하지 못했습니다.");
-      return { loggedIn: true, allowed: data.allowed, isAdmin: data.isAdmin, reason: data.reason, user };
+      return {
+        loggedIn: true,
+        allowed: data.allowed,
+        isAdmin: data.isAdmin,
+        testAllowed: data.testAllowed === true,
+        reason: data.reason,
+        user: { ...user, gameName: data.gameName ?? null }
+      };
     } catch (error) {
       if (!(error instanceof InvalidLauncherSessionError)) throw error;
       await this.signOut().catch(() => {
@@ -250,6 +264,16 @@ export class SupabaseAuth {
     return { code: data.code, expiresAt: data.expiresAt, maxUses: data.maxUses };
   }
 
+  async setGameProfile(user: LauncherUser | null, gameName: string): Promise<LauncherUser> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    const data = await this.invokeFunction<FunctionGameProfile>(
+      { action: "setGameProfile", gameName },
+      "인게임 이름을 저장하지 못했습니다."
+    );
+    if (!data.ok || !data.gameName) throw new Error("인게임 이름을 저장하지 못했습니다.");
+    return { ...user, gameName: data.gameName };
+  }
+
   async signOut(): Promise<void> {
     const client = await this.getClient();
     if (!client) return;
@@ -268,7 +292,7 @@ export class SupabaseAuth {
 
   async createGameLaunchAuthorization(user: LauncherUser | null): Promise<GameLaunchAuthorization> {
     if (!user) throw new Error("런처 로그인이 필요합니다.");
-    const identity = createOfflineLaunchIdentity(user.id, user.username);
+    const identity = createOfflineLaunchIdentity(user.id, user.gameName, user.globalName, user.username);
     const data = await this.invokeFunction<FunctionGameTicket>(
       { action: "gameTicket", gameName: identity.name },
       "게임 서버 인증표를 만들지 못했습니다."

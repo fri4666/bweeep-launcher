@@ -7,6 +7,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 @Mod(BweeepMod.MOD_ID)
 public final class BweeepMod {
@@ -14,6 +15,7 @@ public final class BweeepMod {
 
     public BweeepMod(IEventBus modBus, ModContainer ignoredContainer) {
         modBus.addListener(this::registerPayloads);
+        modBus.addListener(BweeepServer::registerConfigurationTask);
         NeoForge.EVENT_BUS.addListener(BweeepServer::onPlayerLogin);
         NeoForge.EVENT_BUS.addListener(BweeepServer::onPlayerLogout);
         NeoForge.EVENT_BUS.addListener(BweeepServer::onServerTick);
@@ -23,10 +25,16 @@ public final class BweeepMod {
     }
 
     private void registerPayloads(RegisterPayloadHandlersEvent event) {
-        event.registrar("1").playToServer(
+        PayloadRegistrar registrar = event.registrar("2");
+        registrar.commonToServer(
             GameTicketPayload.TYPE,
             GameTicketPayload.STREAM_CODEC,
             BweeepServer::handleTicket
+        );
+        registrar.configurationToClient(
+            TicketRequestPayload.TYPE,
+            TicketRequestPayload.STREAM_CODEC,
+            BweeepClient::handleTicketRequest
         );
     }
 }

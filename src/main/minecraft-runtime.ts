@@ -3,11 +3,13 @@ import fsp from "node:fs/promises";
 import { MinecraftFolder, Version, createMinecraftProcessWatcher, launch } from "@xmcl/core";
 import {
   createDefaultNodeInstallRuntime,
+  createFabricInstallWorkflow,
   createJavaRuntimeInstallWorkflow,
   createModernForgeInstallWorkflow,
   executeInstallManifest,
   executeInstallWorkflow,
   getPotentialJavaLocations,
+  getFabricLoaderArtifact,
   getVersionList,
   resolveAssetMetadataInstallFiles,
   resolveAssetObjectInstallFiles,
@@ -18,7 +20,7 @@ import {
   resolveNeoForgedInstallerFile
 } from "@xmcl/installer";
 import type { ModpackManifest, SyncProgress } from "../shared/types.js";
-import { ensureCompanionMod } from "./companion-mod.js";
+import { ensureBundledClientMods, type BundledClientMod } from "./companion-mod.js";
 import type { LaunchIdentity } from "./launch-identity.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
 
@@ -28,12 +30,12 @@ export async function installAndLaunch(
   manifest: ModpackManifest,
   instanceDir: string,
   getLaunchAuthorization: () => Promise<{ identity: LaunchIdentity; ticket: string }>,
-  companionModPath: string,
+  bundledClientMods: BundledClientMod[],
   progress: ProgressSink,
   onExit: () => void
 ): Promise<{ pid: number; version: string }> {
-  if (manifest.loader.kind !== "neoforge") {
-    throw new Error("현재 붸에엡은 NeoForge 모드팩 실행을 지원합니다.");
+  if (!["vanilla", "neoforge", "fabric"].includes(manifest.loader.kind)) {
+    throw new Error("현재 붸에엡은 순정, Fabric 및 NeoForge 모드팩 실행을 지원합니다.");
   }
 
   const runtime = createDefaultNodeInstallRuntime({
@@ -41,16 +43,21 @@ export async function installAndLaunch(
     download: downloadInstallFilesWithSystemNetwork
   });
   const minecraft = MinecraftFolder.from(instanceDir);
-  const javaPath = await resolveRuntime(instanceDir, runtime, progress);
-  const baseVersion = await installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, progress);
-  const version = await installNeoForge(minecraft, manifest, javaPath, runtime, progress);
-  await ensureCompanionMod(instanceDir, companionModPath);
+  const javaPath = await runStage(progress, "Java 런타임", () => resolveRuntime(instanceDir, manifest.java, runtime, progress));
+  const baseVersion = await runStage(progress, "Minecraft 기본 파일", () => installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, progress));
+  const version = manifest.loader.kind === "vanilla" ? baseVersion
+    : manifest.loader.kind === "fabric"
+      ? await runStage(progress, "Fabric 설치", () => installFabric(minecraft, manifest, runtime, progress))
+      : await runStage(progress, "NeoForge 설치", () => installNeoForge(minecraft, manifest, javaPath, runtime, progress));
+  if (manifest.loader.kind !== "vanilla") {
+    await ensureBundledClientMods(instanceDir, bundledClientMods);
+  }
   const quickPlayPath = path.join(instanceDir, "quickPlay", "bweeep.json");
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
-  progress({ kind: "info", message: "서버 접속 인증표 준비 중" });
-  const { identity, ticket: gameTicket } = await getLaunchAuthorization();
-  progress({ kind: "info", message: "Minecraft 실행 중" });
+  progress({ kind: "info", stage: "접속 인증", message: "서버 접속 인증표 준비 중" });
+  const { identity, ticket: gameTicket } = await runStage(progress, "접속 인증", getLaunchAuthorization);
+  progress({ kind: "info", stage: "게임 실행", message: "Minecraft 실행 명령을 준비하는 중" });
   const gameProcess = await launch({
     gamePath: instanceDir,
     resourcePath: instanceDir,
@@ -79,17 +86,56 @@ export async function installAndLaunch(
   return { pid: gameProcess.pid ?? 0, version: version || baseVersion };
 }
 
-async function resolveRuntime(instanceDir: string, runtime: ReturnType<typeof createDefaultNodeInstallRuntime>, progress: ProgressSink): Promise<string> {
+async function installFabric(
+  minecraft: MinecraftFolder,
+  manifest: ModpackManifest,
+  runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
+  progress: ProgressSink
+): Promise<string> {
+  progress({ kind: "info", stage: "Fabric", message: `Fabric ${manifest.loader.version} 설치 파일을 준비하는 중` });
+  const loader = await getFabricLoaderArtifact(manifest.minecraftVersion, manifest.loader.version, { fetch: fetchWithSystemNetwork });
+  const installed = await executeInstallWorkflow(createFabricInstallWorkflow({
+    minecraftVersion: manifest.minecraftVersion,
+    version: loader.loader.version,
+    minecraft,
+    side: "client",
+    fetch: fetchWithSystemNetwork
+  }), runtime, {
+    onEvent: (event) => progress({ kind: "info", stage: "Fabric", message: `Fabric 처리: ${event.type}` })
+  });
+  return installed;
+}
+
+async function runStage<T>(progress: ProgressSink, stage: string, action: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  progress({ kind: "info", stage, message: `${stage} 시작` });
+  try {
+    const result = await action();
+    progress({ kind: "info", stage, elapsedMs: Date.now() - startedAt, message: `${stage} 완료` });
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    progress({ kind: "error", stage, elapsedMs: Date.now() - startedAt, message: `${stage} 실패: ${message}` });
+    throw error;
+  }
+}
+
+async function resolveRuntime(
+  instanceDir: string,
+  requiredJava: ModpackManifest["java"],
+  runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
+  progress: ProgressSink
+): Promise<string> {
   const bundled = process.platform === "win32"
     ? path.join(instanceDir, ".bweeep", "runtime", "bin", "javaw.exe")
     : path.join(instanceDir, ".bweeep", "runtime", "bin", "java");
   const candidates = [bundled, ...(await getPotentialJavaLocations())];
   for (const candidate of candidates) {
     const java = await resolveJava(candidate);
-    if (java && java.majorVersion >= 21) return java.path;
+    if (java && java.majorVersion >= requiredJava.majorVersion) return java.path;
   }
 
-  progress({ kind: "info", message: "Minecraft용 Java 21을 준비하는 중" });
+  progress({ kind: "info", stage: "Java 런타임", message: `Minecraft용 Java ${requiredJava.majorVersion}을 찾지 못해 다운로드를 시작합니다.` });
   const platform = process.platform === "win32"
     ? process.arch === "arm64" ? "windows-arm64" : "windows-x64"
     : process.platform === "darwin" ? process.arch === "arm64" ? "mac-os-arm64" : "mac-os"
@@ -97,15 +143,17 @@ async function resolveRuntime(instanceDir: string, runtime: ReturnType<typeof cr
   const response = await fetchWithSystemNetwork("https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json");
   if (!response.ok) throw new Error("Java 런타임 목록을 가져오지 못했습니다.");
   const catalog = await response.json() as Record<string, Record<string, Array<unknown>>>;
-  const targets = catalog[platform]?.["java-runtime-delta"];
-  if (!targets?.[0]) throw new Error("이 PC용 Java 21 런타임을 찾지 못했습니다.");
+  const targets = catalog[platform]?.[requiredJava.component];
+  if (!targets?.[0]) throw new Error(`이 PC용 Java ${requiredJava.majorVersion} 런타임을 찾지 못했습니다.`);
   await executeInstallWorkflow(
     createJavaRuntimeInstallWorkflow({ target: targets[0] as Parameters<typeof createJavaRuntimeInstallWorkflow>[0]["target"], destination: path.dirname(path.dirname(bundled)) }),
     runtime,
-    { onEvent: (event) => progress({ kind: "info", message: `Java 준비: ${event.type}` }) }
+    { onEvent: (event) => progress({ kind: "info", stage: "Java 런타임", message: `Java 파일 처리: ${event.type}` }) }
   );
   const java = await resolveJava(bundled);
-  if (!java || java.majorVersion < 21) throw new Error("Java 21 설치를 확인하지 못했습니다.");
+  if (!java || java.majorVersion < requiredJava.majorVersion) {
+    throw new Error(`Java ${requiredJava.majorVersion} 설치를 확인하지 못했습니다.`);
+  }
   return java.path;
 }
 
@@ -115,7 +163,7 @@ async function installMinecraftBase(
   runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
   progress: ProgressSink
 ): Promise<string> {
-  progress({ kind: "info", message: `Minecraft ${minecraftVersion} 준비 중` });
+  progress({ kind: "info", stage: "게임 정보", message: `Minecraft ${minecraftVersion} 버전 정보를 확인하는 중` });
   const entry = (await getVersionList({ fetch: fetchWithSystemNetwork })).versions.find((item) => item.id === minecraftVersion);
   if (!entry) throw new Error(`Minecraft ${minecraftVersion} 정보를 찾지 못했습니다.`);
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-version", type: "files", files: [resolveMinecraftVersionJsonInstallFile(entry, minecraft)] }] }, runtime);
@@ -125,12 +173,14 @@ async function installMinecraftBase(
     ...resolveLibraryInstallFiles(resolved.libraries, minecraft),
     ...resolveAssetMetadataInstallFiles(resolved, minecraft)
   ].filter((file): file is NonNullable<typeof file> => Boolean(file));
+  progress({ kind: "info", stage: "라이브러리", message: `게임 파일과 라이브러리 ${baseFiles.length}개를 준비하는 중` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-base", type: "files", files: baseFiles }] }, runtime, {
-    onEvent: (event) => progress({ kind: "info", message: `Minecraft 준비: ${event.type}` })
+    onEvent: (event) => progress({ kind: "info", stage: "라이브러리", message: `라이브러리 처리: ${event.type}` })
   });
   const assetFiles = await resolveAssetObjectInstallFiles(resolved, minecraft);
+  progress({ kind: "info", stage: "게임 리소스", message: `게임 리소스 ${assetFiles.length}개를 준비하는 중` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-assets", type: "files", files: assetFiles }] }, runtime, {
-    onEvent: (event) => progress({ kind: "info", message: `게임 리소스 준비: ${event.type}` })
+    onEvent: (event) => progress({ kind: "info", stage: "게임 리소스", message: `게임 리소스 처리: ${event.type}` })
   });
   return resolved.id;
 }
@@ -142,7 +192,7 @@ async function installNeoForge(
   runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
   progress: ProgressSink
 ): Promise<string> {
-  progress({ kind: "info", message: `NeoForge ${manifest.loader.version} 준비 중` });
+  progress({ kind: "info", stage: "NeoForge", message: `NeoForge ${manifest.loader.version} 설치 파일을 준비하는 중` });
   const installer = await resolveNeoForgedInstallerFile("neoforge", manifest.loader.version, minecraft, {});
   const installed = await executeInstallWorkflow(
     createModernForgeInstallWorkflow({
@@ -156,7 +206,7 @@ async function installNeoForge(
       side: "client"
     }),
     runtime,
-    { onEvent: (event) => progress({ kind: "info", message: `NeoForge 준비: ${event.type}` }) }
+    { onEvent: (event) => progress({ kind: "info", stage: "NeoForge", message: `NeoForge 처리: ${event.type}` }) }
   );
   return installed.version;
 }

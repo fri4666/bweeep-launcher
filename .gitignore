@@ -10,3 +10,9 @@ resources/*.local.json
 supabase/.temp/
 companion-mod/.gradle/
 companion-mod/build/
+display-name-mod/.gradle/
+display-name-mod/build/
+fabric-mod/.gradle/
+fabric-mod/build/
+index-*.js
+latest.yml

@@ -1,0 +1,7 @@
+{
+  "required": true,
+  "package": "com.fri4666.bweeep.fabric.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": ["ServerPlayerDisplayNameMixin"],
+  "injectors": { "defaultRequire": 1 }
+}

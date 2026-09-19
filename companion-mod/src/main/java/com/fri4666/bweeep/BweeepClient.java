@@ -6,6 +6,7 @@ import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ScreenEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.network.PacketDistributor;
+import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 final class BweeepClient {
     private static boolean connected;
@@ -13,6 +14,16 @@ final class BweeepClient {
     private static boolean ticketSent;
 
     private BweeepClient() {}
+
+    static void handleTicketRequest(TicketRequestPayload ignored, IPayloadContext context) {
+        String ticket = System.getenv("BWEEP_GAME_TICKET");
+        if (ticket == null || ticket.isBlank()) {
+            context.disconnect(net.minecraft.network.chat.Component.literal("붸에엡 런처 인증 정보가 없습니다."));
+            return;
+        }
+        ticketSent = true;
+        context.reply(new GameTicketPayload(ticket));
+    }
 
     static void register() {
         NeoForge.EVENT_BUS.addListener(BweeepClient::onLogin);

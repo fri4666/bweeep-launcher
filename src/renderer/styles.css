@@ -219,7 +219,7 @@ h3 {
 .packThumbnail {
   width: 72px;
   height: 46px;
-  background: linear-gradient(90deg, rgba(17, 18, 20, 0.16), rgba(17, 18, 20, 0.5)), url("/images/create-aeronautics-hero.png") center / cover;
+  background: linear-gradient(135deg, #3d6c4a 0%, #274038 48%, #172124 100%);
   border-radius: 8px;
 }
 
@@ -455,7 +455,7 @@ h3 {
   background:
     linear-gradient(90deg, rgba(17, 18, 20, 0.88) 0%, rgba(17, 18, 20, 0.62) 42%, rgba(17, 18, 20, 0.24) 100%),
     linear-gradient(0deg, rgba(17, 18, 20, 0.86) 0%, rgba(17, 18, 20, 0.12) 55%),
-    url("/images/create-aeronautics-hero.png");
+    linear-gradient(135deg, #385d3f 0%, #253a32 52%, #182227 100%);
   background-position: center;
   background-size: cover;
   border-radius: var(--surface-radius);

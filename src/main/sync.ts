@@ -16,6 +16,8 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
   const total = manifest.files.length;
 
   await fsp.mkdir(instanceDir, { recursive: true });
+  const managedFilesPath = path.join(instanceDir, ".bweeep", "managed-files.json");
+  const previousManagedFiles = await readManagedFiles(managedFilesPath);
   await fsp.writeFile(
     path.join(instanceDir, "bweeep-manifest.json"),
     JSON.stringify(manifest, null, 2),
@@ -58,6 +60,16 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     });
   }
 
+  const nextManagedFiles = new Set(manifest.files.map((file) => file.path));
+  for (const obsoletePath of previousManagedFiles) {
+    if (nextManagedFiles.has(obsoletePath)) continue;
+    const obsoleteTarget = resolveInside(instanceDir, obsoletePath);
+    await fsp.rm(obsoleteTarget, { force: true });
+    progress({ kind: "info", message: `서버 전용 파일 제거: ${obsoletePath}`, filePath: obsoletePath });
+  }
+  await fsp.mkdir(path.dirname(managedFilesPath), { recursive: true });
+  await fsp.writeFile(managedFilesPath, JSON.stringify([...nextManagedFiles].sort(), null, 2), "utf8");
+
   const launchInfo = [
     `name=${manifest.name}`,
     `minecraft=${manifest.minecraftVersion}`,
@@ -70,8 +82,29 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
   return { manifest, instanceDir, downloaded, skipped };
 }
 
+async function readManagedFiles(filePath: string): Promise<string[]> {
+  try {
+    const value: unknown = JSON.parse(await fsp.readFile(filePath, "utf8"));
+    return Array.isArray(value) && value.every((item) => typeof item === "string")
+      ? value.filter((item) => !path.isAbsolute(item) && !item.split(/[\\/]+/).includes(".."))
+      : [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 export function assertManifest(manifest: ModpackManifest): void {
-  if (manifest.schemaVersion !== 1 || !manifest.files?.length) {
+  if (
+    manifest.schemaVersion !== 1 ||
+    !Array.isArray(manifest.files) ||
+    !manifest.id ||
+    !manifest.minecraftVersion ||
+    !manifest.loader?.kind ||
+    !Number.isSafeInteger(manifest.java?.majorVersion) ||
+    manifest.java.majorVersion < 21 ||
+    !manifest.java.component
+  ) {
     throw new Error("지원하지 않는 manifest 형식입니다.");
   }
   for (const file of manifest.files) {

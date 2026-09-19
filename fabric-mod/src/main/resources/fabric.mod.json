@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "bweeep_client",
+  "version": "${version}",
+  "name": "Bweeep Bridge & Display Name",
+  "description": "Authenticates Bweeep launcher sessions and provides one-time server display names.",
+  "authors": ["fri4666"],
+  "license": "All Rights Reserved",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["com.fri4666.bweeep.fabric.BweeepFabric"],
+    "client": ["com.fri4666.bweeep.fabric.BweeepFabricClient"]
+  },
+  "mixins": ["bweeep-fabric.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

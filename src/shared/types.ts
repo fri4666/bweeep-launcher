@@ -1,4 +1,5 @@
-export type LoaderKind = "neoforge" | "forge" | "fabric";
+export type LoaderKind = "vanilla" | "neoforge" | "forge" | "fabric";
+export type ServerSoftwareKind = LoaderKind | "paper" | "folia";
 
 export interface PackFile {
   path: string;
@@ -11,10 +12,22 @@ export interface ModpackManifest {
   schemaVersion: 1;
   id: string;
   name: string;
+  default?: boolean;
+  /** Test manifests are never returned to members without explicit test access. */
+  audience?: "members" | "testers";
   version: string;
   minecraftVersion: string;
+  java: {
+    majorVersion: number;
+    component: string;
+  };
   loader: {
     kind: LoaderKind;
+    version: string;
+  };
+  /** Server implementation. The client loader can differ for client-only features. */
+  serverLoader?: {
+    kind: ServerSoftwareKind;
     version: string;
   };
   server: {
@@ -32,7 +45,10 @@ export interface ServerPreset {
   description: string;
   server: { host: string; port: number };
   minecraftVersion: string;
+  java: { majorVersion: number; component: string };
   loader: { kind: LoaderKind; version: string };
+  serverLoader?: { kind: ServerSoftwareKind; version: string };
+  environment: "production" | "test";
 }
 
 export interface ServerStatus {
@@ -56,6 +72,8 @@ export interface SyncRequest {
 export interface SyncProgress {
   kind: "info" | "download" | "skip" | "done" | "error";
   message: string;
+  stage?: string;
+  elapsedMs?: number;
   completed?: number;
   total?: number;
   filePath?: string;
@@ -73,6 +91,7 @@ export interface LauncherUser {
   username: string;
   globalName?: string | null;
   avatarUrl?: string | null;
+  gameName?: string | null;
 }
 
 export interface LoginResult {
@@ -91,6 +110,7 @@ export interface AccessStatus {
   loggedIn: boolean;
   allowed: boolean;
   isAdmin: boolean;
+  testAllowed?: boolean;
   reason: string;
   user?: LauncherUser;
   unavailable?: boolean;
@@ -127,8 +147,16 @@ export interface LauncherUpdate {
 }
 
 export interface LauncherUpdateStatus {
-  state: "checking" | "current" | "downloading" | "ready" | "installing" | "error";
+  state: "checking" | "available" | "current" | "downloading" | "ready" | "installing" | "error";
   update?: LauncherUpdate;
   percent?: number;
   message?: string;
+}
+
+export interface UserContentStatus {
+  userModsDir: string;
+  shaderpacksDir: string;
+  sharedOptionsPath: string;
+  copiedMods: number;
+  removedManagedMods: number;
 }

@@ -1,12 +1,12 @@
 import fs from "node:fs/promises";
 import { assertManifest } from "../dist/src/main/sync.js";
 
-const manifest = JSON.parse(await fs.readFile(new URL("../resources/manifests/create-aeronautics.json", import.meta.url), "utf8"));
+const manifest = JSON.parse(await fs.readFile(new URL("../resources/manifests/vanilla-survival.json", import.meta.url), "utf8"));
 assertManifest(manifest);
 
 let rejected = false;
 try {
-  assertManifest({ ...manifest, files: [{ ...manifest.files[0], path: "../escape.jar" }] });
+  assertManifest({ ...manifest, files: [{ path: "../escape.jar", size: 1, sha256: "0".repeat(64), url: "https://example.test/escape.jar" }] });
 } catch {
   rejected = true;
 }

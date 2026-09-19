@@ -1,0 +1,10 @@
+{
+  "item.bweeep_client.name_token": "서버 이름 설정권",
+  "screen.bweeep_client.connecting": "서버 접속 중 · 이름 설정 후 바로 입장",
+  "screen.bweeep_client.title": "서버에서 사용할 이름",
+  "screen.bweeep_client.hint": "한글·영문·숫자·공백·밑줄, 2~16자",
+  "screen.bweeep_client.review": "이 이름으로 계속",
+  "screen.bweeep_client.confirm": "한 번만 설정하고 확정",
+  "screen.bweeep_client.back": "다시 확인",
+  "screen.bweeep_client.saving": "Supabase에 안전하게 저장하는 중입니다…"
+}

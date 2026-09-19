@@ -29,13 +29,13 @@ export function startLauncherUpdates(
     return;
   }
 
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
   autoUpdater.on("checking-for-update", () => setStatus({ state: "checking" }));
   autoUpdater.on("update-not-available", () => setStatus({ state: "current" }));
   autoUpdater.on("update-available", (info) => {
-    setStatus({ state: "downloading", update: toLauncherUpdate(info), percent: 0 });
+    setStatus({ state: "available", update: toLauncherUpdate(info), message: "새 업데이트를 설치할 수 있습니다." });
   });
   autoUpdater.on("download-progress", (progress) => {
     setStatus({
@@ -56,6 +56,17 @@ export function startLauncherUpdates(
   void checkForUpdates();
   const interval = setInterval(() => void checkForUpdates(), CHECK_INTERVAL_MS);
   interval.unref();
+}
+
+export async function downloadLauncherUpdate(): Promise<LauncherUpdateStatus> {
+  if (status.state !== "available") return status;
+  setStatus({ state: "downloading", update: status.update, percent: 0 });
+  try {
+    await autoUpdater.downloadUpdate();
+  } catch (error) {
+    setStatus({ state: "error", update: status.update, message: safeUpdateError(error) });
+  }
+  return status;
 }
 
 export function installPendingLauncherUpdate(): void {

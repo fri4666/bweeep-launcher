@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, ipcMain, session, shell } from "electron";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -11,8 +12,11 @@ import { AuthCallbackError, parseAuthCallback, parseInviteLink } from "./deep-li
 import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
-import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
+import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
+import { createOfflineLaunchIdentity } from "./launch-identity.js";
+import { captureSharedOptions, prepareUserContent, userContentRoot } from "./user-content.js";
 import type { GameStatus, LauncherUpdateStatus, LauncherUser, SyncProgress } from "../shared/types.js";
+import type { ModpackManifest } from "../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
@@ -25,6 +29,13 @@ const pendingInviteCodes: string[] = [];
 let inviteReceiverReady = false;
 let gameStatus: GameStatus = { state: "idle" };
 let gameRunId = 0;
+
+async function readBundledManifest(packId: string): Promise<ModpackManifest> {
+  const manifestPath = path.join(app.getAppPath(), "resources", "manifests", `${packId}.json`);
+  const manifest = JSON.parse(await fsp.readFile(manifestPath, "utf8")) as ModpackManifest;
+  assertManifest(manifest);
+  return manifest;
+}
 
 function setGameStatus(status: GameStatus): void {
   gameStatus = status;
@@ -214,12 +225,18 @@ async function createWindow(): Promise<BrowserWindow> {
 
 app.whenReady().then(async () => {
   await session.defaultSession.setProxy({ mode: "system" });
-  const defaultServer = getServerPresets()[0].server;
+  const serverPresets = await getServerPresets();
+  const defaultServer = serverPresets[0]?.server;
+  if (!defaultServer) throw new Error("사용 가능한 서버 manifest가 없습니다.");
   ipcMain.handle("catalog:list", () => getServerPresets());
   ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
   ipcMain.handle("paths:defaultInstanceRoot", () =>
     path.join(os.homedir(), "AppData", "Roaming", "Bweeep", "instances")
   );
+  ipcMain.handle("paths:userContentRoot", (_event, instanceRoot: unknown) => {
+    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
+    return userContentRoot(instanceRoot);
+  });
   ipcMain.handle("shell:openPath", async (_event, target: string) => {
     return shell.openPath(target);
   });
@@ -257,6 +274,11 @@ app.whenReady().then(async () => {
   ipcMain.handle("access:createInvite", (_event, maxUses: unknown) =>
     auth.createInvite(sessionUser, typeof maxUses === "number" ? maxUses : 1)
   );
+  ipcMain.handle("account:setGameProfile", async (_event, gameName: unknown) => {
+    if (typeof gameName !== "string") throw new Error("인게임 이름 형식이 올바르지 않습니다.");
+    sessionUser = await auth.setGameProfile(sessionUser, gameName);
+    return sessionUser;
+  });
   ipcMain.handle("invite:ready", () => {
     inviteReceiverReady = true;
     const firstInvite = pendingInviteCodes.shift() ?? null;
@@ -267,6 +289,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("server:saveConnection", (_event, connection: unknown) => writeServerConnection(connection, defaultServer));
   ipcMain.handle("server:resetConnection", () => resetServerConnection(defaultServer));
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
+  ipcMain.handle("launcher:downloadUpdate", () => downloadLauncherUpdate());
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:status", () => gameStatus);
@@ -280,22 +303,46 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
-      const manifest = await auth.getManifest(sessionUser, request.packId);
+      const manifest = request.packId === "vanilla-survival"
+        ? await readBundledManifest(request.packId)
+        : await auth.getManifest(sessionUser, request.packId);
       assertManifest(manifest);
       const server = await readServerConnection(defaultServer);
       const configuredManifest = { ...manifest, server };
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
+      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir);
+      progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 적용 · 서버 전용 모드 ${userContent.removedManagedMods}개 정리` });
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
+      const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
-      const companionModPath = path.join(app.getAppPath(), "resources", "client-mods", "bweeep-client-1.1.0.jar");
-      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, async () => {
-        await writeGameLog("launch.authorization.requested", { provider: "discord" });
-        const authorization = await auth.createGameLaunchAuthorization(sessionUser);
-        await writeGameLog("launch.authorization.created", { provider: "discord" });
-        return authorization;
-      }, companionModPath, progress, () => {
+      const clientModsDir = path.join(app.getAppPath(), "resources", "client-mods");
+      const bundledClientMods = configuredManifest.loader.kind === "neoforge" ? [
+        {
+          sourcePath: path.join(clientModsDir, "bweeep-client-1.2.0.jar"),
+          targetName: "bweeep-client.jar",
+          sha256: "4c8840d126f1939a1e66182cc086f3293bd0a8f75d5780d89df94ba23f02e70b"
+        },
+        {
+          sourcePath: path.join(clientModsDir, "bweeep-display-name-0.2.0.jar"),
+          targetName: "bweeep-display-name.jar",
+          sha256: "23f0c716cc8cb857ecf384f648a5c493745dd1bc9f53d1ab04ca9c40b632fed2"
+        }
+      ] : [];
+      const getLaunchAuthorization = configuredManifest.loader.kind === "vanilla"
+        ? async () => ({
+            identity: createOfflineLaunchIdentity(launchUser.id, launchUser.gameName, launchUser.globalName, launchUser.username),
+            ticket: ""
+          })
+        : async () => {
+            await writeGameLog("launch.authorization.requested", { provider: "discord" });
+            const authorization = await auth.createGameLaunchAuthorization(launchUser);
+            await writeGameLog("launch.authorization.created", { provider: "discord" });
+            return authorization;
+          };
+      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, () => {
         if (gameRunId === runId) setGameStatus({ state: "idle" });
+        void captureSharedOptions(request.instanceDir, synced.instanceDir);
         void writeGameLog("launch.minecraft.exited", { packId: request.packId });
       });
       if (gameRunId === runId) {
