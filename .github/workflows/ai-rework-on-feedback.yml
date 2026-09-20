@@ -1,0 +1,178 @@
+name: AI rework on trusted feedback
+
+on:
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, reopened]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ai-rework-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  rework:
+    # Only the repository owner can ask the agent to alter code.  A review,
+    # issue, or comment from anybody else is deliberately ignored.
+    if: >-
+      github.repository == 'fri4666/bweeep-launcher' &&
+      github.actor == 'fri4666' &&
+      (
+        (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested') ||
+        (github.event_name == 'issues') ||
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@ai-4666'))
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+
+    steps:
+      - name: Require automation credentials
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AI_4666_GITHUB_TOKEN: ${{ secrets.AI_4666_GITHUB_TOKEN }}
+        run: |
+          test -n "$OPENAI_API_KEY" || { echo 'Missing OPENAI_API_KEY repository secret.' >&2; exit 1; }
+          test -n "$AI_4666_GITHUB_TOKEN" || { echo 'Missing AI_4666_GITHUB_TOKEN repository secret.' >&2; exit 1; }
+
+      # Start from trusted main.  The next step explicitly switches only to a
+      # same-repository PR branch after checking its origin.
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.AI_4666_GITHUB_TOKEN }}
+
+      - name: Resolve the requested work
+        id: work
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          IS_PR_COMMENT: ${{ github.event.issue.pull_request != null }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == pull_request_review ]]; then
+            number="$PR_NUMBER"
+            feedback="$REVIEW_BODY"
+            kind=review
+          elif [[ "$EVENT_NAME" == issue_comment ]]; then
+            number="$ISSUE_NUMBER"
+            feedback="$COMMENT_BODY"
+            if [[ "$IS_PR_COMMENT" == true ]]; then
+              kind=comment
+            else
+              kind=issue
+            fi
+          else
+            number="$ISSUE_NUMBER"
+            feedback="$ISSUE_TITLE"$'\n\n'"$ISSUE_BODY"
+            kind=issue
+          fi
+
+          if [[ "$kind" == issue ]]; then
+            branch="fix/issue-${number}-follow-up"
+            echo "is_pr=false" >> "$GITHUB_OUTPUT"
+          else
+            pr_json="$(gh pr view "$number" --json headRefName,isCrossRepository,url)"
+            if [[ "$(jq -r .isCrossRepository <<<"$pr_json")" != false ]]; then
+              echo 'Fork PRs are intentionally not eligible for automated edits.' >&2
+              exit 1
+            fi
+            branch="$(jq -r .headRefName <<<"$pr_json")"
+            echo "is_pr=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          {
+            echo "number=$number"
+            echo "branch=$branch"
+            echo "kind=$kind"
+            echo 'feedback<<EOF'
+            echo "$feedback"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out the writable branch
+        env:
+          AI_4666_GITHUB_TOKEN: ${{ secrets.AI_4666_GITHUB_TOKEN }}
+          BRANCH: ${{ steps.work.outputs.branch }}
+          IS_PR: ${{ steps.work.outputs.is_pr }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${AI_4666_GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch origin main "$BRANCH"
+          if [[ "$IS_PR" == true ]]; then
+            git switch --create "$BRANCH" --force "origin/$BRANCH"
+          elif git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null; then
+            git switch --create "$BRANCH" --force "origin/$BRANCH"
+          else
+            git switch --create "$BRANCH" origin/main
+          fi
+
+      - name: Install project dependencies
+        run: npm ci
+
+      - name: Ask Codex to implement the feedback
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ':workspace'
+          safety-strategy: drop-sudo
+          allow-users: fri4666
+          prompt: |
+            You are maintaining ${{ github.repository }}.
+            A trusted owner requested follow-up work from a ${{ steps.work.outputs.kind }} on #${{ steps.work.outputs.number }}:
+
+            ${{ steps.work.outputs.feedback }}
+
+            Inspect the repository and implement only the requested, relevant changes. Preserve unrelated work. Run proportionate tests. Do not change repository settings, secrets, GitHub Actions permissions, or dependencies unless the feedback explicitly requires it. Do not commit or push: a separate constrained workflow step will commit your workspace changes.
+
+      - name: Commit and push a real change
+        id: push
+        env:
+          BRANCH: ${{ steps.work.outputs.branch }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name 'ai-4666'
+          git config user.email '331358957+ai-4666@users.noreply.github.com'
+          git add --all
+          git commit -m "fix: address owner feedback"
+          git push origin "HEAD:$BRANCH"
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Report PR rework
+        if: steps.work.outputs.is_pr == 'true' && steps.push.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AI_4666_GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.work.outputs.number }}
+          SHA: ${{ steps.push.outputs.sha }}
+        run: gh pr comment "$PR_NUMBER" --body "Owner feedback was addressed in ${SHA}. Please review the updated branch."
+
+      - name: Open a draft PR for issue work
+        if: steps.work.outputs.is_pr != 'true' && steps.push.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AI_4666_GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.work.outputs.number }}
+          BRANCH: ${{ steps.work.outputs.branch }}
+        run: |
+          existing="$(gh pr list --head "$BRANCH" --base main --state open --json url --jq '.[0].url')"
+          if [[ -z "$existing" || "$existing" == null ]]; then
+            gh pr create --draft --base main --head "$BRANCH" \
+              --title "fix: address issue #${ISSUE_NUMBER}" \
+              --body "Closes #${ISSUE_NUMBER}. Automated follow-up started from owner feedback."
+          fi
