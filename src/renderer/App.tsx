@@ -68,6 +68,7 @@ function App() {
   const [hostInput, setHostInput] = useState("");
   const [portInput, setPortInput] = useState("");
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
+  const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [updateOpen, setUpdateOpen] = useState(false);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
   const [gameNameInput, setGameNameInput] = useState("");
@@ -79,8 +80,9 @@ function App() {
       window.bweeep.accessStatus(),
       window.bweeep.serverConnection(),
       window.bweeep.checkLauncherUpdate(),
-      window.bweeep.gameStatus()
-    ]).then(([serverList, root, status, savedConnection, updateStatus, initialGameStatus]) => {
+      window.bweeep.gameStatus(),
+      window.bweeep.launcherChannel()
+    ]).then(([serverList, root, status, savedConnection, updateStatus, initialGameStatus, channel]) => {
       if (serverList.status === "fulfilled") {
         setServers(serverList.value);
         setSelectedId(serverList.value[0]?.id ?? "");
@@ -105,6 +107,7 @@ function App() {
         setUpdateOpen(shouldShowUpdate(updateStatus.value));
       }
       if (initialGameStatus.status === "fulfilled") setGameStatus(initialGameStatus.value);
+      if (channel.status === "fulfilled") setLauncherChannel(channel.value);
     });
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
       setLogs((current) => [...current, event]);
@@ -518,6 +521,19 @@ function App() {
             <div><strong>{serverStatusMessage}</strong><small>{serverStatusDetail}</small></div>
           </div>
           <div className="topbarActions">
+            {launcherChannel === "production" && access.testAllowed && (
+              <button
+                type="button"
+                className="testLauncherInstallButton"
+                aria-label="테스트 런처 열기"
+                title="테스트 런처 열기"
+                onClick={() => void window.bweeep.openTestLauncher()}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3v10m0 0 4-4m-4 4-4-4M5 17v3h14v-3" />
+                </svg>
+              </button>
+            )}
             <button className="profileBox" onClick={() => setProfileOpen(true)}>
               <ProfileAvatar user={user} />
               <div><strong>{user.globalName ?? user.username}</strong><small>Discord</small></div>
