@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "vanilla-survival",
+  "name": "Vanilla Survival",
+  "default": true,
+  "version": "2026.09.20",
+  "minecraftVersion": "26.3",
+  "java": {
+    "majorVersion": 25,
+    "component": "java-runtime-epsilon"
+  },
+  "loader": {
+    "kind": "vanilla",
+    "version": "none"
+  },
+  "serverLoader": {
+    "kind": "vanilla",
+    "version": "26.3"
+  },
+  "server": {
+    "host": "server.fri4666.com",
+    "port": 25565
+  },
+  "notes": "Completely vanilla Minecraft 26.3 survival server.",
+  "files": []
+}

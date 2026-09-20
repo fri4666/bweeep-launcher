@@ -1,0 +1,19 @@
+{
+  "item.bweeep_display_name.name_token": "Server Name Token",
+  "screen.bweeep_display_name.connecting": "CONNECTING · ENTER AFTER CHOOSING A NAME",
+  "screen.bweeep_display_name.title": "Choose your server display name",
+  "screen.bweeep_display_name.identity": "Minecraft ID %s will not change",
+  "screen.bweeep_display_name.label": "Display name",
+  "screen.bweeep_display_name.placeholder": "Enter a name",
+  "screen.bweeep_display_name.hint": "Letters, numbers, spaces, underscore; 2-16 characters",
+  "screen.bweeep_display_name.preview": "In-game preview",
+  "screen.bweeep_display_name.preview_empty": "Display name",
+  "screen.bweeep_display_name.once_warning": "Server login continues after saving. You cannot change this name later.",
+  "screen.bweeep_display_name.confirm_warning": "Register '%s'? You cannot change it afterward.",
+  "screen.bweeep_display_name.invalid": "That display name cannot be used.",
+  "screen.bweeep_display_name.saving": "Saving securely to Supabase…",
+  "screen.bweeep_display_name.review": "Continue with this name",
+  "screen.bweeep_display_name.confirm": "Set once and confirm",
+  "screen.bweeep_display_name.back": "Check again",
+  "screen.bweeep_display_name.done": "Done"
+}
