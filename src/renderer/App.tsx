@@ -10,7 +10,9 @@ import type {
   ServerPreset,
   ServerStatus,
   SyncProgress,
-  SyncResult
+  SyncResult,
+  UserContentFolders,
+  UserContentKind
 } from "../shared/types.js";
 import "./styles.css";
 
@@ -73,6 +75,8 @@ function App() {
   const [updateOpen, setUpdateOpen] = useState(false);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
   const [gameNameInput, setGameNameInput] = useState("");
+  const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
+  const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
 
   useEffect(() => {
     void Promise.allSettled([
@@ -148,6 +152,13 @@ function App() {
       unsubscribeInvite();
     };
   }, []);
+
+  useEffect(() => {
+    if (!instanceRoot) return;
+    void window.bweeep.userContentFolders(instanceRoot).then(setPersonalFolders).catch((error) => {
+      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 불러오지 못했습니다.");
+    });
+  }, [instanceRoot]);
 
   const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
     setServerChecking(true);
@@ -367,17 +378,33 @@ function App() {
     }
   }
 
-  async function openPersonalFolder(kind: "mods" | "shaderpacks") {
+  async function choosePersonalFolders(kind: UserContentKind) {
+    if (contentAction) return;
+    setContentAction(kind);
     try {
-      if (!selected) throw new Error("선택한 서버 정보를 찾지 못했습니다.");
-      const paths = await window.bweeep.userContentPaths({
-        instanceRoot: instanceRoot.trim(),
-        minecraftVersion: selected.minecraftVersion,
-        loaderKind: selected.loader.kind
-      });
-      await window.bweeep.openPath(kind === "mods" ? paths.userModsDir : paths.shaderpacksDir);
+      const result = await window.bweeep.chooseUserContentFolders(instanceRoot.trim(), kind);
+      setPersonalFolders(result.folders);
+      setNotice(result.selected > 0
+        ? `${kind === "mods" ? "모드" : "셰이더"} 폴더 ${result.selected}개를 저장했습니다. 다음 게임 실행에 적용됩니다.`
+        : "폴더 선택을 취소했거나 이미 추가된 폴더입니다.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "내 콘텐츠 폴더를 열지 못했습니다.");
+      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
+    } finally {
+      setContentAction(null);
+    }
+  }
+
+  async function removePersonalFolder(kind: UserContentKind, folder: string) {
+    if (contentAction) return;
+    setContentAction(kind);
+    try {
+      const folders = await window.bweeep.removeUserContentFolder(instanceRoot.trim(), kind, folder);
+      setPersonalFolders(folders);
+      setNotice(`${kind === "mods" ? "모드" : "셰이더"} 폴더를 저장 목록에서 뺐습니다. 다음 게임 실행부터 적용하지 않습니다.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
+    } finally {
+      setContentAction(null);
     }
   }
 
@@ -713,13 +740,30 @@ function App() {
             <section className="panel connectionPanel">
               <div className="panelHeader">
                 <h3>내 모드와 셰이더</h3>
-                <span>{selected ? `${selected.minecraftVersion} · ${selected.loader.kind} 전용으로 보관됩니다.` : "서버 전환 후에도 유지됩니다."}</span>
+                <span>선택한 폴더를 모두 저장해 서버 전환 뒤에도 적용합니다.</span>
               </div>
-              <div className="updateActions">
-                <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("mods")}>내 모드 폴더 열기</button>
-                <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("shaderpacks")}>셰이더 폴더 열기</button>
+              <div className="contentFolderGroups">
+                {(["mods", "shaderpacks"] as const).map((kind) => (
+                  <div className="contentFolderGroup" key={kind}>
+                    <div className="contentFolderLabel">
+                      <strong>{kind === "mods" ? "모드 폴더" : "셰이더 폴더"}</strong>
+                      <span>{kind === "mods" ? ".jar" : ".zip"} 파일 · 여러 폴더 가능</span>
+                    </div>
+                    <div className="contentFolderList">
+                      {personalFolders[kind].length === 0 ? <p>선택한 폴더가 없습니다.</p> : personalFolders[kind].map((folder) => (
+                        <div className="contentFolderItem" key={folder} title={folder}>
+                          <span>{folder}</span>
+                          <button aria-label={`${kind === "mods" ? "모드" : "셰이더"} 폴더 제거`} disabled={contentAction !== null} onClick={() => void removePersonalFolder(kind, folder)}>×</button>
+                        </div>
+                      ))}
+                    </div>
+                    <button className="contentFolderAdd" disabled={!instanceRoot.trim() || contentAction !== null} onClick={() => void choosePersonalFolders(kind)}>
+                      {contentAction === kind ? "저장 중…" : `${kind === "mods" ? "모드" : "셰이더"} 폴더 선택`}
+                    </button>
+                  </div>
+                ))}
               </div>
-              <p className="notice">모드는 .jar, 셰이더는 .zip 파일을 넣으세요. 서버 필수 모드와 파일명이 같으면 내 파일은 적용하지 않습니다.</p>
+              <p className="notice">같은 이름의 파일도 서로 다른 선택 폴더에 있으면 함께 적용합니다. 현재 Minecraft 버전과 로더에 맞는 파일만 사용하세요.</p>
             </section>
             <section className="panel connectionPanel">
               <div className="panelHeader">

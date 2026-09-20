@@ -48,6 +48,10 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       }
     ],
     defaultInstanceRoot: async () => "C:\\Bweeep\\instances",
+    userContentRoot: async () => "C:\\Bweeep\\instances\\.bweeep-user-content",
+    userContentFolders: async () => ({ mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] }),
+    chooseUserContentFolders: async (_root, kind) => ({ folders: kind === "mods" ? { mods: ["D:\\Minecraft\\my-mods", "D:\\Minecraft\\more-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] } : { mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders", "D:\\Minecraft\\more-shaders"] }, selected: 1 }),
+    removeUserContentFolder: async (_root, kind, folder) => ({ mods: kind === "mods" ? [] : ["D:\\Minecraft\\my-mods"], shaderpacks: kind === "shaderpacks" ? [] : ["D:\\Minecraft\\my-shaders"] }),
     serverStatus: async () => {
       window.__serverStatusCalls += 1;
       return {
@@ -81,9 +85,12 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     serverConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
     saveServerConnection: async (connection) => connection,
     resetServerConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
+    launcherChannel: async () => "production",
+    setGameProfile: async (gameName) => ({ id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, gameName }),
     checkLauncherUpdate: async () => ({ state: "current" }),
     launcherChannel: async () => "production",
-    launcherVersion: async () => "0.1.29",
+    openTestLauncher: async () => "opened",
+    launcherVersion: async () => "0.1.30",
     gameStatus: async () => gameStatus,
     launchGame: async () => {
       emitGameStatus({ state: "starting" });
@@ -194,6 +201,12 @@ if (accessUnavailable) {
   interactionChecks.push("invite-code-copy");
   await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
   await page.locator(".settingsModal .closeButton").click();
+  await page.locator(".profileBox").click();
+  await page.getByRole("button", { name: "모드 폴더 선택" }).waitFor();
+  if (await page.locator(".contentFolderItem").count() !== 2) throw new Error("saved personal content folders are missing");
+  await page.screenshot({ path: "previews/bweeep-launcher-profile-preview.png" });
+  interactionChecks.push("personal-content-folder-settings");
+  await page.locator(".profileModal .closeButton").click();
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 시작 중" }).waitFor();
   if (!(await page.getByRole("button", { name: "게임 시작 중" }).isDisabled())) throw new Error("launch button was not locked while starting");

@@ -162,6 +162,20 @@ export interface UserContentStatus {
   shaderpacksDir: string;
   sharedOptionsPath: string;
   copiedMods: number;
+  copiedShaders: number;
   removedManagedMods: number;
   blockedMods: string[];
+}
+
+export type UserContentKind = "mods" | "shaderpacks";
+
+/** User-selected folders stay outside instances and are applied at launch. */
+export interface UserContentFolders {
+  mods: string[];
+  shaderpacks: string[];
+}
+
+export interface UserContentFolderPickResult {
+  folders: UserContentFolders;
+  selected: number;
 }
