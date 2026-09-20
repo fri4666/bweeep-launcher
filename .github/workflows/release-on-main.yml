@@ -66,15 +66,18 @@ jobs:
         run: |
           $version = '${{ steps.version.outputs.version }}'
           $tag = '${{ steps.version.outputs.test_tag }}'
-          gh release create $tag `
-            "release-installer-test/Bweeep-Test-Setup-$version.exe" `
-            "release-installer-test/Bweeep-Test-Setup-$version.exe.blockmap" `
-            "release-installer-test/test.yml" `
-            --repo $env:GITHUB_REPOSITORY `
-            --target $env:GITHUB_SHA `
-            --prerelease `
-            --title "붸에엡 테스트 v$version" `
-            --notes "지정 테스터용 테스트 런처입니다. 설치 뒤에는 테스트 채널 업데이트를 자동으로 내려받고 재시작합니다. Minecraft 서버 설정은 변경하지 않습니다."
+          $assets = @(
+            "release-installer-test/Bweeep-Test-Setup-$version.exe",
+            "release-installer-test/Bweeep-Test-Setup-$version.exe.blockmap",
+            "release-installer-test/test.yml"
+          )
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $assets --clobber --repo $env:GITHUB_REPOSITORY
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --prerelease --title "붸에엡 테스트 v$version" --notes "지정 테스터용 테스트 런처입니다. 설치 뒤에는 테스트 채널 업데이트를 자동으로 내려받고 재시작합니다. Minecraft 서버 설정은 변경하지 않습니다."
+          } else {
+            gh release create $tag $assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --title "붸에엡 테스트 v$version" --notes "지정 테스터용 테스트 런처입니다. 설치 뒤에는 테스트 채널 업데이트를 자동으로 내려받고 재시작합니다. Minecraft 서버 설정은 변경하지 않습니다."
+          }
 
       - name: GitHub 정식 릴리스 게시
         if: steps.version.outputs.exists != 'True'

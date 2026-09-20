@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { addUserContentFolders, prepareUserContent, removeUserContentFolder } from "../dist/src/main/user-content.js";
 
 const root = await fsp.mkdtemp(path.join(tmpdir(), "bweeep-user-content-"));
+const manifest = { loader: { kind: "fabric" }, minecraftVersion: "1.21.1", files: [] };
 try {
   const first = path.join(root, "first");
   const second = path.join(root, "second");
@@ -19,12 +20,12 @@ try {
 
   await addUserContentFolders(root, "mods", [first, second]);
   await addUserContentFolders(root, "shaderpacks", [first, second]);
-  await prepareUserContent(root, instance);
+  await prepareUserContent(root, instance, manifest);
   assert.equal((await fsp.readdir(path.join(instance, "mods"))).length, 2, "same-name mods from separate folders must both apply");
   assert.equal((await fsp.readdir(path.join(instance, "shaderpacks"))).length, 2, "same-name shaders from separate folders must both apply");
 
   await removeUserContentFolder(root, "mods", second);
-  await prepareUserContent(root, instance);
+  await prepareUserContent(root, instance, manifest);
   assert.equal((await fsp.readdir(path.join(instance, "mods"))).length, 1, "removing a saved folder must remove only its prior personal file");
   console.log("user-content-folder-selection-regression=passed");
 } finally {
