@@ -15,7 +15,7 @@ import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncher
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, userContentPaths } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherUpdateStatus, LauncherUser, ServerPreset, SyncProgress, UserContentKind } from "../shared/types.js";
+import type { GameStatus, LauncherUpdateStatus, LauncherUser, SyncProgress, UserContentKind } from "../shared/types.js";
 import { bundledFeatureMods } from "./client-feature-mods.js";
 import type { ModpackManifest } from "../shared/types.js";
 
