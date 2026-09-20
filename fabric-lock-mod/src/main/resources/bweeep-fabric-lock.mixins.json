@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.fri4666.bweeep.fabric.lock",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "DisconnectedScreenExitMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

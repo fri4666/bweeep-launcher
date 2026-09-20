@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -57,10 +58,33 @@ try {
     loader: { kind: "forge", version: "47.3.0" },
     clientFeatures: { connectionLock: true }
   }));
-  assert.throws(() => bundledFeatureMods("/resources", {
+  assert.equal(bundledFeatureMods("/resources", {
     ...manifest,
     minecraftVersion: "26.3",
     loader: { kind: "fabric", version: "0.19.5" },
+    clientFeatures: { connectionLock: true }
+  }).length, 1);
+  const fabricLockJar = await fs.readFile(new URL("../resources/client-mods/bweeep-fabric-lock-26.3-0.1.0.jar", import.meta.url));
+  assert.equal(
+    crypto.createHash("sha256").update(fabricLockJar).digest("hex"),
+    "5fe104672975a1f42d7640fd9508235c6e83c779585b4bd84037df9179354f5a"
+  );
+  assert.throws(() => bundledFeatureMods("/resources", {
+    ...manifest,
+    minecraftVersion: "26.3",
+    loader: { kind: "fabric", version: "0.19.4" },
+    clientFeatures: { connectionLock: true }
+  }));
+  assert.equal(bundledFeatureMods("/resources", {
+    ...manifest,
+    minecraftVersion: "26.3",
+    loader: { kind: "vanilla", version: "none" },
+    clientFeatures: { connectionLock: false }
+  }).length, 0);
+  assert.throws(() => bundledFeatureMods("/resources", {
+    ...manifest,
+    minecraftVersion: "26.3",
+    loader: { kind: "vanilla", version: "none" },
     clientFeatures: { connectionLock: true }
   }));
   console.log("personal-content-and-connection-lock-regressions=passed");

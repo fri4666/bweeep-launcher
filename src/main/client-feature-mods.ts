@@ -23,6 +23,12 @@ export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManif
     ];
   }
 
+  if (manifest.loader.kind === "fabric" && manifest.minecraftVersion === "26.3" && manifest.loader.version === "0.19.5") {
+    return [
+      bundled(resourcesRoot, "bweeep-fabric-lock-26.3-0.1.0.jar", "bweeep-client.jar", "5fe104672975a1f42d7640fd9508235c6e83c779585b4bd84037df9179354f5a")
+    ];
+  }
+
   throw new Error(`${manifest.minecraftVersion} ${manifest.loader.kind}용 붸에엡 연결 보호 모드가 아직 검증되지 않았습니다. 안전을 위해 이 서버의 연결 잠금 기능은 실행하지 않습니다.`);
 }
 

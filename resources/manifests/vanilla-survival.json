@@ -10,17 +10,20 @@
     "component": "java-runtime-epsilon"
   },
   "loader": {
-    "kind": "vanilla",
-    "version": "none"
+    "kind": "fabric",
+    "version": "0.19.5"
   },
   "serverLoader": {
     "kind": "vanilla",
     "version": "26.3"
   },
+  "clientFeatures": {
+    "connectionLock": true
+  },
   "server": {
     "host": "server.fri4666.com",
     "port": 25565
   },
-  "notes": "Completely vanilla Minecraft 26.3 survival server.",
+  "notes": "Vanilla Minecraft 26.3 survival server with a Bweeep-managed Fabric client lock.",
   "files": []
 }

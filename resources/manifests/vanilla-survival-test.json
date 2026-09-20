@@ -10,17 +10,20 @@
     "component": "java-runtime-epsilon"
   },
   "loader": {
-    "kind": "vanilla",
-    "version": "none"
+    "kind": "fabric",
+    "version": "0.19.5"
   },
   "serverLoader": {
     "kind": "vanilla",
     "version": "26.3"
   },
+  "clientFeatures": {
+    "connectionLock": true
+  },
   "server": {
     "host": "server.fri4666.com",
     "port": 25566
   },
-  "notes": "Isolated test server. Test launcher updates use the test release channel.",
+  "notes": "Isolated vanilla Minecraft 26.3 test server with a Bweeep-managed Fabric client lock.",
   "files": []
 }

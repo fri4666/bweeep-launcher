@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "bweeep_connection_lock",
+  "version": "0.1.0+26.3",
+  "name": "Bweeep Connection Lock",
+  "description": "Closes Minecraft when a Bweeep vanilla-server session disconnects.",
+  "authors": ["fri4666"],
+  "license": "All Rights Reserved",
+  "environment": "client",
+  "mixins": ["bweeep-fabric-lock.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "26.3",
+    "java": ">=25"
+  }
+}
