@@ -14,6 +14,7 @@
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json && vite build",
     "package:portable": "npm run build && electron-packager . Bweeep --platform=win32 --arch=x64 --out=release --overwrite --asar --ignore=^/release --ignore=^/previews",
     "package:win": "npm run build && electron-builder --win nsis --x64",
+    "package:win:test": "npm run build && electron-builder --win nsis --x64 --config build/electron-builder.test.js",
     "package:win:arm64": "npm run build && electron-builder --win nsis --arm64 --config.directories.output=release-installer-arm64",
     "package:win:all": "npm run package:win && npm run package:win:arm64",
     "verify:electron-startup": "npm run build && node scripts/verify-electron-startup.mjs",

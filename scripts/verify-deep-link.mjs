@@ -7,6 +7,9 @@ if (valid.flowId !== null) throw new Error("Unexpected flow id");
 const flowAware = parseAuthCallback("bwe-e-ep://auth/callback?code=fresh-code&sb_flow_id=0123456789abcdef");
 if (flowAware.flowId !== "0123456789abcdef") throw new Error("PKCE flow id was not preserved");
 
+const testCallback = parseAuthCallback("bwe-e-ep-test://auth/callback?code=test-code", "bwe-e-ep-test");
+if (testCallback.code !== "test-code") throw new Error("Test launcher callback was rejected");
+
 const expired = new URL("bwe-e-ep://auth/callback");
 expired.searchParams.set("error", "server_error");
 expired.searchParams.set(
@@ -28,5 +31,8 @@ console.log("deep-link-expiry-regression=passed");
 const inviteCode = "BWEEP-0123456789AB-CDEF01234567";
 const parsedInvite = parseInviteLink("bwe-e-ep://invite/" + inviteCode);
 if (parsedInvite !== inviteCode) throw new Error("Invite deep link was not parsed");
+
+const parsedTestInvite = parseInviteLink("bwe-e-ep-test://invite/" + inviteCode, "bwe-e-ep-test");
+if (parsedTestInvite !== inviteCode) throw new Error("Test launcher invite link was not parsed");
 
 console.log("invite-deep-link-regression=passed");
