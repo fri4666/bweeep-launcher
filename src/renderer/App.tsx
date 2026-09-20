@@ -70,6 +70,7 @@ function App() {
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [testLauncherOpening, setTestLauncherOpening] = useState(false);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
   const [gameNameInput, setGameNameInput] = useState("");
 
@@ -414,11 +415,15 @@ function App() {
   }
 
   async function openTestLauncher() {
+    setTestLauncherOpening(true);
+    setNotice("테스트 런처를 준비하고 있어요.");
     try {
       const result = await window.bweeep.openTestLauncher();
-      setNotice(result === "opened" ? "테스트 런처를 열었습니다." : "테스트 런처 설치 파일을 열었습니다.");
+      setNotice(result === "opened" ? "테스트 런처를 열었습니다." : "테스트 런처 설치를 시작했습니다.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "테스트 런처를 열지 못했습니다.");
+    } finally {
+      setTestLauncherOpening(false);
     }
   }
 
@@ -540,6 +545,7 @@ function App() {
                 className="testLauncherInstallButton"
                 aria-label="테스트 런처 설치 또는 열기"
                 title="테스트 런처 설치 또는 열기"
+                disabled={testLauncherOpening}
                 onClick={() => void openTestLauncher()}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -773,13 +779,6 @@ function App() {
             {launcherUpdate.state === "installing" && <p>업데이트를 설치하고 다시 시작하는 중입니다.</p>}
             {launcherUpdate.state === "error" && <p>{launcherUpdate.message ?? "자동 업데이트에 실패했습니다."}</p>}
             {launcherUpdate.update && launcherUpdate.update.notes.length > 0 && <ul>{launcherUpdate.update.notes.map((note) => <li key={note}>{note}</li>)}</ul>}
-            {(launcherUpdate.state === "available" || launcherUpdate.state === "error") && (
-              <div className="updateActions">
-                {launcherUpdate.state === "available" && <button className="launchButton" onClick={() => void window.bweeep.downloadLauncherUpdate()}>업데이트하기</button>}
-                {launcherUpdate.state === "error" && <button className="launchButton" onClick={() => void window.bweeep.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest")}>릴리스 페이지 열기</button>}
-                <button className="closeButton" onClick={() => setUpdateOpen(false)}>닫기</button>
-              </div>
-            )}
           </section>
         </div>
       )}
@@ -793,7 +792,7 @@ function normalizeInviteCode(value: string): string {
 }
 
 function shouldShowUpdate(status: LauncherUpdateStatus): boolean {
-  return ["available", "downloading", "ready", "installing", "error"].includes(status.state);
+  return ["downloading", "ready", "installing"].includes(status.state);
 }
 
 function formatRelativeTime(timestamp: number, now = Date.now()): string {
