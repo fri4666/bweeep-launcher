@@ -346,19 +346,20 @@ h3 {
 
 .testLauncherInstallButton {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   padding: 0;
-  color: #d6b277;
-  background: #202125;
-  border: 0;
-  border-radius: 10px;
+  color: #e0c28d;
+  background: rgba(217, 176, 114, 0.12);
+  border: 1px solid rgba(217, 176, 114, 0.32);
+  border-radius: 50%;
 }
 
 .testLauncherInstallButton:hover {
   color: #17130d;
   background: #d9b072;
-  transform: translateY(-1px);
+  border-color: #d9b072;
+  transform: translateY(-1px) scale(1.03);
 }
 
 .testLauncherInstallButton svg {
@@ -503,6 +504,26 @@ h3 {
   margin-top: 10px;
   color: #d1cec7;
   line-height: 1.55;
+}
+
+.serverChangeButton {
+  min-height: 34px;
+  margin-top: 16px;
+  padding: 0 13px;
+  color: #f0dfbf;
+  font-size: 12px;
+  font-weight: 800;
+  background: rgba(17, 18, 20, 0.52);
+  border: 1px solid rgba(240, 223, 191, 0.32);
+  border-radius: 999px;
+  backdrop-filter: blur(10px);
+}
+
+.serverChangeButton:hover {
+  color: #221b10;
+  background: #e1b873;
+  border-color: #e1b873;
+  transform: translateY(-1px);
 }
 
 .chips {
@@ -911,6 +932,58 @@ button:disabled {
   grid-template-columns: 1.1fr 0.9fr;
   gap: 14px;
   margin-bottom: 14px;
+}
+
+.serverSelectionPanel {
+  margin-bottom: 14px;
+}
+
+.serverSelectionPanel .panelHeader > div {
+  display: grid;
+  gap: 4px;
+}
+
+.serverEnvironment {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  color: #a8a39a;
+  font-size: 11px;
+  font-weight: 800;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+}
+
+.serverEnvironment.isTest {
+  color: #e3c17f;
+  background: rgba(217, 176, 114, 0.14);
+}
+
+.serverSelectControl {
+  display: grid;
+  gap: 8px;
+  color: #aaa69d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.serverSelectControl select {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 40px 0 14px;
+  color: #eee9df;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  background: #17181b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--control-radius);
+}
+
+.serverSelectControl select:hover,
+.serverSelectControl select:focus {
+  border-color: rgba(217, 176, 114, 0.68);
+  outline: none;
 }
 
 .panel {

@@ -413,6 +413,15 @@ function App() {
     }
   }
 
+  async function openTestLauncher() {
+    try {
+      const result = await window.bweeep.openTestLauncher();
+      setNotice(result === "opened" ? "테스트 런처를 열었습니다." : "테스트 런처 설치 파일을 열었습니다.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "테스트 런처를 열지 못했습니다.");
+    }
+  }
+
   if (!access) {
     return (
       <main className="entryScreen">
@@ -502,7 +511,7 @@ function App() {
 
         <nav className="iconRail" aria-label="주 메뉴">
           <button className="iconButton active">홈</button>
-          <button className="iconButton" onClick={() => setProfileOpen(true)}>서버</button>
+          <button className="iconButton" onClick={() => setSettingsOpen(true)}>서버 선택</button>
           <button className="iconButton" onClick={() => setSettingsOpen(true)}>설정</button>
         </nav>
         <div className="supportPanel">
@@ -521,37 +530,33 @@ function App() {
             <div><strong>{serverStatusMessage}</strong><small>{serverStatusDetail}</small></div>
           </div>
           <div className="topbarActions">
+            <button className="profileBox" onClick={() => setProfileOpen(true)}>
+              <ProfileAvatar user={user} />
+              <div><strong>{user.globalName ?? user.username}</strong><small>Discord</small></div>
+            </button>
             {launcherChannel === "production" && access.testAllowed && (
               <button
                 type="button"
                 className="testLauncherInstallButton"
-                aria-label="테스트 런처 열기"
-                title="테스트 런처 열기"
-                onClick={() => void window.bweeep.openTestLauncher()}
+                aria-label="테스트 런처 설치 또는 열기"
+                title="테스트 런처 설치 또는 열기"
+                onClick={() => void openTestLauncher()}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 3v10m0 0 4-4m-4 4-4-4M5 17v3h14v-3" />
                 </svg>
               </button>
             )}
-            <button className="profileBox" onClick={() => setProfileOpen(true)}>
-              <ProfileAvatar user={user} />
-              <div><strong>{user.globalName ?? user.username}</strong><small>Discord</small></div>
-            </button>
             <WindowControls />
           </div>
         </header>
         <section className="hero">
           <div className="heroBackdrop" />
           <div className="heroCopy">
-            <p className="eyebrow">순정 생존 서버</p>
+            <p className="eyebrow">{selected?.environment === "test" ? "테스트 서버" : "순정 생존 서버"}</p>
             <h2>{selected?.name ?? "서버 없음"}</h2>
             <p>서버에 맞는 Minecraft 버전을 준비하고, 바로 같은 월드로 접속합니다.</p>
-            <label className="serverPicker">서버 선택
-              <select value={selected?.id ?? ""} onChange={(event) => void selectServer(event.target.value)}>
-                {availableServers.map((server) => <option key={server.id} value={server.id}>{server.environment === "test" ? "테스트 서버 · " : "본 서버 · "}{server.name} · Minecraft {server.minecraftVersion}</option>)}
-              </select>
-            </label>
+            <button className="serverChangeButton" onClick={() => setSettingsOpen(true)}>서버 변경</button>
             <div className="chips">
               <span>Minecraft {selected?.minecraftVersion ?? "-"}</span>
               <span>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected?.loader.kind ?? "-"}</span>
@@ -604,6 +609,28 @@ function App() {
               </div>
               <button className="closeButton" onClick={() => setSettingsOpen(false)}>닫기</button>
             </header>
+
+            <section className="panel serverSelectionPanel">
+              <div className="panelHeader">
+                <div>
+                  <h3>서버 선택</h3>
+                  <span>선택한 서버에 맞춰 Minecraft와 접속 주소를 준비합니다.</span>
+                </div>
+                <span className={`serverEnvironment ${selected?.environment === "test" ? "isTest" : ""}`}>
+                  {selected?.environment === "test" ? "테스트" : "본 서버"}
+                </span>
+              </div>
+              <label className="serverSelectControl">
+                <span>접속할 서버</span>
+                <select value={selected?.id ?? ""} onChange={(event) => void selectServer(event.target.value)}>
+                  {availableServers.map((server) => (
+                    <option key={server.id} value={server.id}>
+                      {server.environment === "test" ? "테스트 서버" : "본 서버"} · {server.name} · Minecraft {server.minecraftVersion}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </section>
 
             <div className="settingsGrid">
               <article className="panel accessPanel">

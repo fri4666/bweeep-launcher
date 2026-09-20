@@ -15,7 +15,7 @@ import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncher
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { captureSharedOptions, prepareUserContent, userContentRoot } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherUpdateStatus, LauncherUser, SyncProgress } from "../shared/types.js";
+import type { GameStatus, LauncherUpdateStatus, LauncherUser, ServerPreset, SyncProgress } from "../shared/types.js";
 import type { ModpackManifest } from "../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,6 +30,29 @@ let inviteReceiverReady = false;
 let gameStatus: GameStatus = { state: "idle" };
 let gameRunId = 0;
 const testLauncherSetupUrl = "https://github.com/fri4666/bweeep-launcher/releases/download/v0.1.25-test.1/Bweeep-Test-Setup-0.1.25.exe";
+
+async function openTestLauncher(): Promise<"opened" | "download"> {
+  try {
+    const application = await app.getApplicationInfoForProtocol("bwe-e-ep-test://open");
+    if (application.path) {
+      await shell.openExternal("bwe-e-ep-test://open");
+      return "opened";
+    }
+  } catch {
+    // No registered test-launcher protocol: open the isolated installer instead.
+  }
+  await shell.openExternal(testLauncherSetupUrl);
+  return "download";
+}
+
+function requireLaunchPreset(presets: ServerPreset[], packId: string, access: Awaited<ReturnType<SupabaseAuth["getAccessStatus"]>>): ServerPreset {
+  const preset = presets.find((candidate) => candidate.packId === packId);
+  if (!preset) throw new Error("선택한 서버 정보를 찾지 못했습니다.");
+  if (preset.environment === "test" && access.testAllowed !== true) {
+    throw new Error("테스트 서버는 지정된 테스터 계정만 실행할 수 있습니다.");
+  }
+  return preset;
+}
 
 async function readBundledManifest(packId: string): Promise<ModpackManifest> {
   const manifestPath = path.join(app.getAppPath(), "resources", "manifests", `${packId}.json`);
@@ -255,11 +278,7 @@ app.whenReady().then(async () => {
     await shell.openExternal(url.toString());
   });
   ipcMain.handle("test-launcher:open", async () => {
-    try {
-      await shell.openExternal("bwe-e-ep-test://open");
-    } catch {
-      await shell.openExternal(testLauncherSetupUrl);
-    }
+    return openTestLauncher();
   });
   ipcMain.handle("launcher:channel", () => getLauncherChannel());
   ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
@@ -320,9 +339,10 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
-      const manifest = request.packId === "vanilla-survival"
-        ? await readBundledManifest(request.packId)
-        : await auth.getManifest(sessionUser, request.packId);
+      const access = await auth.getAccessStatus(sessionUser);
+      const presets = await getServerPresets(launcherChannel);
+      requireLaunchPreset(presets, request.packId, access);
+      const manifest = await readBundledManifest(request.packId);
       assertManifest(manifest);
       const server = await readServerConnection(defaultServer);
       const configuredManifest = { ...manifest, server };
