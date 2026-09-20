@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "electron";
 import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -14,9 +14,10 @@ import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
-import { captureSharedOptions, prepareUserContent, userContentRoot } from "./user-content.js";
+import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, userContentPaths } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherUpdateStatus, LauncherUser, ServerPreset, SyncProgress } from "../shared/types.js";
+import type { GameStatus, LauncherUpdateStatus, LauncherUser, ServerPreset, SyncProgress, UserContentKind } from "../shared/types.js";
+import { bundledFeatureMods } from "./client-feature-mods.js";
 import type { ModpackManifest } from "../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -317,9 +318,34 @@ app.whenReady().then(async () => {
   ipcMain.handle("paths:defaultInstanceRoot", () =>
     defaultInstanceRoot()
   );
-  ipcMain.handle("paths:userContentRoot", (_event, instanceRoot: unknown) => {
+  ipcMain.handle("content:folders", async (_event, instanceRoot: unknown) => {
     if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    return userContentRoot(instanceRoot);
+    return getUserContentFolders(instanceRoot);
+  });
+  ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: UserContentKind) => {
+    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
+    if (kind !== "mods" && kind !== "shaderpacks") throw new Error("콘텐츠 종류가 올바르지 않습니다.");
+    const options = { title: kind === "mods" ? "내 모드 폴더 선택" : "내 셰이더 폴더 선택", buttonLabel: "선택한 폴더 추가", properties: ["openDirectory", "multiSelections"] as Array<"openDirectory" | "multiSelections"> };
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    if (picked.canceled) return { folders: await getUserContentFolders(instanceRoot), selected: 0 };
+    const before = await getUserContentFolders(instanceRoot);
+    const folders = await addUserContentFolders(instanceRoot, kind, picked.filePaths);
+    return { folders, selected: folders[kind].length - before[kind].length };
+  });
+  ipcMain.handle("content:removeFolder", async (_event, instanceRoot: unknown, kind: UserContentKind, folder: unknown) => {
+    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
+    if ((kind !== "mods" && kind !== "shaderpacks") || typeof folder !== "string") throw new Error("콘텐츠 폴더 정보가 올바르지 않습니다.");
+    return removeUserContentFolder(instanceRoot, kind, folder);
+  });
+  ipcMain.handle("paths:userContent", async (_event, request: { instanceRoot?: unknown; minecraftVersion?: unknown; loaderKind?: unknown }) => {
+    const { instanceRoot, minecraftVersion, loaderKind } = request ?? {};
+    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
+    if (typeof minecraftVersion !== "string" || !/^[A-Za-z0-9._-]+$/.test(minecraftVersion)) throw new Error("Minecraft 버전 정보가 올바르지 않습니다.");
+    if (!["vanilla", "fabric", "neoforge", "forge"].includes(String(loaderKind))) throw new Error("클라이언트 로더 정보가 올바르지 않습니다.");
+    const paths = userContentPaths(instanceRoot, loaderKind as ModpackManifest["loader"]["kind"], minecraftVersion);
+    await Promise.all([fsp.mkdir(paths.userModsDir, { recursive: true }), fsp.mkdir(paths.shaderpacksDir, { recursive: true })]);
+    return paths;
   });
   ipcMain.handle("shell:openPath", async (_event, target: string) => {
     return shell.openPath(target);
@@ -384,7 +410,18 @@ app.whenReady().then(async () => {
     }
     const runId = ++gameRunId;
     setGameStatus({ state: "starting" });
-    const progress = (payload: SyncProgress) => event.sender.send("modpack:progress", payload);
+    const progress = (payload: SyncProgress) => {
+      event.sender.send("modpack:progress", payload);
+      void writeGameLog("launch.progress", {
+        kind: payload.kind,
+        stage: payload.stage ?? null,
+        message: payload.message,
+        elapsedMs: payload.elapsedMs ?? null,
+        completed: payload.completed ?? null,
+        total: payload.total ?? null,
+        filePath: payload.filePath ?? null
+      });
+    };
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
@@ -395,26 +432,14 @@ app.whenReady().then(async () => {
       assertManifest(manifest);
       const server = await readServerConnection(defaultServer);
       const configuredManifest = { ...manifest, server };
+      const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), configuredManifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
-      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir);
-      progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 적용 · 서버 전용 모드 ${userContent.removedManagedMods}개 정리` });
+      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, configuredManifest);
+      progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리` });
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
-      const clientModsDir = path.join(app.getAppPath(), "resources", "client-mods");
-      const bundledClientMods = configuredManifest.loader.kind === "neoforge" ? [
-        {
-          sourcePath: path.join(clientModsDir, "bweeep-client-1.2.0.jar"),
-          targetName: "bweeep-client.jar",
-          sha256: "4c8840d126f1939a1e66182cc086f3293bd0a8f75d5780d89df94ba23f02e70b"
-        },
-        {
-          sourcePath: path.join(clientModsDir, "bweeep-display-name-0.2.0.jar"),
-          targetName: "bweeep-display-name.jar",
-          sha256: "23f0c716cc8cb857ecf384f648a5c493745dd1bc9f53d1ab04ca9c40b632fed2"
-        }
-      ] : [];
       const getLaunchAuthorization = configuredManifest.loader.kind === "vanilla"
         ? async () => ({
             identity: createOfflineLaunchIdentity(launchUser.id, launchUser.gameName, launchUser.globalName, launchUser.username),

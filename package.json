@@ -1,6 +1,6 @@
 {
   "name": "bweeep-launcher",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "private": true,
   "description": "붸에엡 Minecraft modpack launcher",
   "author": "fri4666",
@@ -20,6 +20,10 @@
     "verify:electron-startup": "npm run build && node scripts/verify-electron-startup.mjs",
     "verify:deep-link": "npm run build && node scripts/verify-deep-link.mjs",
     "verify:launch-identity": "npm run build && node scripts/verify-launch-identity.mjs",
+    "verify:user-content": "npm run build && node scripts/verify-user-content.mjs",
+    "verify:personal-content": "npm run build && node scripts/verify-personal-content.mjs",
+    "verify:update-copy": "npm run build && node scripts/verify-update-copy.mjs",
+    "verify:server-status": "npm run build && node scripts/verify-server-status.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

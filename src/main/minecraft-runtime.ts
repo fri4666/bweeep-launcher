@@ -34,8 +34,8 @@ export async function installAndLaunch(
   progress: ProgressSink,
   onExit: () => void
 ): Promise<{ pid: number; version: string }> {
-  if (!["vanilla", "neoforge", "fabric"].includes(manifest.loader.kind)) {
-    throw new Error("현재 붸에엡은 순정, Fabric 및 NeoForge 모드팩 실행을 지원합니다.");
+  if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
+    throw new Error("지원하지 않는 Minecraft 로더입니다.");
   }
 
   const runtime = createDefaultNodeInstallRuntime({
@@ -48,7 +48,7 @@ export async function installAndLaunch(
   const version = manifest.loader.kind === "vanilla" ? baseVersion
     : manifest.loader.kind === "fabric"
       ? await runStage(progress, "Fabric 설치", () => installFabric(minecraft, manifest, runtime, progress))
-      : await runStage(progress, "NeoForge 설치", () => installNeoForge(minecraft, manifest, javaPath, runtime, progress));
+      : await runStage(progress, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", () => installForgeFamily(minecraft, manifest, javaPath, runtime, progress));
   if (manifest.loader.kind !== "vanilla") {
     await ensureBundledClientMods(instanceDir, bundledClientMods);
   }
@@ -101,7 +101,7 @@ async function installFabric(
     side: "client",
     fetch: fetchWithSystemNetwork
   }), runtime, {
-    onEvent: (event) => progress({ kind: "info", stage: "Fabric", message: `Fabric 처리: ${event.type}` })
+    onEvent: (event) => publishInstallerEvent(progress, "Fabric", event)
   });
   return installed;
 }
@@ -148,7 +148,7 @@ async function resolveRuntime(
   await executeInstallWorkflow(
     createJavaRuntimeInstallWorkflow({ target: targets[0] as Parameters<typeof createJavaRuntimeInstallWorkflow>[0]["target"], destination: path.dirname(path.dirname(bundled)) }),
     runtime,
-    { onEvent: (event) => progress({ kind: "info", stage: "Java 런타임", message: `Java 파일 처리: ${event.type}` }) }
+    { onEvent: (event) => publishInstallerEvent(progress, "Java 런타임", event) }
   );
   const java = await resolveJava(bundled);
   if (!java || java.majorVersion < requiredJava.majorVersion) {
@@ -175,28 +175,30 @@ async function installMinecraftBase(
   ].filter((file): file is NonNullable<typeof file> => Boolean(file));
   progress({ kind: "info", stage: "라이브러리", message: `게임 파일과 라이브러리 ${baseFiles.length}개를 준비하는 중` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-base", type: "files", files: baseFiles }] }, runtime, {
-    onEvent: (event) => progress({ kind: "info", stage: "라이브러리", message: `라이브러리 처리: ${event.type}` })
+    onEvent: (event) => publishInstallerEvent(progress, "라이브러리", event)
   });
   const assetFiles = await resolveAssetObjectInstallFiles(resolved, minecraft);
   progress({ kind: "info", stage: "게임 리소스", message: `게임 리소스 ${assetFiles.length}개를 준비하는 중` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-assets", type: "files", files: assetFiles }] }, runtime, {
-    onEvent: (event) => progress({ kind: "info", stage: "게임 리소스", message: `게임 리소스 처리: ${event.type}` })
+    onEvent: (event) => publishInstallerEvent(progress, "게임 리소스", event)
   });
   return resolved.id;
 }
 
-async function installNeoForge(
+async function installForgeFamily(
   minecraft: MinecraftFolder,
   manifest: ModpackManifest,
   javaPath: string,
   runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
   progress: ProgressSink
 ): Promise<string> {
-  progress({ kind: "info", stage: "NeoForge", message: `NeoForge ${manifest.loader.version} 설치 파일을 준비하는 중` });
-  const installer = await resolveNeoForgedInstallerFile("neoforge", manifest.loader.version, minecraft, {});
+  const project = manifest.loader.kind === "forge" ? "forge" : "neoforge";
+  const stage = project === "forge" ? "Forge" : "NeoForge";
+  progress({ kind: "info", stage, message: `${stage} ${manifest.loader.version} 설치 파일을 준비하는 중` });
+  const installer = await resolveNeoForgedInstallerFile(project, manifest.loader.version, minecraft, {});
   const installed = await executeInstallWorkflow(
     createModernForgeInstallWorkflow({
-      id: `neoforge-${manifest.loader.version}`,
+      id: `${project}-${manifest.loader.version}`,
       minecraft,
       minecraftVersion: manifest.minecraftVersion,
       installer: installer.file,
@@ -206,7 +208,20 @@ async function installNeoForge(
       side: "client"
     }),
     runtime,
-    { onEvent: (event) => progress({ kind: "info", stage: "NeoForge", message: `NeoForge 처리: ${event.type}` }) }
+    { onEvent: (event) => publishInstallerEvent(progress, stage, event) }
   );
   return installed.version;
+}
+
+function publishInstallerEvent(progress: ProgressSink, stage: string, event: unknown): void {
+  progress({ kind: "info", stage, message: `${stage}: ${installEventDetail(event)}` });
+}
+
+function installEventDetail(event: unknown): string {
+  if (!event || typeof event !== "object") return "설치 작업 처리 중";
+  const record = event as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type : "작업";
+  const target = [record.filePath, record.path, record.file, record.id, record.name]
+    .find((value): value is string => typeof value === "string" && value.length > 0);
+  return target ? `${type} · ${target}` : type;
 }
