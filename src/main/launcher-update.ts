@@ -30,7 +30,7 @@ export function startLauncherUpdates(
     return;
   }
 
-  autoUpdater.autoDownload = false;
+  autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   const testChannel = getLauncherChannel() === "test";
   autoUpdater.channel = testChannel ? "test" : "latest";
@@ -59,17 +59,6 @@ export function startLauncherUpdates(
   void checkForUpdates();
   const interval = setInterval(() => void checkForUpdates(), CHECK_INTERVAL_MS);
   interval.unref();
-}
-
-export async function downloadLauncherUpdate(): Promise<LauncherUpdateStatus> {
-  if (status.state !== "available") return status;
-  setStatus({ state: "downloading", update: status.update, percent: 0 });
-  try {
-    await autoUpdater.downloadUpdate();
-  } catch (error) {
-    setStatus({ state: "error", update: status.update, message: safeUpdateError(error) });
-  }
-  return status;
 }
 
 export function installPendingLauncherUpdate(): void {

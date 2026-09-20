@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, ipcMain, session, shell } from "electron";
+import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +12,7 @@ import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseIn
 import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
-import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
+import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { captureSharedOptions, prepareUserContent, userContentRoot } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
@@ -29,9 +30,25 @@ const pendingInviteCodes: string[] = [];
 let inviteReceiverReady = false;
 let gameStatus: GameStatus = { state: "idle" };
 let gameRunId = 0;
-const testLauncherSetupUrl = "https://github.com/fri4666/bweeep-launcher/releases/download/v0.1.25-test.1/Bweeep-Test-Setup-0.1.25.exe";
+interface GitHubReleaseAsset {
+  name?: unknown;
+  browser_download_url?: unknown;
+  digest?: unknown;
+}
 
-async function openTestLauncher(): Promise<"opened" | "download"> {
+interface GitHubRelease {
+  prerelease?: unknown;
+  draft?: unknown;
+  assets?: unknown;
+}
+
+interface TestLauncherAsset {
+  name: string;
+  browser_download_url: string;
+  digest: string;
+}
+
+async function openTestLauncher(): Promise<"opened" | "installing"> {
   try {
     const application = await app.getApplicationInfoForProtocol("bwe-e-ep-test://open");
     if (application.path) {
@@ -39,10 +56,45 @@ async function openTestLauncher(): Promise<"opened" | "download"> {
       return "opened";
     }
   } catch {
-    // No registered test-launcher protocol: open the isolated installer instead.
+    // 설치된 테스트 런처가 없으면 아래에서 설치본을 준비한다.
   }
-  await shell.openExternal(testLauncherSetupUrl);
-  return "download";
+  await installTestLauncher();
+  return "installing";
+}
+
+async function installTestLauncher(): Promise<void> {
+  const response = await fetch("https://api.github.com/repos/fri4666/bweeep-launcher/releases", {
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "Bweeep-Launcher" }
+  });
+  if (!response.ok) throw new Error("테스트 런처 설치 정보를 가져오지 못했습니다.");
+  const releases = await response.json() as GitHubRelease[];
+  const release = releases.find((candidate) => candidate.prerelease === true && candidate.draft !== true);
+  const asset = Array.isArray(release?.assets)
+    ? release.assets.find(isTestInstallerAsset)
+    : undefined;
+  if (!asset) throw new Error("테스트 런처 설치 파일을 찾지 못했습니다.");
+
+  const installerResponse = await fetch(asset.browser_download_url);
+  if (!installerResponse.ok) throw new Error("테스트 런처 설치 파일을 받지 못했습니다.");
+  const installer = Buffer.from(await installerResponse.arrayBuffer());
+  const expectedDigest = asset.digest.slice("sha256:".length).toLowerCase();
+  const actualDigest = createHash("sha256").update(installer).digest("hex");
+  if (actualDigest !== expectedDigest) throw new Error("테스트 런처 설치 파일 검증에 실패했습니다.");
+
+  const installerPath = path.join(app.getPath("temp"), "Bweeep", "test-launcher", asset.name);
+  await fsp.mkdir(path.dirname(installerPath), { recursive: true });
+  await fsp.writeFile(installerPath, installer);
+  const openError = await shell.openPath(installerPath);
+  if (openError) throw new Error("테스트 런처 설치를 시작하지 못했습니다.");
+}
+
+function isTestInstallerAsset(asset: GitHubReleaseAsset): asset is TestLauncherAsset {
+  return typeof asset.name === "string"
+    && /^Bweeep-Test-Setup-[\w.-]+\.exe$/i.test(asset.name)
+    && typeof asset.browser_download_url === "string"
+    && asset.browser_download_url.startsWith("https://")
+    && typeof asset.digest === "string"
+    && /^sha256:[a-f0-9]{64}$/i.test(asset.digest);
 }
 
 function requireLaunchPreset(presets: ServerPreset[], packId: string, access: Awaited<ReturnType<SupabaseAuth["getAccessStatus"]>>): ServerPreset {
@@ -277,9 +329,7 @@ app.whenReady().then(async () => {
     if (url.protocol !== "https:") throw new Error("HTTPS 다운로드 주소만 열 수 있습니다.");
     await shell.openExternal(url.toString());
   });
-  ipcMain.handle("test-launcher:open", async () => {
-    return openTestLauncher();
-  });
+  ipcMain.handle("test-launcher:open", () => openTestLauncher());
   ipcMain.handle("launcher:channel", () => getLauncherChannel());
   ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
   ipcMain.handle("account:login", () => auth.startLogin());
@@ -325,7 +375,6 @@ app.whenReady().then(async () => {
   ipcMain.handle("server:saveConnection", (_event, connection: unknown) => writeServerConnection(connection, defaultServer));
   ipcMain.handle("server:resetConnection", () => resetServerConnection(defaultServer));
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
-  ipcMain.handle("launcher:downloadUpdate", () => downloadLauncherUpdate());
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:status", () => gameStatus);
