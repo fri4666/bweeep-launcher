@@ -34,8 +34,8 @@ export async function installAndLaunch(
   progress: ProgressSink,
   onExit: () => void
 ): Promise<{ pid: number; version: string }> {
-  if (!["vanilla", "neoforge", "fabric"].includes(manifest.loader.kind)) {
-    throw new Error("현재 붸에엡은 순정, Fabric 및 NeoForge 모드팩 실행을 지원합니다.");
+  if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
+    throw new Error("지원하지 않는 Minecraft 로더입니다.");
   }
 
   const runtime = createDefaultNodeInstallRuntime({
@@ -48,7 +48,7 @@ export async function installAndLaunch(
   const version = manifest.loader.kind === "vanilla" ? baseVersion
     : manifest.loader.kind === "fabric"
       ? await runStage(progress, "Fabric 설치", () => installFabric(minecraft, manifest, runtime, progress))
-      : await runStage(progress, "NeoForge 설치", () => installNeoForge(minecraft, manifest, javaPath, runtime, progress));
+      : await runStage(progress, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", () => installForgeFamily(minecraft, manifest, javaPath, runtime, progress));
   if (manifest.loader.kind !== "vanilla") {
     await ensureBundledClientMods(instanceDir, bundledClientMods);
   }
@@ -185,18 +185,20 @@ async function installMinecraftBase(
   return resolved.id;
 }
 
-async function installNeoForge(
+async function installForgeFamily(
   minecraft: MinecraftFolder,
   manifest: ModpackManifest,
   javaPath: string,
   runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
   progress: ProgressSink
 ): Promise<string> {
-  progress({ kind: "info", stage: "NeoForge", message: `NeoForge ${manifest.loader.version} 설치 파일을 준비하는 중` });
-  const installer = await resolveNeoForgedInstallerFile("neoforge", manifest.loader.version, minecraft, {});
+  const project = manifest.loader.kind === "forge" ? "forge" : "neoforge";
+  const stage = project === "forge" ? "Forge" : "NeoForge";
+  progress({ kind: "info", stage, message: `${stage} ${manifest.loader.version} 설치 파일을 준비하는 중` });
+  const installer = await resolveNeoForgedInstallerFile(project, manifest.loader.version, minecraft, {});
   const installed = await executeInstallWorkflow(
     createModernForgeInstallWorkflow({
-      id: `neoforge-${manifest.loader.version}`,
+      id: `${project}-${manifest.loader.version}`,
       minecraft,
       minecraftVersion: manifest.minecraftVersion,
       installer: installer.file,
@@ -206,7 +208,7 @@ async function installNeoForge(
       side: "client"
     }),
     runtime,
-    { onEvent: (event) => publishInstallerEvent(progress, "NeoForge", event) }
+    { onEvent: (event) => publishInstallerEvent(progress, stage, event) }
   );
   return installed.version;
 }

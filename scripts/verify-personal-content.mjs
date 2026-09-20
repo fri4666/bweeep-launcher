@@ -43,6 +43,21 @@ try {
   assert.equal(await fs.readFile(path.join(switchedInstance, "options.txt"), "utf8"), "sensitivity:0.42\nkey_key.jump:key.keyboard.space");
   assert.equal(await fs.readFile(path.join(switchedInstance, "optionsof.txt"), "utf8"), "ofFastRender:true");
   assert.equal(bundledFeatureMods("/resources", { ...manifest, clientFeatures: { connectionLock: true } }).length, 2);
+  assert.equal(bundledFeatureMods("/resources", {
+    ...manifest,
+    loader: { kind: "fabric", version: "0.16.10" },
+    clientFeatures: { connectionLock: true }
+  }).length, 1);
+  assert.equal(bundledFeatureMods("/resources", {
+    ...manifest,
+    loader: { kind: "forge", version: "47.3.0" },
+    clientFeatures: { connectionLock: false }
+  }).length, 0);
+  assert.throws(() => bundledFeatureMods("/resources", {
+    ...manifest,
+    loader: { kind: "forge", version: "47.3.0" },
+    clientFeatures: { connectionLock: true }
+  }));
   assert.throws(() => bundledFeatureMods("/resources", {
     ...manifest,
     minecraftVersion: "26.3",
