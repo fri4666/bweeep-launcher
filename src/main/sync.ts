@@ -101,18 +101,11 @@ export function assertManifest(manifest: ModpackManifest): void {
     !manifest.id ||
     !manifest.minecraftVersion ||
     !manifest.loader?.kind ||
-    !["vanilla", "fabric", "neoforge", "forge"].includes(manifest.loader.kind) ||
     !Number.isSafeInteger(manifest.java?.majorVersion) ||
     manifest.java.majorVersion < 21 ||
     !manifest.java.component
   ) {
     throw new Error("지원하지 않는 manifest 형식입니다.");
-  }
-  if (manifest.serverLoader && !["vanilla", "fabric", "neoforge", "forge", "paper", "folia"].includes(manifest.serverLoader.kind)) {
-    throw new Error("지원하지 않는 서버 로더 정보입니다.");
-  }
-  if (manifest.clientFeatures && typeof manifest.clientFeatures.connectionLock !== "boolean") {
-    throw new Error("클라이언트 기능 정보가 올바르지 않습니다.");
   }
   for (const file of manifest.files) {
     if (

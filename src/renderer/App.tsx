@@ -10,9 +10,7 @@ import type {
   ServerPreset,
   ServerStatus,
   SyncProgress,
-  SyncResult,
-  UserContentFolders,
-  UserContentKind
+  SyncResult
 } from "../shared/types.js";
 import "./styles.css";
 
@@ -71,12 +69,10 @@ function App() {
   const [portInput, setPortInput] = useState("");
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
+  const [launcherVersion, setLauncherVersion] = useState("");
   const [updateOpen, setUpdateOpen] = useState(false);
-  const [testLauncherOpening, setTestLauncherOpening] = useState(false);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
   const [gameNameInput, setGameNameInput] = useState("");
-  const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
-  const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
 
   useEffect(() => {
     void Promise.allSettled([
@@ -86,8 +82,9 @@ function App() {
       window.bweeep.serverConnection(),
       window.bweeep.checkLauncherUpdate(),
       window.bweeep.gameStatus(),
-      window.bweeep.launcherChannel()
-    ]).then(([serverList, root, status, savedConnection, updateStatus, initialGameStatus, channel]) => {
+      window.bweeep.launcherChannel(),
+      window.bweeep.launcherVersion()
+    ]).then(([serverList, root, status, savedConnection, updateStatus, initialGameStatus, channel, version]) => {
       if (serverList.status === "fulfilled") {
         setServers(serverList.value);
         setSelectedId(serverList.value[0]?.id ?? "");
@@ -113,6 +110,7 @@ function App() {
       }
       if (initialGameStatus.status === "fulfilled") setGameStatus(initialGameStatus.value);
       if (channel.status === "fulfilled") setLauncherChannel(channel.value);
+      if (version.status === "fulfilled") setLauncherVersion(version.value);
     });
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
       setLogs((current) => [...current, event]);
@@ -150,13 +148,6 @@ function App() {
       unsubscribeInvite();
     };
   }, []);
-
-  useEffect(() => {
-    if (!instanceRoot) return;
-    void window.bweeep.userContentFolders(instanceRoot).then(setPersonalFolders).catch((error) => {
-      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 불러오지 못했습니다.");
-    });
-  }, [instanceRoot]);
 
   const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
     setServerChecking(true);
@@ -376,33 +367,12 @@ function App() {
     }
   }
 
-  async function choosePersonalFolders(kind: UserContentKind) {
-    if (contentAction) return;
-    setContentAction(kind);
+  async function openPersonalFolder(kind: "mods" | "shaderpacks") {
     try {
-      const result = await window.bweeep.chooseUserContentFolders(instanceRoot.trim(), kind);
-      setPersonalFolders(result.folders);
-      setNotice(result.selected > 0
-        ? `${kind === "mods" ? "모드" : "셰이더"} 폴더 ${result.selected}개를 저장했습니다. 다음 게임 실행에 적용됩니다.`
-        : "폴더 선택을 취소했거나 이미 추가된 폴더입니다.");
+      const root = await window.bweeep.userContentRoot(instanceRoot.trim());
+      await window.bweeep.openPath(`${root}\\${kind}`);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
-    } finally {
-      setContentAction(null);
-    }
-  }
-
-  async function removePersonalFolder(kind: UserContentKind, folder: string) {
-    if (contentAction) return;
-    setContentAction(kind);
-    try {
-      const folders = await window.bweeep.removeUserContentFolder(instanceRoot.trim(), kind, folder);
-      setPersonalFolders(folders);
-      setNotice(`${kind === "mods" ? "모드" : "셰이더"} 폴더를 저장 목록에서 뺐습니다. 다음 게임 실행부터 적용하지 않습니다.`);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
-    } finally {
-      setContentAction(null);
+      setNotice(error instanceof Error ? error.message : "내 콘텐츠 폴더를 열지 못했습니다.");
     }
   }
 
@@ -443,19 +413,6 @@ function App() {
       setNotice(message);
     } finally {
       setSyncing(false);
-    }
-  }
-
-  async function openTestLauncher() {
-    setTestLauncherOpening(true);
-    setNotice("테스트 런처를 준비하고 있어요.");
-    try {
-      const result = await window.bweeep.openTestLauncher();
-      setNotice(result === "opened" ? "테스트 런처를 열었습니다." : "테스트 런처 설치를 시작했습니다.");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "테스트 런처를 열지 못했습니다.");
-    } finally {
-      setTestLauncherOpening(false);
     }
   }
 
@@ -548,7 +505,7 @@ function App() {
 
         <nav className="iconRail" aria-label="주 메뉴">
           <button className="iconButton active">홈</button>
-          <button className="iconButton" onClick={() => setSettingsOpen(true)}>서버 선택</button>
+          <button className="iconButton" onClick={() => setProfileOpen(true)}>서버</button>
           <button className="iconButton" onClick={() => setSettingsOpen(true)}>설정</button>
         </nav>
         <div className="supportPanel">
@@ -567,34 +524,37 @@ function App() {
             <div><strong>{serverStatusMessage}</strong><small>{serverStatusDetail}</small></div>
           </div>
           <div className="topbarActions">
-            <button className="profileBox" onClick={() => setProfileOpen(true)}>
-              <ProfileAvatar user={user} />
-              <div><strong>{user.globalName ?? user.username}</strong><small>Discord</small></div>
-            </button>
             {launcherChannel === "production" && access.testAllowed && (
               <button
                 type="button"
                 className="testLauncherInstallButton"
-                aria-label="테스트 런처 설치 또는 열기"
-                title="테스트 런처 설치 또는 열기"
-                disabled={testLauncherOpening}
-                onClick={() => void openTestLauncher()}
+                aria-label="테스트 런처 열기"
+                title="테스트 런처 열기"
+                onClick={() => void window.bweeep.openTestLauncher()}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 3v10m0 0 4-4m-4 4-4-4M5 17v3h14v-3" />
                 </svg>
               </button>
             )}
+            <button className="profileBox" onClick={() => setProfileOpen(true)}>
+              <ProfileAvatar user={user} />
+              <div><strong>{user.globalName ?? user.username}</strong><small>Discord</small></div>
+            </button>
             <WindowControls />
           </div>
         </header>
         <section className="hero">
           <div className="heroBackdrop" />
           <div className="heroCopy">
-            <p className="eyebrow">{selected?.environment === "test" ? "테스트 서버" : "순정 생존 서버"}</p>
+            <p className="eyebrow">순정 생존 서버</p>
             <h2>{selected?.name ?? "서버 없음"}</h2>
             <p>서버에 맞는 Minecraft 버전을 준비하고, 바로 같은 월드로 접속합니다.</p>
-            <button className="serverChangeButton" onClick={() => setSettingsOpen(true)}>서버 변경</button>
+            <label className="serverPicker">서버 선택
+              <select value={selected?.id ?? ""} onChange={(event) => void selectServer(event.target.value)}>
+                {availableServers.map((server) => <option key={server.id} value={server.id}>{server.environment === "test" ? "테스트 서버 · " : "본 서버 · "}{server.name} · Minecraft {server.minecraftVersion}</option>)}
+              </select>
+            </label>
             <div className="chips">
               <span>Minecraft {selected?.minecraftVersion ?? "-"}</span>
               <span>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected?.loader.kind ?? "-"}</span>
@@ -647,28 +607,6 @@ function App() {
               </div>
               <button className="closeButton" onClick={() => setSettingsOpen(false)}>닫기</button>
             </header>
-
-            <section className="panel serverSelectionPanel">
-              <div className="panelHeader">
-                <div>
-                  <h3>서버 선택</h3>
-                  <span>선택한 서버에 맞춰 Minecraft와 접속 주소를 준비합니다.</span>
-                </div>
-                <span className={`serverEnvironment ${selected?.environment === "test" ? "isTest" : ""}`}>
-                  {selected?.environment === "test" ? "테스트" : "본 서버"}
-                </span>
-              </div>
-              <label className="serverSelectControl">
-                <span>접속할 서버</span>
-                <select value={selected?.id ?? ""} onChange={(event) => void selectServer(event.target.value)}>
-                  {availableServers.map((server) => (
-                    <option key={server.id} value={server.id}>
-                      {server.environment === "test" ? "테스트 서버" : "본 서버"} · {server.name} · Minecraft {server.minecraftVersion}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </section>
 
             <div className="settingsGrid">
               <article className="panel accessPanel">
@@ -738,7 +676,10 @@ function App() {
             </section>
             <footer className="settingsFooter">
               <button className="resetButton" onClick={() => void resetSettings()}>설정 초기화</button>
-              <span>모드팩 파일과 로그인 계정은 삭제하지 않습니다.</span>
+              <div className="settingsFooterInfo">
+                <span>모드팩 파일과 로그인 계정은 삭제하지 않습니다.</span>
+                {launcherVersion && <small>붸에엡 v{launcherVersion}{launcherChannel === "test" ? " · 테스트" : ""}</small>}
+              </div>
             </footer>
           </section>
         </div>
@@ -767,30 +708,13 @@ function App() {
             <section className="panel connectionPanel">
               <div className="panelHeader">
                 <h3>내 모드와 셰이더</h3>
-                <span>선택한 폴더를 모두 저장해 서버 전환 뒤에도 적용합니다.</span>
+                <span>여기에 넣은 파일은 서버 전환 후에도 유지됩니다.</span>
               </div>
-              <div className="contentFolderGroups">
-                {(["mods", "shaderpacks"] as const).map((kind) => (
-                  <div className="contentFolderGroup" key={kind}>
-                    <div className="contentFolderLabel">
-                      <strong>{kind === "mods" ? "모드 폴더" : "셰이더 폴더"}</strong>
-                      <span>{kind === "mods" ? ".jar" : ".zip"} 파일 · 여러 폴더 가능</span>
-                    </div>
-                    <div className="contentFolderList">
-                      {personalFolders[kind].length === 0 ? <p>선택한 폴더가 없습니다.</p> : personalFolders[kind].map((folder) => (
-                        <div className="contentFolderItem" key={folder} title={folder}>
-                          <span>{folder}</span>
-                          <button aria-label={`${kind === "mods" ? "모드" : "셰이더"} 폴더 제거`} disabled={contentAction !== null} onClick={() => void removePersonalFolder(kind, folder)}>×</button>
-                        </div>
-                      ))}
-                    </div>
-                    <button className="contentFolderAdd" disabled={!instanceRoot.trim() || contentAction !== null} onClick={() => void choosePersonalFolders(kind)}>
-                      {contentAction === kind ? "저장 중…" : `${kind === "mods" ? "모드" : "셰이더"} 폴더 선택`}
-                    </button>
-                  </div>
-                ))}
+              <div className="updateActions">
+                <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("mods")}>내 모드 폴더 열기</button>
+                <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("shaderpacks")}>셰이더 폴더 열기</button>
               </div>
-              <p className="notice">같은 이름의 파일도 서로 다른 선택 폴더에 있으면 함께 적용합니다. 현재 Minecraft 버전과 로더에 맞는 파일만 사용하세요.</p>
+              <p className="notice">모드는 .jar, 셰이더는 .zip 파일을 넣으세요. 현재 Minecraft 버전과 로더에 맞는 파일만 사용해야 합니다.</p>
             </section>
             <section className="panel connectionPanel">
               <div className="panelHeader">
@@ -828,6 +752,13 @@ function App() {
             {launcherUpdate.state === "installing" && <p>업데이트를 설치하고 다시 시작하는 중입니다.</p>}
             {launcherUpdate.state === "error" && <p>{launcherUpdate.message ?? "자동 업데이트에 실패했습니다."}</p>}
             {launcherUpdate.update && launcherUpdate.update.notes.length > 0 && <ul>{launcherUpdate.update.notes.map((note) => <li key={note}>{note}</li>)}</ul>}
+            {(launcherUpdate.state === "available" || launcherUpdate.state === "error") && (
+              <div className="updateActions">
+                {launcherUpdate.state === "available" && <button className="launchButton" onClick={() => void window.bweeep.downloadLauncherUpdate()}>업데이트하기</button>}
+                {launcherUpdate.state === "error" && <button className="launchButton" onClick={() => void window.bweeep.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest")}>릴리스 페이지 열기</button>}
+                <button className="closeButton" onClick={() => setUpdateOpen(false)}>닫기</button>
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -841,7 +772,7 @@ function normalizeInviteCode(value: string): string {
 }
 
 function shouldShowUpdate(status: LauncherUpdateStatus): boolean {
-  return ["downloading", "ready", "installing"].includes(status.state);
+  return ["available", "downloading", "ready", "installing", "error"].includes(status.state);
 }
 
 function formatRelativeTime(timestamp: number, now = Date.now()): string {

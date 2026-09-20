@@ -12,10 +12,7 @@ import type {
   ServerConnection,
   ServerPreset,
   ServerStatus,
-  SyncProgress,
-  UserContentFolders,
-  UserContentKind,
-  UserContentFolderPickResult
+  SyncProgress
 } from "../shared/types.js";
 
 const api = {
@@ -23,9 +20,6 @@ const api = {
   serverStatus: (server: { host: string; port: number }) => ipcRenderer.invoke("server:status", server) as Promise<ServerStatus>,
   defaultInstanceRoot: () => ipcRenderer.invoke("paths:defaultInstanceRoot") as Promise<string>,
   userContentRoot: (instanceRoot: string) => ipcRenderer.invoke("paths:userContentRoot", instanceRoot) as Promise<string>,
-  userContentFolders: (instanceRoot: string) => ipcRenderer.invoke("content:folders", instanceRoot) as Promise<UserContentFolders>,
-  chooseUserContentFolders: (instanceRoot: string, kind: UserContentKind) => ipcRenderer.invoke("content:chooseFolders", instanceRoot, kind) as Promise<UserContentFolderPickResult>,
-  removeUserContentFolder: (instanceRoot: string, kind: UserContentKind, folder: string) => ipcRenderer.invoke("content:removeFolder", instanceRoot, kind, folder) as Promise<UserContentFolders>,
   login: () => ipcRenderer.invoke("account:login") as Promise<LoginResult>,
   cancelLogin: () => ipcRenderer.invoke("account:cancelLogin") as Promise<LoginCancellationResult>,
   logout: () => ipcRenderer.invoke("account:logout") as Promise<AccessStatus>,
@@ -38,8 +32,10 @@ const api = {
   saveServerConnection: (connection: ServerConnection) => ipcRenderer.invoke("server:saveConnection", connection) as Promise<ServerConnection>,
   resetServerConnection: () => ipcRenderer.invoke("server:resetConnection") as Promise<ServerConnection>,
   checkLauncherUpdate: () => ipcRenderer.invoke("launcher:checkUpdate") as Promise<LauncherUpdateStatus>,
+  downloadLauncherUpdate: () => ipcRenderer.invoke("launcher:downloadUpdate") as Promise<LauncherUpdateStatus>,
   launcherChannel: () => ipcRenderer.invoke("launcher:channel") as Promise<"production" | "test">,
-  openTestLauncher: () => ipcRenderer.invoke("test-launcher:open") as Promise<"opened" | "installing">,
+  launcherVersion: () => ipcRenderer.invoke("launcher:version") as Promise<string>,
+  openTestLauncher: () => ipcRenderer.invoke("test-launcher:open") as Promise<void>,
   launchGame: (request: { packId: string; instanceDir: string }) => ipcRenderer.invoke("game:launch", request) as Promise<LaunchResult>,
   gameStatus: () => ipcRenderer.invoke("game:status") as Promise<GameStatus>,
   openPath: (target: string) => ipcRenderer.invoke("shell:openPath", target) as Promise<string>,

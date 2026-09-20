@@ -1,5 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "electron";
-import { createHash } from "node:crypto";
+import { app, BrowserWindow, clipboard, ipcMain, session, shell } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,12 +11,11 @@ import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseIn
 import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
-import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
+import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
-import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, userContentPaths } from "./user-content.js";
+import { captureSharedOptions, prepareUserContent, userContentRoot } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherUpdateStatus, LauncherUser, ServerPreset, SyncProgress, UserContentKind } from "../shared/types.js";
-import { bundledFeatureMods } from "./client-feature-mods.js";
+import type { GameStatus, LauncherUpdateStatus, LauncherUser, SyncProgress } from "../shared/types.js";
 import type { ModpackManifest } from "../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,81 +29,7 @@ const pendingInviteCodes: string[] = [];
 let inviteReceiverReady = false;
 let gameStatus: GameStatus = { state: "idle" };
 let gameRunId = 0;
-interface GitHubReleaseAsset {
-  name?: unknown;
-  browser_download_url?: unknown;
-  digest?: unknown;
-}
-
-interface GitHubRelease {
-  prerelease?: unknown;
-  draft?: unknown;
-  assets?: unknown;
-}
-
-interface TestLauncherAsset {
-  name: string;
-  browser_download_url: string;
-  digest: string;
-}
-
-async function openTestLauncher(): Promise<"opened" | "installing"> {
-  try {
-    const application = await app.getApplicationInfoForProtocol("bwe-e-ep-test://open");
-    if (application.path) {
-      await shell.openExternal("bwe-e-ep-test://open");
-      return "opened";
-    }
-  } catch {
-    // 설치된 테스트 런처가 없으면 아래에서 설치본을 준비한다.
-  }
-  await installTestLauncher();
-  return "installing";
-}
-
-async function installTestLauncher(): Promise<void> {
-  const response = await fetch("https://api.github.com/repos/fri4666/bweeep-launcher/releases", {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "Bweeep-Launcher" }
-  });
-  if (!response.ok) throw new Error("테스트 런처 설치 정보를 가져오지 못했습니다.");
-  const releases = await response.json() as GitHubRelease[];
-  const release = releases.find((candidate) => candidate.prerelease === true && candidate.draft !== true);
-  const asset = Array.isArray(release?.assets)
-    ? release.assets.find(isTestInstallerAsset)
-    : undefined;
-  if (!asset) throw new Error("테스트 런처 설치 파일을 찾지 못했습니다.");
-
-  const installerResponse = await fetch(asset.browser_download_url);
-  if (!installerResponse.ok) throw new Error("테스트 런처 설치 파일을 받지 못했습니다.");
-  const installer = Buffer.from(await installerResponse.arrayBuffer());
-  const expectedDigest = asset.digest.slice("sha256:".length).toLowerCase();
-  const actualDigest = createHash("sha256").update(installer).digest("hex");
-  if (actualDigest !== expectedDigest) throw new Error("테스트 런처 설치 파일 검증에 실패했습니다.");
-
-  const installerPath = path.join(app.getPath("temp"), "Bweeep", "test-launcher", asset.name);
-  await fsp.mkdir(path.dirname(installerPath), { recursive: true });
-  await fsp.writeFile(installerPath, installer);
-  const openError = await shell.openPath(installerPath);
-  if (openError) throw new Error("테스트 런처 설치를 시작하지 못했습니다.");
-}
-
-function isTestInstallerAsset(asset: GitHubReleaseAsset): asset is TestLauncherAsset {
-  return typeof asset.name === "string"
-    && /^Bweeep-Test-Setup-[\w.-]+\.exe$/i.test(asset.name)
-    && typeof asset.browser_download_url === "string"
-    && asset.browser_download_url.startsWith("https://")
-    && typeof asset.digest === "string"
-    && /^sha256:[a-f0-9]{64}$/i.test(asset.digest);
-}
-
-function requireLaunchPreset(presets: ServerPreset[], packId: string, access: Awaited<ReturnType<SupabaseAuth["getAccessStatus"]>>): ServerPreset {
-  const preset = presets.find((candidate) => candidate.packId === packId);
-  if (!preset) throw new Error("선택한 서버 정보를 찾지 못했습니다.");
-  if (preset.environment === "test" && access.testAllowed !== true) {
-    throw new Error("테스트 서버는 지정된 테스터 계정만 실행할 수 있습니다.");
-  }
-  return preset;
-}
+const testLauncherSetupUrl = "https://github.com/fri4666/bweeep-launcher/releases/download/v0.1.25-test.1/Bweeep-Test-Setup-0.1.25.exe";
 
 async function readBundledManifest(packId: string): Promise<ModpackManifest> {
   const manifestPath = path.join(app.getAppPath(), "resources", "manifests", `${packId}.json`);
@@ -318,34 +242,9 @@ app.whenReady().then(async () => {
   ipcMain.handle("paths:defaultInstanceRoot", () =>
     defaultInstanceRoot()
   );
-  ipcMain.handle("content:folders", async (_event, instanceRoot: unknown) => {
+  ipcMain.handle("paths:userContentRoot", (_event, instanceRoot: unknown) => {
     if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    return getUserContentFolders(instanceRoot);
-  });
-  ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: UserContentKind) => {
-    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    if (kind !== "mods" && kind !== "shaderpacks") throw new Error("콘텐츠 종류가 올바르지 않습니다.");
-    const options = { title: kind === "mods" ? "내 모드 폴더 선택" : "내 셰이더 폴더 선택", buttonLabel: "선택한 폴더 추가", properties: ["openDirectory", "multiSelections"] as Array<"openDirectory" | "multiSelections"> };
-    const owner = BrowserWindow.fromWebContents(event.sender);
-    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
-    if (picked.canceled) return { folders: await getUserContentFolders(instanceRoot), selected: 0 };
-    const before = await getUserContentFolders(instanceRoot);
-    const folders = await addUserContentFolders(instanceRoot, kind, picked.filePaths);
-    return { folders, selected: folders[kind].length - before[kind].length };
-  });
-  ipcMain.handle("content:removeFolder", async (_event, instanceRoot: unknown, kind: UserContentKind, folder: unknown) => {
-    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    if ((kind !== "mods" && kind !== "shaderpacks") || typeof folder !== "string") throw new Error("콘텐츠 폴더 정보가 올바르지 않습니다.");
-    return removeUserContentFolder(instanceRoot, kind, folder);
-  });
-  ipcMain.handle("paths:userContent", async (_event, request: { instanceRoot?: unknown; minecraftVersion?: unknown; loaderKind?: unknown }) => {
-    const { instanceRoot, minecraftVersion, loaderKind } = request ?? {};
-    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    if (typeof minecraftVersion !== "string" || !/^[A-Za-z0-9._-]+$/.test(minecraftVersion)) throw new Error("Minecraft 버전 정보가 올바르지 않습니다.");
-    if (!["vanilla", "fabric", "neoforge", "forge"].includes(String(loaderKind))) throw new Error("클라이언트 로더 정보가 올바르지 않습니다.");
-    const paths = userContentPaths(instanceRoot, loaderKind as ModpackManifest["loader"]["kind"], minecraftVersion);
-    await Promise.all([fsp.mkdir(paths.userModsDir, { recursive: true }), fsp.mkdir(paths.shaderpacksDir, { recursive: true })]);
-    return paths;
+    return userContentRoot(instanceRoot);
   });
   ipcMain.handle("shell:openPath", async (_event, target: string) => {
     return shell.openPath(target);
@@ -355,8 +254,15 @@ app.whenReady().then(async () => {
     if (url.protocol !== "https:") throw new Error("HTTPS 다운로드 주소만 열 수 있습니다.");
     await shell.openExternal(url.toString());
   });
-  ipcMain.handle("test-launcher:open", () => openTestLauncher());
+  ipcMain.handle("test-launcher:open", async () => {
+    try {
+      await shell.openExternal("bwe-e-ep-test://open");
+    } catch {
+      await shell.openExternal(testLauncherSetupUrl);
+    }
+  });
   ipcMain.handle("launcher:channel", () => getLauncherChannel());
+  ipcMain.handle("launcher:version", () => app.getVersion());
   ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
   ipcMain.handle("account:login", () => auth.startLogin());
   ipcMain.handle("account:cancelLogin", () => auth.cancelPendingLogin("user_cancelled"));
@@ -401,6 +307,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("server:saveConnection", (_event, connection: unknown) => writeServerConnection(connection, defaultServer));
   ipcMain.handle("server:resetConnection", () => resetServerConnection(defaultServer));
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
+  ipcMain.handle("launcher:downloadUpdate", () => downloadLauncherUpdate());
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:status", () => gameStatus);
@@ -410,36 +317,36 @@ app.whenReady().then(async () => {
     }
     const runId = ++gameRunId;
     setGameStatus({ state: "starting" });
-    const progress = (payload: SyncProgress) => {
-      event.sender.send("modpack:progress", payload);
-      void writeGameLog("launch.progress", {
-        kind: payload.kind,
-        stage: payload.stage ?? null,
-        message: payload.message,
-        elapsedMs: payload.elapsedMs ?? null,
-        completed: payload.completed ?? null,
-        total: payload.total ?? null,
-        filePath: payload.filePath ?? null
-      });
-    };
+    const progress = (payload: SyncProgress) => event.sender.send("modpack:progress", payload);
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
-      const access = await auth.getAccessStatus(sessionUser);
-      const presets = await getServerPresets(launcherChannel);
-      requireLaunchPreset(presets, request.packId, access);
-      const manifest = await readBundledManifest(request.packId);
+      const manifest = request.packId === "vanilla-survival"
+        ? await readBundledManifest(request.packId)
+        : await auth.getManifest(sessionUser, request.packId);
       assertManifest(manifest);
       const server = await readServerConnection(defaultServer);
       const configuredManifest = { ...manifest, server };
-      const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), configuredManifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
-      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, configuredManifest);
-      progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리` });
+      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir);
+      progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 적용 · 서버 전용 모드 ${userContent.removedManagedMods}개 정리` });
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
+      const clientModsDir = path.join(app.getAppPath(), "resources", "client-mods");
+      const bundledClientMods = configuredManifest.loader.kind === "neoforge" ? [
+        {
+          sourcePath: path.join(clientModsDir, "bweeep-client-1.2.0.jar"),
+          targetName: "bweeep-client.jar",
+          sha256: "4c8840d126f1939a1e66182cc086f3293bd0a8f75d5780d89df94ba23f02e70b"
+        },
+        {
+          sourcePath: path.join(clientModsDir, "bweeep-display-name-0.2.0.jar"),
+          targetName: "bweeep-display-name.jar",
+          sha256: "23f0c716cc8cb857ecf384f648a5c493745dd1bc9f53d1ab04ca9c40b632fed2"
+        }
+      ] : [];
       const getLaunchAuthorization = configuredManifest.loader.kind === "vanilla"
         ? async () => ({
             identity: createOfflineLaunchIdentity(launchUser.id, launchUser.gameName, launchUser.globalName, launchUser.username),
