@@ -346,20 +346,19 @@ h3 {
 
 .testLauncherInstallButton {
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   padding: 0;
-  color: #e0c28d;
-  background: rgba(217, 176, 114, 0.12);
-  border: 1px solid rgba(217, 176, 114, 0.32);
-  border-radius: 50%;
+  color: #d6b277;
+  background: #202125;
+  border: 0;
+  border-radius: 10px;
 }
 
 .testLauncherInstallButton:hover {
   color: #17130d;
   background: #d9b072;
-  border-color: #d9b072;
-  transform: translateY(-1px) scale(1.03);
+  transform: translateY(-1px);
 }
 
 .testLauncherInstallButton svg {
@@ -504,26 +503,6 @@ h3 {
   margin-top: 10px;
   color: #d1cec7;
   line-height: 1.55;
-}
-
-.serverChangeButton {
-  min-height: 34px;
-  margin-top: 16px;
-  padding: 0 13px;
-  color: #f0dfbf;
-  font-size: 12px;
-  font-weight: 800;
-  background: rgba(17, 18, 20, 0.52);
-  border: 1px solid rgba(240, 223, 191, 0.32);
-  border-radius: 999px;
-  backdrop-filter: blur(10px);
-}
-
-.serverChangeButton:hover {
-  color: #221b10;
-  background: #e1b873;
-  border-color: #e1b873;
-  transform: translateY(-1px);
 }
 
 .chips {
@@ -915,21 +894,6 @@ button:disabled {
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
 }
 
-.profileModal {
-  width: min(680px, 100%);
-  max-height: min(760px, calc(100vh - 48px));
-  overflow: auto;
-  padding: 26px;
-}
-
-.profileModal .connectionPanel {
-  padding: 20px;
-}
-
-.profileModal .connectionPanel + .connectionPanel {
-  margin-top: 12px;
-}
-
 .modalHeader {
   display: flex;
   align-items: center;
@@ -947,58 +911,6 @@ button:disabled {
   grid-template-columns: 1.1fr 0.9fr;
   gap: 14px;
   margin-bottom: 14px;
-}
-
-.serverSelectionPanel {
-  margin-bottom: 14px;
-}
-
-.serverSelectionPanel .panelHeader > div {
-  display: grid;
-  gap: 4px;
-}
-
-.serverEnvironment {
-  flex: 0 0 auto;
-  padding: 6px 9px;
-  color: #a8a39a;
-  font-size: 11px;
-  font-weight: 800;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 999px;
-}
-
-.serverEnvironment.isTest {
-  color: #e3c17f;
-  background: rgba(217, 176, 114, 0.14);
-}
-
-.serverSelectControl {
-  display: grid;
-  gap: 8px;
-  color: #aaa69d;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.serverSelectControl select {
-  width: 100%;
-  min-height: 46px;
-  padding: 0 40px 0 14px;
-  color: #eee9df;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 700;
-  cursor: pointer;
-  background: #17181b;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: var(--control-radius);
-}
-
-.serverSelectControl select:hover,
-.serverSelectControl select:focus {
-  border-color: rgba(217, 176, 114, 0.68);
-  outline: none;
 }
 
 .panel {
@@ -1127,94 +1039,6 @@ input:focus {
   font-weight: 800;
 }
 
-.contentFolderGroups {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.contentFolderGroup {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  min-width: 0;
-  padding: 14px;
-  background: #191a1e;
-  border: 1px solid rgba(255, 255, 255, 0.055);
-  border-radius: 14px;
-}
-
-.contentFolderLabel {
-  display: grid;
-  gap: 3px;
-}
-
-.contentFolderLabel strong {
-  color: #eeece7;
-  font-size: 14px;
-}
-
-.contentFolderLabel span,
-.contentFolderList > p {
-  margin: 0;
-  color: #949189;
-  font-size: 12px;
-}
-
-.contentFolderList {
-  display: grid;
-  gap: 6px;
-  min-height: 30px;
-}
-
-.contentFolderItem {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 26px;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 5px 0 9px;
-  color: #cfccc4;
-  font-size: 12px;
-  background: rgba(255, 255, 255, 0.045);
-  border-radius: 8px;
-}
-
-.contentFolderItem span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.contentFolderItem button {
-  width: 26px;
-  min-height: 26px;
-  padding: 0;
-  color: #b9b4aa;
-  font-size: 18px;
-  line-height: 1;
-  background: transparent;
-  border-radius: 7px;
-}
-
-.contentFolderItem button:hover:not(:disabled) {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.contentFolderAdd {
-  width: 100%;
-  min-height: 38px;
-  color: #e9ddc5;
-  font-weight: 800;
-  background: rgba(217, 176, 114, 0.12);
-  border: 1px solid rgba(217, 176, 114, 0.2);
-}
-
-.contentFolderAdd:hover:not(:disabled) {
-  background: rgba(217, 176, 114, 0.2);
-}
-
 .settingsFooter,
 .profileFooter {
   display: flex;
@@ -1224,19 +1048,21 @@ input:focus {
   margin-top: 14px;
 }
 
-@media (max-width: 620px) {
-  .profileModal {
-    padding: 18px;
-  }
-
-  .contentFolderGroups {
-    grid-template-columns: 1fr;
-  }
-}
-
 .settingsFooter span {
   color: #96938b;
   font-size: 12px;
+}
+
+.settingsFooterInfo {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+}
+
+.settingsFooterInfo small {
+  color: #6f6d67;
+  font-size: 10px;
+  letter-spacing: 0.04em;
 }
 
 .resetButton,

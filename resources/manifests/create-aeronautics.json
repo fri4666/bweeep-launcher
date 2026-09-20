@@ -16,9 +16,6 @@
     "kind": "neoforge",
     "version": "21.1.228"
   },
-  "clientFeatures": {
-    "connectionLock": true
-  },
   "server": {
     "host": "server.fri4666.com",
     "port": 25565

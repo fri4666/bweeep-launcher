@@ -2,11 +2,10 @@ import { app } from "electron";
 import electronUpdater from "electron-updater";
 import type { LauncherUpdate, LauncherUpdateStatus } from "../shared/types.js";
 import { getLauncherChannel } from "./launcher-channel.js";
-import { koreanReleaseNotes } from "./update-copy.js";
 
 const { autoUpdater } = electronUpdater;
 
-const CHECK_INTERVAL_MS = 60_000;
+const CHECK_INTERVAL_MS = 30 * 60_000;
 let status: LauncherUpdateStatus = { state: "checking" };
 let started = false;
 let installScheduled = false;
@@ -31,7 +30,7 @@ export function startLauncherUpdates(
     return;
   }
 
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
   const testChannel = getLauncherChannel() === "test";
   autoUpdater.channel = testChannel ? "test" : "latest";
@@ -60,6 +59,17 @@ export function startLauncherUpdates(
   void checkForUpdates();
   const interval = setInterval(() => void checkForUpdates(), CHECK_INTERVAL_MS);
   interval.unref();
+}
+
+export async function downloadLauncherUpdate(): Promise<LauncherUpdateStatus> {
+  if (status.state !== "available") return status;
+  setStatus({ state: "downloading", update: status.update, percent: 0 });
+  try {
+    await autoUpdater.downloadUpdate();
+  } catch (error) {
+    setStatus({ state: "error", update: status.update, message: safeUpdateError(error) });
+  }
+  return status;
 }
 
 export function installPendingLauncherUpdate(): void {
@@ -97,7 +107,7 @@ function toLauncherUpdate(info: {
   const notes = typeof info.releaseNotes === "string"
     ? [info.releaseNotes]
     : (info.releaseNotes ?? []).flatMap((entry) => entry.note ? [entry.note] : []);
-  return { version: info.version, notes: koreanReleaseNotes(notes) };
+  return { version: info.version, notes };
 }
 
 function safeUpdateError(error: unknown): string {
