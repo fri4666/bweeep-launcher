@@ -22,6 +22,15 @@ export class AuthCallbackError extends Error {
 
 const inviteCodePattern = /^BWEEP-[A-F0-9]{12}-[A-F0-9]{12}$/;
 
+export function isLauncherActivationLink(rawUrl: string, scheme = "bwe-e-ep"): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === `${scheme}:` && url.hostname === "open" && (url.pathname === "" || url.pathname === "/") && !url.search;
+  } catch {
+    return false;
+  }
+}
+
 export function parseAuthCallback(rawUrl: string, scheme = "bwe-e-ep"): AuthCallback {
   const url = new URL(rawUrl);
   if (url.protocol !== `${scheme}:` || url.hostname !== "auth" || url.pathname !== "/callback") {

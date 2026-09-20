@@ -1,4 +1,4 @@
-import { parseAuthCallback, parseInviteLink } from "../dist/src/main/deep-link.js";
+import { isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "../dist/src/main/deep-link.js";
 
 const valid = parseAuthCallback("bwe-e-ep://auth/callback?code=fresh-code");
 if (valid.code !== "fresh-code") throw new Error("Valid callback was rejected");
@@ -9,6 +9,13 @@ if (flowAware.flowId !== "0123456789abcdef") throw new Error("PKCE flow id was n
 
 const testCallback = parseAuthCallback("bwe-e-ep-test://auth/callback?code=test-code", "bwe-e-ep-test");
 if (testCallback.code !== "test-code") throw new Error("Test launcher callback was rejected");
+
+if (!isLauncherActivationLink("bwe-e-ep-test://open", "bwe-e-ep-test")) {
+  throw new Error("Test launcher activation link was rejected");
+}
+if (isLauncherActivationLink("bwe-e-ep-test://auth/callback?code=test-code", "bwe-e-ep-test")) {
+  throw new Error("Authentication callback was treated as a launcher activation link");
+}
 
 const expired = new URL("bwe-e-ep://auth/callback");
 expired.searchParams.set("error", "server_error");

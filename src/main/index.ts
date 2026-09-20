@@ -7,7 +7,7 @@ import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
 import { installAndLaunch } from "./minecraft-runtime.js";
-import { AuthCallbackError, parseAuthCallback, parseInviteLink } from "./deep-link.js";
+import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
@@ -29,6 +29,7 @@ const pendingInviteCodes: string[] = [];
 let inviteReceiverReady = false;
 let gameStatus: GameStatus = { state: "idle" };
 let gameRunId = 0;
+const testLauncherSetupUrl = "https://github.com/fri4666/bweeep-launcher/releases/download/v0.1.25-test.1/Bweeep-Test-Setup-0.1.25.exe";
 
 async function readBundledManifest(packId: string): Promise<ModpackManifest> {
   const manifestPath = path.join(app.getAppPath(), "resources", "manifests", `${packId}.json`);
@@ -71,6 +72,12 @@ function collectDeepLink(argv: readonly string[]): string | undefined {
 }
 
 function queueDeepLink(url: string, source: "argv" | "second-instance" | "open-url"): void {
+  if (isLauncherActivationLink(url, launcherProtocolScheme())) {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (window?.isMinimized()) window.restore();
+    window?.focus();
+    return;
+  }
   if (url.startsWith(`${launcherProtocolScheme()}://invite/`)) {
     try {
       pendingInviteCodes.push(parseInviteLink(url, launcherProtocolScheme()));
@@ -247,6 +254,14 @@ app.whenReady().then(async () => {
     if (url.protocol !== "https:") throw new Error("HTTPS 다운로드 주소만 열 수 있습니다.");
     await shell.openExternal(url.toString());
   });
+  ipcMain.handle("test-launcher:open", async () => {
+    try {
+      await shell.openExternal("bwe-e-ep-test://open");
+    } catch {
+      await shell.openExternal(testLauncherSetupUrl);
+    }
+  });
+  ipcMain.handle("launcher:channel", () => getLauncherChannel());
   ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
   ipcMain.handle("account:login", () => auth.startLogin());
   ipcMain.handle("account:cancelLogin", () => auth.cancelPendingLogin("user_cancelled"));
