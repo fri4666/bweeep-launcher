@@ -33,11 +33,13 @@ jobs:
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $tag = "v$version"
+          $PSNativeCommandUseErrorActionPreference = $false
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           $exists = $LASTEXITCODE -eq 0
           "version=$version" >> $env:GITHUB_OUTPUT
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "exists=$exists" >> $env:GITHUB_OUTPUT
+          exit 0
 
       - name: 의존성 및 회귀 검사
         if: steps.version.outputs.exists != 'True'
