@@ -23,6 +23,7 @@
     "verify:user-content": "npm run build && node scripts/verify-user-content.mjs",
     "verify:personal-content": "npm run build && node scripts/verify-personal-content.mjs",
     "verify:update-copy": "npm run build && node scripts/verify-update-copy.mjs",
+    "verify:launcher-update": "npm run build && node scripts/verify-launcher-update.mjs",
     "verify:server-status": "npm run build && node scripts/verify-server-status.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

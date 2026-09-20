@@ -923,9 +923,30 @@ button:disabled {
 
 .settingsGrid {
   display: grid;
-  grid-template-columns: 1.1fr 0.9fr;
-  gap: 14px;
-  margin-bottom: 14px;
+  align-items: start;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.settingsGrid > .serverSelectPanel {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+.settingsGrid > .connectionPanel {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.settingsGrid > .installPanel {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.settingsGrid > .accessPanel {
+  grid-column: 1 / -1;
+  grid-row: 3;
 }
 
 .panel {
@@ -1054,6 +1075,61 @@ input:focus {
   font-weight: 800;
 }
 
+.profileModal .connectionFields {
+  grid-template-columns: 1fr;
+}
+
+.serverChoiceGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.serverChoice {
+  display: grid;
+  gap: 7px;
+  min-height: 106px;
+  padding: 16px;
+  color: #cac6bd;
+  text-align: left;
+  background: #191a1e;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--control-radius);
+}
+
+.serverChoice:hover,
+.serverChoice.active {
+  color: #f2eee6;
+  background: #25262b;
+  border-color: rgba(217, 176, 114, 0.42);
+}
+
+.serverChoice.active {
+  box-shadow: inset 0 0 0 1px rgba(217, 176, 114, 0.32);
+}
+
+.serverChoice span {
+  justify-self: start;
+  padding: 5px 8px;
+  color: #211c15;
+  font-size: 11px;
+  font-weight: 900;
+  background: #d9b072;
+  border-radius: 7px;
+}
+
+.serverChoice strong {
+  color: inherit;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.serverChoice small {
+  color: #9c988f;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .contentFolderGroups {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1154,6 +1230,11 @@ input:focus {
 @media (max-width: 620px) {
   .profileModal {
     padding: 18px;
+  }
+
+  .settingsGrid,
+  .serverChoiceGrid {
+    grid-template-columns: 1fr;
   }
 
   .contentFolderGroups {
