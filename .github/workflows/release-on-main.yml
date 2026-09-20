@@ -53,7 +53,7 @@ jobs:
       - name: Windows 설치본 만들기
         if: steps.version.outputs.exists != 'True'
         shell: pwsh
-        run: npm run package:win
+        run: npm run package:win -- --publish never
 
       - name: GitHub 정식 릴리스 게시
         if: steps.version.outputs.exists != 'True'
