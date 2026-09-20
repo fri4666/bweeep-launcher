@@ -1,0 +1,71 @@
+name: 본섭 런처 릴리스
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: production-launcher-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: 소스 내려받기
+        uses: actions/checkout@v4
+
+      - name: Node 설치
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: 이미 게시한 버전인지 확인
+        id: version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "v$version"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          $exists = $LASTEXITCODE -eq 0
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "exists=$exists" >> $env:GITHUB_OUTPUT
+
+      - name: 의존성 및 회귀 검사
+        if: steps.version.outputs.exists != 'True'
+        shell: pwsh
+        run: |
+          npm ci
+          npm run typecheck
+          npm run verify:deep-link
+          npm run verify:launch-identity
+
+      - name: Windows 설치본 만들기
+        if: steps.version.outputs.exists != 'True'
+        shell: pwsh
+        run: npm run package:win
+
+      - name: GitHub 정식 릴리스 게시
+        if: steps.version.outputs.exists != 'True'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $tag = '${{ steps.version.outputs.tag }}'
+          gh release create $tag `
+            "release-installer/Bweeep-Setup-$version.exe" `
+            "release-installer/Bweeep-Setup-$version.exe.blockmap" `
+            "release-installer/latest.yml" `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title "붸에엡 v$version" `
+            --notes "자동 릴리스: main 병합 뒤 Windows 설치본·자동 업데이트 메타데이터를 생성했습니다. Minecraft 서버 설정은 변경하지 않습니다."
