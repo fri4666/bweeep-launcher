@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "electron";
 import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -14,9 +14,9 @@ import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
 import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
-import { captureSharedOptions, prepareUserContent, userContentRoot } from "./user-content.js";
+import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, userContentRoot } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherUpdateStatus, LauncherUser, ServerPreset, SyncProgress } from "../shared/types.js";
+import type { GameStatus, LauncherUpdateStatus, LauncherUser, ServerPreset, SyncProgress, UserContentKind } from "../shared/types.js";
 import type { ModpackManifest } from "../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -321,6 +321,30 @@ app.whenReady().then(async () => {
     if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
     return userContentRoot(instanceRoot);
   });
+  ipcMain.handle("content:folders", async (_event, instanceRoot: unknown) => {
+    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
+    return getUserContentFolders(instanceRoot);
+  });
+  ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: UserContentKind) => {
+    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
+    if (kind !== "mods" && kind !== "shaderpacks") throw new Error("콘텐츠 종류가 올바르지 않습니다.");
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: kind === "mods" ? "내 모드 폴더 선택" : "내 셰이더 폴더 선택",
+      buttonLabel: "선택한 폴더 추가",
+      properties: ["openDirectory", "multiSelections"] as Array<"openDirectory" | "multiSelections">
+    };
+    const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+    if (picked.canceled) return { folders: await getUserContentFolders(instanceRoot), selected: 0 };
+    const before = await getUserContentFolders(instanceRoot);
+    const folders = await addUserContentFolders(instanceRoot, kind, picked.filePaths);
+    return { folders, selected: folders[kind].length - before[kind].length };
+  });
+  ipcMain.handle("content:removeFolder", async (_event, instanceRoot: unknown, kind: UserContentKind, folder: unknown) => {
+    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
+    if ((kind !== "mods" && kind !== "shaderpacks") || typeof folder !== "string") throw new Error("콘텐츠 폴더 정보가 올바르지 않습니다.");
+    return removeUserContentFolder(instanceRoot, kind, folder);
+  });
   ipcMain.handle("shell:openPath", async (_event, target: string) => {
     return shell.openPath(target);
   });
@@ -398,7 +422,7 @@ app.whenReady().then(async () => {
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
       const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir);
-      progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 적용 · 서버 전용 모드 ${userContent.removedManagedMods}개 정리` });
+      progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리` });
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });

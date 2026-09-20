@@ -20,6 +20,7 @@
     "verify:electron-startup": "npm run build && node scripts/verify-electron-startup.mjs",
     "verify:deep-link": "npm run build && node scripts/verify-deep-link.mjs",
     "verify:launch-identity": "npm run build && node scripts/verify-launch-identity.mjs",
+    "verify:user-content": "npm run build && node scripts/verify-user-content.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
