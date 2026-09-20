@@ -29,8 +29,7 @@ try {
   ]);
 
   const result = await prepareUserContent(root, instance, manifest);
-  assert.deepEqual(result.blockedMods, ["required.jar"]);
-  assert.equal(await fs.readFile(path.join(instance, "mods", "required.jar"), "utf8"), "server-owned");
+  assert.equal(await fs.readFile(path.join(instance, "mods", "required.jar"), "utf8"), "personal-conflict");
   assert.equal(await fs.readFile(path.join(instance, "mods", "shader-helper.jar"), "utf8"), "personal-ok");
   await Promise.all([
     fs.writeFile(path.join(instance, "options.txt"), "sensitivity:0.42\nkey_key.jump:key.keyboard.space"),

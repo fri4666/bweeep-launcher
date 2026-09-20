@@ -28,23 +28,16 @@ export async function prepareUserContent(instanceRoot: string, instanceDir: stri
 
   const selectedFolders = await getUserContentFolders(instanceRoot);
   const desiredMods = await collectContentFiles([userModsDir, ...selectedFolders.mods], ".jar");
-  const managedModNames = new Set(manifest.files
-    .filter((file) => file.path.startsWith("mods/"))
-    .map((file) => path.basename(file.path).toLowerCase()));
-  const blockedMods = desiredMods
-    .map((file) => path.basename(file.source))
-    .filter((name) => managedModNames.has(name.toLowerCase()));
-  const installableMods = desiredMods.filter((file) => !blockedMods.includes(path.basename(file.source)));
   const previousMods = await readStringArray(path.join(instanceDir, ".bweeep", USER_MODS_FILE));
-  const desiredNames = new Set(installableMods.map((file) => file.targetName));
+  const desiredNames = new Set(desiredMods.map((file) => file.targetName));
   let removedManagedMods = 0;
   for (const previous of previousMods) {
-    if (!desiredNames.has(previous) && !managedModNames.has(previous.toLowerCase())) {
+    if (!desiredNames.has(previous)) {
       await fsp.rm(path.join(modsDir, previous), { force: true });
       removedManagedMods += 1;
     }
   }
-  for (const file of installableMods) {
+  for (const file of desiredMods) {
     await fsp.copyFile(file.source, path.join(modsDir, file.targetName));
   }
   await fsp.mkdir(path.join(instanceDir, ".bweeep"), { recursive: true });
@@ -60,7 +53,7 @@ export async function prepareUserContent(instanceRoot: string, instanceDir: stri
     await fsp.copyFile(file.source, path.join(instanceShaders, file.targetName));
   }
   await fsp.writeFile(path.join(instanceDir, ".bweeep", USER_SHADERS_FILE), JSON.stringify([...desiredShaderNames].sort(), null, 2), "utf8");
-  return { userModsDir, shaderpacksDir, sharedOptionsPath, copiedMods: installableMods.length, copiedShaders: desiredShaders.length, removedManagedMods, blockedMods };
+  return { userModsDir, shaderpacksDir, sharedOptionsPath, copiedMods: desiredMods.length, copiedShaders: desiredShaders.length, removedManagedMods };
 }
 
 export async function captureSharedOptions(instanceRoot: string, instanceDir: string): Promise<void> {

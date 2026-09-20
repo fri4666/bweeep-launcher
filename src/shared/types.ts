@@ -164,7 +164,6 @@ export interface UserContentStatus {
   copiedMods: number;
   copiedShaders: number;
   removedManagedMods: number;
-  blockedMods: string[];
 }
 
 export type UserContentKind = "mods" | "shaderpacks";
