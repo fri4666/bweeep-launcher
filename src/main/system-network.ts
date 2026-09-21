@@ -68,7 +68,7 @@ async function downloadInstallFile(file: InstallFile): Promise<void> {
 }
 
 async function verifyInstallFile(filePath: string, file: InstallFile): Promise<void> {
-  if (file.size !== undefined && (await fsp.stat(filePath)).size !== file.size) {
+  if (file.size !== undefined && file.size >= 0 && (await fsp.stat(filePath)).size !== file.size) {
     throw new Error("다운로드 크기가 일치하지 않습니다.");
   }
   if (!file.checksum) return;

@@ -49,6 +49,7 @@ export async function installAndLaunch(
     : manifest.loader.kind === "fabric"
       ? await runStage(progress, "Fabric 설치", () => installFabric(minecraft, manifest, runtime, progress))
       : await runStage(progress, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", () => installForgeFamily(minecraft, manifest, javaPath, runtime, progress));
+  await runStage(progress, "실행 라이브러리", () => installLaunchLibraries(minecraft, version, runtime, progress));
   if (manifest.loader.kind !== "vanilla") {
     await ensureBundledClientMods(instanceDir, bundledClientMods);
   }
@@ -104,6 +105,22 @@ async function installFabric(
     onEvent: (event) => publishInstallerEvent(progress, "Fabric", event)
   });
   return installed;
+}
+
+async function installLaunchLibraries(
+  minecraft: MinecraftFolder,
+  versionId: string,
+  runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
+  progress: ProgressSink
+): Promise<void> {
+  const resolved = await Version.parse(minecraft, versionId);
+  const files = resolveLibraryInstallFiles(resolved.libraries, minecraft)
+    .filter((file): file is NonNullable<typeof file> => Boolean(file));
+  if (files.length === 0) return;
+  progress({ kind: "info", stage: "실행 라이브러리", message: `실행 라이브러리 ${files.length}개를 확인하는 중` });
+  await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-launch-libraries", type: "files", files }] }, runtime, {
+    onEvent: (event) => publishInstallerEvent(progress, "실행 라이브러리", event)
+  });
 }
 
 async function runStage<T>(progress: ProgressSink, stage: string, action: () => Promise<T>): Promise<T> {

@@ -838,7 +838,7 @@ function normalizeInviteCode(value: string): string {
 }
 
 function shouldShowUpdate(status: LauncherUpdateStatus): boolean {
-  return ["available", "downloading", "ready", "installing", "error"].includes(status.state);
+  return ["available", "downloading", "ready", "installing"].includes(status.state);
 }
 
 function formatRelativeTime(timestamp: number, now = Date.now()): string {
