@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getServerPresets, toServerPreset } from "./catalog.js";
+import { toServerPreset } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
@@ -10,7 +10,6 @@ import { installAndLaunch } from "./minecraft-runtime.js";
 import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
-import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, userContentPaths } from "./user-content.js";
@@ -231,13 +230,12 @@ async function createWindow(): Promise<BrowserWindow> {
 
 app.whenReady().then(async () => {
   await session.defaultSession.setProxy({ mode: "system" });
-  const launcherChannel = getLauncherChannel();
-  const serverPresets = await getServerPresets(launcherChannel);
-  const defaultServer = serverPresets[0]?.server;
-  if (!defaultServer) throw new Error("사용 가능한 서버 manifest가 없습니다.");
   ipcMain.handle("catalog:list", async () => {
     if (!sessionUser) return [];
-    return (await auth.listManifests(sessionUser)).map(toServerPreset);
+    return (await auth.listManifests(sessionUser)).map((manifest) => {
+      assertManifest(manifest);
+      return toServerPreset(manifest);
+    });
   });
   ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
   ipcMain.handle("paths:defaultInstanceRoot", () =>
@@ -329,9 +327,6 @@ app.whenReady().then(async () => {
     void processPendingDeepLinks();
     return firstInvite;
   });
-  ipcMain.handle("server:connection", () => readServerConnection(defaultServer));
-  ipcMain.handle("server:saveConnection", (_event, connection: unknown) => writeServerConnection(connection, defaultServer));
-  ipcMain.handle("server:resetConnection", () => resetServerConnection(defaultServer));
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
   ipcMain.handle("launcher:downloadUpdate", () => downloadLauncherUpdate());
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
@@ -342,7 +337,8 @@ app.whenReady().then(async () => {
       throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
     }
     const runId = ++gameRunId;
-    setGameStatus({ state: "starting" });
+    const startedAt = Date.now();
+    setGameStatus({ state: "starting", startedAt });
     const progress = (payload: SyncProgress) => {
       if (!event.sender.isDestroyed()) event.sender.send("modpack:progress", payload);
       void writeGameLog("launch.progress", {
@@ -352,6 +348,7 @@ app.whenReady().then(async () => {
         elapsedMs: payload.elapsedMs ?? null,
         completed: payload.completed ?? null,
         total: payload.total ?? null,
+        unit: payload.unit ?? null,
         filePath: payload.filePath ?? null
       });
     };
@@ -394,7 +391,7 @@ app.whenReady().then(async () => {
         });
       });
       if (gameRunId === runId && gameIsStarting()) {
-        setGameStatus({ state: "running", pid: launched.pid });
+        setGameStatus({ state: "running", pid: launched.pid, startedAt });
         await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
       } else {
         await writeGameLog("launch.exited-before-return", { packId: request.packId, version: launched.version });

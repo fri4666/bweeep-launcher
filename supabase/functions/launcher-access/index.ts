@@ -22,7 +22,8 @@ type RequestBody =
 interface ModpackFile {
   path: string;
   size: number;
-  sha256: string;
+  sha256?: string;
+  sha512?: string;
   url: string;
 }
 
@@ -278,10 +279,13 @@ async function handleRequest(request: Request): Promise<Response> {
         return json({ message: "활성 모드팩 release를 찾지 못했습니다." }, 404);
       }
 
-      const manifest = await resolveManifestDownloads(supabaseAdmin, data.manifest);
-      if (manifest.audience === "testers" && !testAllowed) {
+      if (!isModpackManifest(data.manifest)) {
+        return json({ message: "모드팩 정보 형식이 올바르지 않습니다." }, 500);
+      }
+      if (data.manifest.audience === "testers" && !testAllowed) {
         return json({ message: "테스트 서버는 지정된 테스터만 접속할 수 있습니다." }, 403);
       }
+      const manifest = await resolveManifestDownloads(supabaseAdmin, data.manifest);
       return json({ manifest, version: data.version });
     }
 
@@ -301,10 +305,15 @@ async function handleRequest(request: Request): Promise<Response> {
           newestByPack.set(row.pack_id, { manifest: row.manifest, version: row.version });
         }
       }
-      const manifests = await Promise.all(Array.from(newestByPack.values(), async (release) => ({
-        manifest: await resolveManifestDownloads(supabaseAdmin, release.manifest),
-        version: release.version
-      })));
+      const manifests = Array.from(newestByPack.values(), (release) => {
+        if (!isModpackManifest(release.manifest)) throw new Error("Stored launcher manifest has an invalid shape.");
+        return {
+          // Cards need metadata only. Download URLs are signed when a player
+          // actually launches the selected pack.
+          manifest: { ...release.manifest, files: [], clientFeatures: undefined, mrpack: undefined },
+          version: release.version
+        };
+      });
       return json({
         manifests: manifests.filter(({ manifest }) => manifest.audience !== "testers" || testAllowed)
       });
@@ -365,7 +374,7 @@ function toHex(bytes: Uint8Array): string {
 }
 
 async function resolveManifestDownloads(
-  supabase: ReturnType<typeof createClient>,
+  supabase: Pick<ReturnType<typeof createClient<any, "public">>, "storage">,
   rawManifest: unknown
 ): Promise<ModpackManifest> {
   if (!isModpackManifest(rawManifest)) {
@@ -404,9 +413,10 @@ function isModpackManifest(value: unknown): value is ModpackManifest {
   const manifest = value as Partial<ModpackManifest>;
   return typeof manifest.id === "string" && typeof manifest.minecraftVersion === "string" &&
     typeof manifest.loader?.kind === "string" && typeof manifest.loader.version === "string" &&
-    Number.isSafeInteger(manifest.java?.majorVersion) && manifest.java.majorVersion >= 21 &&
+    manifest.java !== undefined && Number.isSafeInteger(manifest.java.majorVersion) && manifest.java.majorVersion >= 8 &&
     typeof manifest.java.component === "string" && Array.isArray(manifest.files) && manifest.files.every((file) =>
     file && typeof file.path === "string" && typeof file.url === "string" &&
-    typeof file.size === "number" && typeof file.sha256 === "string"
+    Number.isSafeInteger(file.size) && file.size >= 0 &&
+    (typeof file.sha256 === "string" || typeof file.sha512 === "string")
   );
 }

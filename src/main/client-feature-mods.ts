@@ -9,6 +9,7 @@ import type { BundledClientMod } from "./companion-mod.js";
  */
 export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManifest): BundledClientMod[] {
   if (manifest.clientFeatures?.connectionLock === false) return [];
+  if (typeof manifest.clientFeatures?.connectionLock === "object") return [];
 
   if (manifest.loader.kind === "neoforge" && manifest.minecraftVersion === "1.21.1") {
     return [
@@ -35,7 +36,7 @@ export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManif
     ];
   }
 
-  if (manifest.clientFeatures?.connectionLock) {
+  if (manifest.clientFeatures?.connectionLock === true) {
     throw new Error(`${manifest.minecraftVersion} ${manifest.loader.kind}용 붸에엡 연결 보호 모드가 아직 검증되지 않았습니다. 안전을 위해 이 서버의 연결 잠금 기능은 실행하지 않습니다.`);
   }
   return [];

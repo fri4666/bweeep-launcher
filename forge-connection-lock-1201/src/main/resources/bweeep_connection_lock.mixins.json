@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8.5",
+  "package": "com.fri4666.bweeep.lock.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "bweeep_connection_lock.refmap.json",
+  "client": [
+    "ConnectScreenMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

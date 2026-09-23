@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import * as yauzl from "yauzl";
 import type { LoaderKind, MrpackSource, PackFile, SyncProgress } from "../shared/types.js";
 import { fetchWithSystemNetwork } from "./system-network.js";
@@ -32,14 +35,7 @@ export async function prepareMrpack(source: MrpackSource, instanceDir: string, p
   const archivePath = path.join(archiveDir, `${source.sha512}.mrpack`);
   await fsp.mkdir(archiveDir, { recursive: true });
   if (!(await matchesSha512(archivePath, source.sha512))) {
-    progress({ kind: "download", stage: "모드팩", message: "모드팩 목록을 내려받는 중" });
-    const response = await fetchWithSystemNetwork(source.url, { signal: AbortSignal.timeout(60_000) });
-    if (!response.ok) throw new Error("모드팩을 내려받지 못했습니다.");
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length !== source.size || sha512(bytes) !== source.sha512) {
-      throw new Error("모드팩 검증에 실패했습니다.");
-    }
-    await fsp.writeFile(archivePath, bytes);
+    await downloadArchive(source, archivePath, progress);
   }
 
   const entries = await readArchive(archivePath);
@@ -54,6 +50,42 @@ export async function prepareMrpack(source: MrpackSource, instanceDir: string, p
   }));
   const overrides = new Map([...entries].filter(([entryPath]) => entryPath.startsWith("overrides/") && !entryPath.endsWith("/")));
   return { files, applyOverrides: (root, sink) => applyOverrides(root, overrides, sink) };
+}
+
+async function downloadArchive(source: MrpackSource, archivePath: string, progress: ProgressSink): Promise<void> {
+  const response = await fetchWithSystemNetwork(source.url, { signal: AbortSignal.timeout(300_000) });
+  if (!response.ok || !response.body) throw new Error("모드팩을 내려받지 못했습니다.");
+  const temporary = `${archivePath}.part`;
+  const hash = crypto.createHash("sha512");
+  let received = 0;
+  let lastReport = 0;
+  progress({ kind: "download", stage: "모드팩 목록", message: "모드팩 목록 다운로드 중", completed: 0, total: source.size, unit: "bytes" });
+  await fsp.rm(temporary, { force: true });
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream),
+      new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          hash.update(chunk);
+          received += chunk.length;
+          const now = Date.now();
+          if (now - lastReport >= 250 || received === source.size) {
+            lastReport = now;
+            progress({ kind: "download", stage: "모드팩 목록", message: "모드팩 목록 다운로드 중", completed: received, total: source.size, unit: "bytes" });
+          }
+          callback(null, chunk);
+        }
+      }),
+      fs.createWriteStream(temporary)
+    );
+    if (received !== source.size || hash.digest("hex") !== source.sha512.toLowerCase()) {
+      throw new Error("모드팩 검증에 실패했습니다.");
+    }
+    await fsp.rename(temporary, archivePath);
+  } catch (error) {
+    await fsp.rm(temporary, { force: true });
+    throw error;
+  }
 }
 
 function parseIndex(bytes: Buffer, expected: { minecraftVersion: string; loader: { kind: LoaderKind; version: string } }): MrpackIndex {
@@ -78,6 +110,8 @@ function parseIndex(bytes: Buffer, expected: { minecraftVersion: string; loader:
 async function applyOverrides(instanceDir: string, entries: Map<string, Buffer>, progress: ProgressSink): Promise<void> {
   const recordPath = path.join(instanceDir, ".bweeep", "mrpack-overrides.json");
   const next = new Set<string>();
+  const total = [...entries.keys()].filter((entryPath) => !isServerList(entryPath.slice("overrides/".length))).length;
+  let completed = 0;
   for (const [entryPath, bytes] of entries) {
     const relative = entryPath.slice("overrides/".length);
     if (!safeRelativePath(relative)) throw new Error("모드팩 override 경로가 안전하지 않습니다.");
@@ -85,10 +119,16 @@ async function applyOverrides(instanceDir: string, entries: Map<string, Buffer>,
     const target = path.resolve(instanceDir, relative);
     next.add(relative);
     // Never replace a player's controls and video preferences after first install.
-    if (relative === "options.txt" && await exists(target)) continue;
+    if (relative === "options.txt" && await exists(target)) {
+      completed += 1;
+      continue;
+    }
     await fsp.mkdir(path.dirname(target), { recursive: true });
     await fsp.writeFile(target, bytes);
-    progress({ kind: "info", stage: "모드팩", message: `기본 설정 적용: ${relative}`, filePath: relative });
+    completed += 1;
+    if (completed === 1 || completed % 25 === 0 || completed === total) {
+      progress({ kind: "info", stage: "모드팩 기본 설정", message: `기본 설정 적용: ${relative}`, completed, total, unit: "files", filePath: relative });
+    }
   }
   const previous = await readPaths(recordPath);
   for (const relative of previous) {

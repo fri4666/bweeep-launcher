@@ -530,6 +530,18 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.launchProgressHistory {
+  display: grid;
+  gap: 3px;
+  margin: 3px 0 0;
+  padding-left: 17px;
+  color: #938d86;
+  font-size: 11px;
+  max-height: 55px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
 .launchNotice {
   margin: 0;
   padding: 10px 12px;

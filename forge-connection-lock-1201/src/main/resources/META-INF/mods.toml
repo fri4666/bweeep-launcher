@@ -1,0 +1,24 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="bweeep_connection_lock"
+version="0.1.0"
+displayName="Bweeep Connection Lock"
+description="Keeps a launcher-started client on its selected server."
+displayTest="IGNORE_SERVER_VERSION"
+
+[[dependencies.bweeep_connection_lock]]
+modId="forge"
+mandatory=true
+versionRange="[47.4.0,)"
+ordering="NONE"
+side="CLIENT"
+
+[[dependencies.bweeep_connection_lock]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.20.2)"
+ordering="NONE"
+side="CLIENT"

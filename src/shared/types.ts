@@ -39,8 +39,14 @@ export interface ModpackManifest {
     version: string;
   };
   clientFeatures?: {
-    /** False opts out; true requires a matching bridge. Omitted uses a verified bridge when available. */
-    connectionLock: boolean;
+    /** Remote locks are pinned in files; boolean preserves existing bundled bridges. */
+    connectionLock: boolean | {
+      protocolVersion: 1;
+      path: "mods/bweeep-connection-lock.jar";
+      sha256: string;
+      minecraftVersion: string;
+      loaderKind: LoaderKind;
+    };
   };
   server: {
     host: string;
@@ -91,6 +97,7 @@ export interface SyncProgress {
   elapsedMs?: number;
   completed?: number;
   total?: number;
+  unit?: "files" | "bytes";
   filePath?: string;
 }
 
@@ -154,6 +161,7 @@ export type GameLifecycleState = "idle" | "starting" | "running";
 export interface GameStatus {
   state: GameLifecycleState;
   pid?: number;
+  startedAt?: number;
   exitMessage?: string;
   exitError?: boolean;
 }

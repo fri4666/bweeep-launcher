@@ -19,6 +19,10 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   };
   window.__exitGame = () => emitGameStatus({ state: "idle" });
   window.__failGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)", exitError: true });
+  window.__rejectGame = () => {
+    listeners.forEach((listener) => listener({ kind: "error", stage: "서버 접속 실패", message: "선택 서버가 연결을 거절했습니다." }));
+    emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
+  };
   window.__exitBeforeLaunchResolves = false;
   window.__zeroFileSync = false;
   window.__copiedText = null;
@@ -113,7 +117,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     launcherVersion: async () => "0.1.30",
     gameStatus: async () => gameStatus,
     launchGame: async () => {
-      emitGameStatus({ state: "starting" });
+      const startedAt = Date.now();
+      emitGameStatus({ state: "starting", startedAt });
       if (window.__exitBeforeLaunchResolves) {
         emitGameStatus({ state: "idle", exitMessage: "Minecraft가 실행 직후 종료되었습니다. (신호 SIGSEGV)", exitError: true });
         return result;
@@ -123,7 +128,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
         await new Promise((resolve) => setTimeout(resolve, 300));
         listeners.forEach((listener) => listener({ kind: "info", stage: "게임 실행", message: "Minecraft 실행 명령을 준비하는 중" }));
         await new Promise((resolve) => setTimeout(resolve, 200));
-        emitGameStatus({ state: "running", pid: 4242 });
+        listeners.forEach((listener) => listener({ kind: "info", stage: "게임 프로세스", message: "Minecraft 프로세스 실행 중 · 서버 참가 확인 전" }));
+        emitGameStatus({ state: "running", pid: 4242, startedAt });
         return result;
       }
       listeners.forEach((listener) => listener({ kind: "info", stage: "모드팩 파일", message: "Create Aeronautics 동기화 시작", completed: 0, total: 3 }));
@@ -135,7 +141,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       listeners.forEach((listener) => listener({ kind: "download", stage: "모드팩 파일", message: "다운로드: mods/aeronautics.jar", completed: 1, total: 3, filePath: "mods/aeronautics.jar" }));
       await new Promise((resolve) => setTimeout(resolve, 600));
       listeners.forEach((listener) => listener({ kind: "done", stage: "모드팩 파일", message: "완료", completed: 3, total: 3 }));
-      emitGameStatus({ state: "running", pid: 4242 });
+      listeners.forEach((listener) => listener({ kind: "info", stage: "게임 프로세스", message: "Minecraft 프로세스 실행 중 · 서버 참가 확인 전" }));
+      emitGameStatus({ state: "running", pid: 4242, startedAt });
       return result;
     },
     openPath: async () => "",
@@ -277,8 +284,13 @@ if (catalogUnavailable) {
   await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
   await page.getByRole("button", { name: "게임 중" }).waitFor();
   if (!(await page.getByRole("button", { name: "게임 중" }).isDisabled())) throw new Error("launch button was not locked while running");
+  if (!(await page.locator(".launchProgress").innerText()).includes("서버 참가 확인 전")) {
+    throw new Error("running Minecraft process was not shown with an honest connection state");
+  }
+  await page.screenshot({ path: "previews/bweeep-launcher-game-running.png" });
   await page.evaluate(() => window.__exitGame());
   await page.getByRole("button", { name: "게임 시작" }).waitFor();
+  if (await page.locator(".launchProgress").count()) throw new Error("progress remained after game exit");
   if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after exit");
   await page.evaluate(() => { window.__zeroFileSync = true; });
   await page.getByRole("button", { name: "게임 시작" }).click();
@@ -291,6 +303,12 @@ if (catalogUnavailable) {
   await page.evaluate(() => { window.__zeroFileSync = false; window.__exitGame(); });
   await page.getByRole("button", { name: "게임 시작" }).waitFor();
   interactionChecks.push("truthful-empty-progress");
+  await page.getByRole("button", { name: "게임 시작" }).click();
+  await page.getByRole("button", { name: "게임 중" }).waitFor();
+  await page.evaluate(() => window.__rejectGame());
+  await page.getByText("선택 서버가 연결을 거절했습니다.").waitFor();
+  if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after a rejected connection");
+  interactionChecks.push("connection-rejection-visible");
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 중" }).waitFor();
   await page.evaluate(() => window.__failGame());

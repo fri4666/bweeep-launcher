@@ -51,6 +51,7 @@ function App() {
   const [serverCheckedAt, setServerCheckedAt] = useState<number | null>(null);
   const [instanceRoot, setInstanceRoot] = useState("");
   const [logs, setLogs] = useState<SyncProgress[]>([]);
+  const [lastProgressAt, setLastProgressAt] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [launchError, setLaunchError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
@@ -69,6 +70,7 @@ function App() {
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [launcherVersion, setLauncherVersion] = useState("");
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
+  const [clockNow, setClockNow] = useState(Date.now());
   const [gameNameInput, setGameNameInput] = useState("");
   const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
   const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
@@ -115,7 +117,9 @@ function App() {
       if (version.status === "fulfilled") setLauncherVersion(version.value);
     });
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
-      setLogs((current) => [...current, event]);
+      setLogs((current) => [...current.slice(-99), event]);
+      setLastProgressAt(Date.now());
+      if (event.kind === "error") setLaunchError(event.message);
     });
     const unsubscribeSession = window.bweeep.onAuthSession((nextUser: LauncherUser) => {
       setLoginPending(false);
@@ -159,6 +163,13 @@ function App() {
     });
   }, [instanceRoot]);
 
+  useEffect(() => {
+    if (gameStatus.state === "idle") return;
+    setClockNow(Date.now());
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [gameStatus.state]);
+
   const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
     setServerChecking(true);
     try {
@@ -193,6 +204,13 @@ function App() {
     return () => window.clearInterval(interval);
   }, [connection, refreshServerStatus]);
 
+  useEffect(() => {
+    if (!settingsOpen || !user) return;
+    void window.bweeep.listServers().then(applyServerList).catch((error) => {
+      setNotice(error instanceof Error ? error.message : "서버 목록을 새로고침하지 못했습니다.");
+    });
+  }, [settingsOpen]);
+
   const availableServers = useMemo(
     () => servers.filter((server) => server.environment !== "test" || access?.testAllowed === true),
     [servers, access?.testAllowed]
@@ -205,13 +223,18 @@ function App() {
   const canUseLauncher = Boolean(access?.allowed);
   const gameBusy = gameStatus.state !== "idle";
   const currentProgress = logs[logs.length - 1];
-  const showLaunchProgress = syncing || gameStatus.state === "starting";
-  const progressPercent = currentProgress?.stage === "모드팩 파일"
-    && typeof currentProgress.completed === "number"
-    && typeof currentProgress.total === "number"
-    && currentProgress.total > 0
-      ? Math.round(Math.max(0, Math.min(1, currentProgress.completed / currentProgress.total)) * 100)
+  const displayProgress = gameStatus.state === "running" && (!currentProgress || currentProgress.stage === "모드팩 파일")
+    ? { kind: "info" as const, stage: "게임 프로세스", message: "Minecraft 프로세스 실행 중 · 서버 참가 확인 전" }
+    : currentProgress;
+  const showLaunchProgress = syncing || gameBusy;
+  const progressPercent = typeof displayProgress?.completed === "number"
+    && typeof displayProgress.total === "number"
+    && displayProgress.total > 0
+      ? Math.round(Math.max(0, Math.min(1, displayProgress.completed / displayProgress.total)) * 100)
       : null;
+  const elapsedSeconds = gameStatus.startedAt ? Math.max(0, Math.floor((clockNow - gameStatus.startedAt) / 1_000)) : null;
+  const quietSeconds = lastProgressAt ? Math.max(0, Math.floor((clockNow - lastProgressAt) / 1_000)) : 0;
+  const recentProgress = logs.filter((event) => event.stage && event.kind !== "skip").slice(-3);
   const serverStatusMessage = serverChecking ? "서버 연결 확인 중" : serverStatus?.message ?? "서버 확인 중";
   const serverStatusDetail = connection
     ? serverChecking
@@ -410,6 +433,7 @@ function App() {
     if (!selected || !instanceRoot.trim() || !canUseLauncher || gameBusy) return;
     setSyncing(true);
     setLogs([]);
+    setLastProgressAt(null);
     setNotice("");
     setLaunchError("");
     setLastInstanceDir("");
@@ -565,17 +589,29 @@ function App() {
             {showLaunchProgress && (
               <div className="launchProgress" role="status">
                 <div className="launchProgressHeading">
-                  <strong>{currentProgress?.stage ?? "게임 시작 준비"}</strong>
-                  {progressPercent !== null && <span>{progressPercent}%</span>}
+                  <strong>{displayProgress?.stage ?? "게임 시작 준비"}</strong>
+                  <span>{progressPercent !== null ? `${progressPercent}%` : elapsedSeconds !== null ? `${Math.floor(elapsedSeconds / 60)}분 ${String(elapsedSeconds % 60).padStart(2, "0")}초` : "진행 중"}</span>
                 </div>
                 <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />
-                <small>{currentProgress?.message ?? "서버 정보를 확인하는 중"}</small>
+                <small>{displayProgress?.message ?? "서버 정보를 확인하는 중"}</small>
+                {quietSeconds >= 30 && <small>마지막 진행 신호 {quietSeconds}초 전 · 새 단계 신호를 기다리는 중</small>}
+                {progressPercent !== null && displayProgress?.unit === "bytes" && (
+                  <small>{(displayProgress.completed! / 1048576).toFixed(1)} / {(displayProgress.total! / 1048576).toFixed(1)} MB 수신</small>
+                )}
+                {progressPercent !== null && (displayProgress?.unit === "files" || displayProgress?.stage === "모드팩 파일") && (
+                  <small>{displayProgress.completed}/{displayProgress.total}개 파일 처리</small>
+                )}
+                {recentProgress.length > 1 && (
+                  <ol className="launchProgressHistory">
+                    {recentProgress.map((event, index) => <li key={`${index}-${event.message}`}>{event.stage}: {event.message}</li>)}
+                  </ol>
+                )}
               </div>
             )}
             <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={gameBusy} onClick={launchSelected}>
               {gameStatus.state === "running" ? "게임 중" : showLaunchProgress ? "게임 시작 중" : "게임 시작"}
             </button>
-            {(gameStatus.exitMessage || launchError) && <p className={`launchNotice${gameStatus.exitError || launchError ? " isError" : ""}`}>{gameStatus.exitMessage || launchError}</p>}
+            {(launchError || gameStatus.exitMessage) && <p className={`launchNotice${gameStatus.exitError || launchError ? " isError" : ""}`}>{launchError || gameStatus.exitMessage}</p>}
           </div>
         </section>
         <section className="serverSummary" aria-label="서버 정보">
