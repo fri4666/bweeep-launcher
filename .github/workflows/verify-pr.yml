@@ -18,6 +18,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      - run: node scripts/verify-manifest.mjs
       - run: node scripts/verify-launcher-update.mjs
       - run: node scripts/verify-game-exit.mjs
       - run: node scripts/verify-personal-content.mjs
@@ -37,3 +38,18 @@ jobs:
           done
           node scripts/capture-preview.mjs
           BWEEP_PREVIEW_CATALOG_UNAVAILABLE=true node scripts/capture-preview.mjs
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: bash gradlew --no-daemon build
+        working-directory: forge-connection-lock-1201
+      - run: bash gradlew --no-daemon build
+        working-directory: forge-server-auth-1201
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.3
+      - run: deno check index.ts
+        working-directory: supabase/functions/launcher-access
+      - run: deno test
+        working-directory: supabase/functions/launcher-access
