@@ -682,74 +682,6 @@ h3 {
   background: transparent;
 }
 
-.updatePanel {
-  padding: 14px 16px;
-  color: #c5c1b9;
-  background: rgba(19, 20, 23, 0.72);
-  border-radius: var(--control-radius);
-  backdrop-filter: blur(12px);
-}
-
-.updatePanelTop {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 7px;
-  color: #9f9b91;
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.updatePanelTop strong {
-  color: #e6c28b;
-}
-
-.updateTitle {
-  display: block;
-  color: #eeebe4;
-  font-size: 15px;
-}
-
-.updatePanel p {
-  margin-top: 7px;
-  color: #aaa69d;
-  font-size: 12px;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.progressTrack {
-  height: 7px;
-  margin-top: 11px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 999px;
-}
-
-.progressTrack i {
-  display: block;
-  height: 100%;
-  min-width: 8px;
-  background: #d9b072;
-  border-radius: inherit;
-  transition: width 180ms ease;
-}
-
-.updatePanel.isReady .updateTitle {
-  color: #e6c28b;
-}
-
-.updatePanel.isError .updateTitle {
-  color: #f0a49b;
-}
-
-.updatePanel.isError p {
-  color: #f0b7ae;
-  white-space: normal;
-}
-
 .launchButton {
   width: 100%;
   min-height: 54px;
@@ -964,8 +896,7 @@ input:focus {
 
 @media (prefers-reduced-motion: reduce) {
   button,
-  .quickFact,
-  .progressTrack i {
+  .quickFact {
     transition-duration: 0.01ms;
   }
 
