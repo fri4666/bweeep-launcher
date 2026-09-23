@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getServerPresets } from "./catalog.js";
+import { getServerPresets, toServerPreset } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
@@ -16,8 +16,8 @@ import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, userContentPaths } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUpdateStatus, LauncherUser, SyncProgress, UserContentKind } from "../shared/types.js";
-import { bundledFeatureMods } from "./client-feature-mods.js";
 import type { ModpackManifest } from "../shared/types.js";
+import { bundledFeatureMods } from "./client-feature-mods.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
@@ -31,13 +31,6 @@ let inviteReceiverReady = false;
 let gameStatus: GameStatus = { state: "idle" };
 let gameRunId = 0;
 const testLauncherSetupUrl = "https://github.com/fri4666/bweeep-launcher/releases/download/v0.1.25-test.1/Bweeep-Test-Setup-0.1.25.exe";
-
-async function readBundledManifest(packId: string): Promise<ModpackManifest> {
-  const manifestPath = path.join(app.getAppPath(), "resources", "manifests", `${packId}.json`);
-  const manifest = JSON.parse(await fsp.readFile(manifestPath, "utf8")) as ModpackManifest;
-  assertManifest(manifest);
-  return manifest;
-}
 
 function setGameStatus(status: GameStatus): void {
   gameStatus = status;
@@ -238,7 +231,16 @@ app.whenReady().then(async () => {
   const serverPresets = await getServerPresets(launcherChannel);
   const defaultServer = serverPresets[0]?.server;
   if (!defaultServer) throw new Error("사용 가능한 서버 manifest가 없습니다.");
-  ipcMain.handle("catalog:list", () => getServerPresets(launcherChannel));
+  ipcMain.handle("catalog:list", async () => {
+    const fallback = await getServerPresets(launcherChannel);
+    return Promise.all(fallback.map(async (preset) => {
+      try {
+        return toServerPreset(await auth.getManifest(sessionUser, preset.packId));
+      } catch {
+        return preset;
+      }
+    }));
+  });
   ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
   ipcMain.handle("paths:defaultInstanceRoot", () =>
     defaultInstanceRoot()
@@ -358,12 +360,9 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
-      const manifest = request.packId === "vanilla-survival"
-        ? await readBundledManifest(request.packId)
-        : await auth.getManifest(sessionUser, request.packId);
+      const manifest = await auth.getManifest(sessionUser, request.packId);
       assertManifest(manifest);
-      const server = await readServerConnection(defaultServer);
-      const configuredManifest = { ...manifest, server };
+      const configuredManifest = manifest;
       const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), configuredManifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);

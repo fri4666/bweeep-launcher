@@ -4,8 +4,16 @@ export type ServerSoftwareKind = LoaderKind | "paper" | "folia";
 export interface PackFile {
   path: string;
   size: number;
-  sha256: string;
+  /** SHA-256 is used by bundled manifests; Modrinth packs publish SHA-512. */
+  sha256?: string;
+  sha512?: string;
   url: string;
+}
+
+export interface MrpackSource {
+  url: string;
+  size: number;
+  sha512: string;
 }
 
 export interface ModpackManifest {
@@ -38,6 +46,8 @@ export interface ModpackManifest {
     host: string;
     port: number;
   };
+  /** A pinned Modrinth .mrpack whose indexed files and overrides are installed safely. */
+  mrpack?: MrpackSource;
   files: PackFile[];
   notes?: string;
 }

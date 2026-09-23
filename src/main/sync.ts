@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ModpackManifest, SyncProgress, SyncRequest, SyncResult } from "../shared/types.js";
 import { fetchWithSystemNetwork } from "./system-network.js";
+import { prepareMrpack } from "./mrpack.js";
 
 type ProgressSink = (event: SyncProgress) => void;
 
@@ -13,7 +14,9 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
   const instanceDir = path.resolve(request.instanceDir, manifest.id);
   let downloaded = 0;
   let skipped = 0;
-  const total = manifest.files.length;
+  const mrpack = manifest.mrpack ? await prepareMrpack(manifest.mrpack, instanceDir, progress, { minecraftVersion: manifest.minecraftVersion, loader: manifest.loader }) : null;
+  const files = [...manifest.files, ...(mrpack?.files ?? [])];
+  const total = files.length;
 
   await fsp.mkdir(instanceDir, { recursive: true });
   const managedFilesPath = path.join(instanceDir, ".bweeep", "managed-files.json");
@@ -26,10 +29,9 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
 
   progress({ kind: "info", message: `${manifest.name} ${manifest.version} 동기화 시작`, completed: 0, total });
 
-  for (const [index, file] of manifest.files.entries()) {
+  for (const [index, file] of files.entries()) {
     const target = resolveInside(instanceDir, file.path);
-    const currentHash = await sha256IfExists(target);
-    if (currentHash === file.sha256) {
+    if (await fileMatches(target, file)) {
       skipped += 1;
       progress({
         kind: "skip",
@@ -45,8 +47,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     progress({ kind: "download", message: `다운로드: ${file.path}`, completed: index, total, filePath: file.path });
     await downloadToFile(file.url, target, file.size);
 
-    const nextHash = await sha256File(target);
-    if (nextHash !== file.sha256) {
+    if (!(await fileMatches(target, file))) {
       await fsp.rm(target, { force: true });
       throw new Error(`해시 불일치: ${file.path}`);
     }
@@ -60,7 +61,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     });
   }
 
-  const nextManagedFiles = new Set(manifest.files.map((file) => file.path));
+  const nextManagedFiles = new Set(files.map((file) => file.path));
   for (const obsoletePath of previousManagedFiles) {
     if (nextManagedFiles.has(obsoletePath)) continue;
     const obsoleteTarget = resolveInside(instanceDir, obsoletePath);
@@ -69,6 +70,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
   }
   await fsp.mkdir(path.dirname(managedFilesPath), { recursive: true });
   await fsp.writeFile(managedFilesPath, JSON.stringify([...nextManagedFiles].sort(), null, 2), "utf8");
+  if (mrpack) await mrpack.applyOverrides(instanceDir, progress);
 
   const launchInfo = [
     `name=${manifest.name}`,
@@ -114,6 +116,9 @@ export function assertManifest(manifest: ModpackManifest): void {
   if (manifest.clientFeatures && typeof manifest.clientFeatures.connectionLock !== "boolean") {
     throw new Error("클라이언트 기능 정보가 올바르지 않습니다.");
   }
+  if (manifest.mrpack && (!/^https:\/\//.test(manifest.mrpack.url) || !Number.isSafeInteger(manifest.mrpack.size) || manifest.mrpack.size < 1 || !/^[a-f0-9]{128}$/i.test(manifest.mrpack.sha512))) {
+    throw new Error("Modrinth 모드팩 정보가 올바르지 않습니다.");
+  }
   for (const file of manifest.files) {
     if (
       !file.path ||
@@ -122,7 +127,7 @@ export function assertManifest(manifest: ModpackManifest): void {
       !file.url ||
       !Number.isSafeInteger(file.size) ||
       file.size < 0 ||
-      !/^[a-f0-9]{64}$/i.test(file.sha256)
+      !((typeof file.sha256 === "string" && /^[a-f0-9]{64}$/i.test(file.sha256)) || (typeof file.sha512 === "string" && /^[a-f0-9]{128}$/i.test(file.sha512)))
     ) {
       throw new Error("manifest 파일 정보가 올바르지 않습니다.");
     }
@@ -176,19 +181,20 @@ function resolveInside(root: string, relativePath: string): string {
   return target;
 }
 
-async function sha256IfExists(filePath: string): Promise<string | null> {
+async function fileMatches(filePath: string, file: { sha256?: string; sha512?: string }): Promise<boolean> {
+  const expected = file.sha256 ?? file.sha512;
+  if (!expected) return false;
   try {
-    return await sha256File(filePath);
+    const algorithm = file.sha256 ? "sha256" : "sha512";
+    return await hashFile(filePath, algorithm) === expected;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return null;
-    }
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
 }
 
-async function sha256File(filePath: string): Promise<string> {
-  const hash = crypto.createHash("sha256");
+async function hashFile(filePath: string, algorithm: "sha256" | "sha512"): Promise<string> {
+  const hash = crypto.createHash(algorithm);
   await new Promise<void>((resolve, reject) => {
     fs.createReadStream(filePath)
       .on("data", (chunk) => hash.update(chunk))
