@@ -344,34 +344,6 @@ h3 {
   -webkit-app-region: no-drag;
 }
 
-.testLauncherInstallButton {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  padding: 0;
-  color: #d6b277;
-  background: #202125;
-  border: 0;
-  border-radius: 10px;
-}
-
-.testLauncherInstallButton:hover {
-  color: #17130d;
-  background: #d9b072;
-  transform: translateY(-1px);
-}
-
-.testLauncherInstallButton svg {
-  width: 18px;
-  height: 18px;
-  margin: auto;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
-}
-
 .windowControls {
   display: flex;
   align-self: stretch;
