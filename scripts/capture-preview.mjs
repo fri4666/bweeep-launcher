@@ -18,6 +18,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     gameStatusListeners.forEach((listener) => listener(status));
   };
   window.__exitGame = () => emitGameStatus({ state: "idle" });
+  window.__failGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)", exitError: true });
+  window.__exitBeforeLaunchResolves = false;
   window.__copiedText = null;
   window.__serverStatusCalls = 0;
   const result = {
@@ -110,6 +112,10 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     gameStatus: async () => gameStatus,
     launchGame: async () => {
       emitGameStatus({ state: "starting" });
+      if (window.__exitBeforeLaunchResolves) {
+        emitGameStatus({ state: "idle", exitMessage: "Minecraft가 실행 직후 종료되었습니다. (신호 SIGSEGV)", exitError: true });
+        return result;
+      }
       listeners.forEach((listener) => listener({ kind: "info", message: "Create Aeronautics 동기화 시작", completed: 0, total: 3 }));
       await new Promise((resolve) => setTimeout(resolve, 90));
       listeners.forEach((listener) => listener({ kind: "download", message: "다운로드: mods/create.jar", completed: 0, total: 3, filePath: "mods/create.jar" }));
@@ -257,6 +263,17 @@ if (catalogUnavailable) {
   await page.evaluate(() => window.__exitGame());
   await page.getByRole("button", { name: "게임 시작" }).waitFor();
   if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after exit");
+  await page.getByRole("button", { name: "게임 시작" }).click();
+  await page.getByRole("button", { name: "게임 중" }).waitFor();
+  await page.evaluate(() => window.__failGame());
+  await page.getByText("Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)").waitFor();
+  if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after a crash");
+  await page.evaluate(() => { window.__exitBeforeLaunchResolves = true; });
+  await page.getByRole("button", { name: "게임 시작" }).click();
+  await page.getByText("Minecraft가 실행 직후 종료되었습니다. (신호 SIGSEGV)").waitFor();
+  if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after an immediate exit");
+  await page.screenshot({ path: "previews/bweeep-launcher-game-exit.png" });
+  interactionChecks.push("game-exit-visible");
   interactionChecks.push("game-lifecycle-lock");
 } else {
   await page.getByRole("button", { name: "Discord로 로그인" }).click();

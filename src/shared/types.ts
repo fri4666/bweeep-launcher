@@ -154,6 +154,8 @@ export type GameLifecycleState = "idle" | "starting" | "running";
 export interface GameStatus {
   state: GameLifecycleState;
   pid?: number;
+  exitMessage?: string;
+  exitError?: boolean;
 }
 
 export interface LauncherUpdate {

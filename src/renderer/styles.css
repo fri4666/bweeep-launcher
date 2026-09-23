@@ -503,6 +503,20 @@ h3 {
   width: min(310px, calc(100% - 84px));
 }
 
+.launchNotice {
+  margin: 0;
+  padding: 10px 12px;
+  color: #e5c49d;
+  background: rgba(17, 18, 20, 0.9);
+  border-radius: var(--control-radius);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.launchNotice.isError {
+  color: #f1aaa3;
+}
+
 .entryScreen {
   position: relative;
   display: grid;

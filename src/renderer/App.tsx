@@ -52,6 +52,7 @@ function App() {
   const [instanceRoot, setInstanceRoot] = useState("");
   const [logs, setLogs] = useState<SyncProgress[]>([]);
   const [syncing, setSyncing] = useState(false);
+  const [launchError, setLaunchError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
   const [lastInstanceDir, setLastInstanceDir] = useState("");
   const [user, setUser] = useState<LauncherUser | null>(null);
@@ -125,7 +126,10 @@ function App() {
         setNotice(error instanceof Error ? error.message : "서버 목록을 불러오지 못했습니다.");
       });
     });
-    const unsubscribeGameStatus = window.bweeep.onGameStatus(setGameStatus);
+    const unsubscribeGameStatus = window.bweeep.onGameStatus((status) => {
+      setGameStatus(status);
+      if (status.exitMessage) setNotice(status.exitMessage);
+    });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
       setNotice(message);
@@ -398,14 +402,23 @@ function App() {
     if (!selected || !instanceRoot.trim() || !canUseLauncher || gameBusy) return;
     setSyncing(true);
     setLogs([]);
+    setNotice("");
+    setLaunchError("");
     setLastInstanceDir("");
     try {
       const next = await window.bweeep.launchGame({ packId: selected.packId, instanceDir: instanceRoot.trim() });
       setLastInstanceDir(next.instanceDir);
-      setNotice(`Minecraft를 시작했습니다. (PID ${next.pid})`);
+      const currentStatus = await window.bweeep.gameStatus();
+      setGameStatus(currentStatus);
+      if (currentStatus.state === "idle") {
+        const message = currentStatus.exitMessage ?? "Minecraft가 실행 직후 종료되었습니다. 게임 폴더의 logs/latest.log를 확인하세요.";
+        setLaunchError(message);
+        setNotice(message);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setLogs((current) => [...current, { kind: "error", message }]);
+      setLaunchError(message);
       setNotice(message);
     } finally {
       setSyncing(false);
@@ -540,10 +553,11 @@ function App() {
               <span>{selected?.environment === "test" ? "지정 테스터 전용" : "서버 멤버 전용"}</span>
             </div>
           </div>
-          <div className="actionDock">
+          <div className="actionDock" aria-live="polite">
             <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={gameBusy} onClick={launchSelected}>
               {gameStatus.state === "running" ? "게임 중" : "게임 시작"}
             </button>
+            {(gameStatus.exitMessage || launchError) && <p className={`launchNotice${gameStatus.exitError || launchError ? " isError" : ""}`}>{gameStatus.exitMessage || launchError}</p>}
           </div>
         </section>
         <section className="serverSummary" aria-label="서버 정보">

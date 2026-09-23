@@ -40,6 +40,10 @@ function setGameStatus(status: GameStatus): void {
   if (status.state === "idle") installPendingLauncherUpdate();
 }
 
+function gameIsStarting(): boolean {
+  return gameStatus.state === "starting";
+}
+
 function publishLauncherUpdate(status: LauncherUpdateStatus): void {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send("launcher:updateStatus", status);
@@ -378,15 +382,23 @@ app.whenReady().then(async () => {
             await writeGameLog("launch.authorization.created", { provider: "discord" });
             return authorization;
           };
-      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, () => {
-        if (gameRunId === runId) setGameStatus({ state: "idle" });
+      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
+        if (gameRunId === runId) setGameStatus({ state: "idle", exitMessage: exit.message, exitError: exit.abnormal });
         void captureSharedOptions(request.instanceDir, synced.instanceDir);
-        void writeGameLog("launch.minecraft.exited", { packId: request.packId });
+        void writeGameLog("launch.minecraft.exited", {
+          packId: request.packId,
+          code: exit.code,
+          signal: exit.signal,
+          abnormal: exit.abnormal,
+          crashReportLocation: exit.crashReportLocation
+        });
       });
-      if (gameRunId === runId) {
+      if (gameRunId === runId && gameIsStarting()) {
         setGameStatus({ state: "running", pid: launched.pid });
+        await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
+      } else {
+        await writeGameLog("launch.exited-before-return", { packId: request.packId, version: launched.version });
       }
-      await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
       return { ...launched, instanceDir: synced.instanceDir };
     } catch (error) {
       if (gameRunId === runId) setGameStatus({ state: "idle" });

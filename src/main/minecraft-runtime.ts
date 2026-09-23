@@ -22,6 +22,7 @@ import {
 import type { ModpackManifest, SyncProgress } from "../shared/types.js";
 import { ensureBundledClientMods, type BundledClientMod } from "./companion-mod.js";
 import type { LaunchIdentity } from "./launch-identity.js";
+import { describeGameExit, type GameExitResult } from "./game-exit.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
 
 type ProgressSink = (event: SyncProgress) => void;
@@ -32,7 +33,7 @@ export async function installAndLaunch(
   getLaunchAuthorization: () => Promise<{ identity: LaunchIdentity; ticket: string }>,
   bundledClientMods: BundledClientMod[],
   progress: ProgressSink,
-  onExit: () => void
+  onExit: (exit: GameExitResult) => void
 ): Promise<{ pid: number; version: string }> {
   if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
     throw new Error("지원하지 않는 Minecraft 로더입니다.");
@@ -76,14 +77,20 @@ export async function installAndLaunch(
     maxMemory: 6144
   });
   const watcher = createMinecraftProcessWatcher(gameProcess);
-  watcher.once("minecraft-exit", ({ code, crashReport }) => {
+  watcher.once("minecraft-exit", ({ code, signal, crashReport, crashReportLocation }) => {
+    const exit = describeGameExit({ code, signal, crashReport, crashReportLocation });
     progress({
-      kind: crashReport || (typeof code === "number" && code !== 0) ? "error" : "info",
-      message: crashReport || `Minecraft가 종료되었습니다. (코드 ${code ?? "없음"})`
+      kind: exit.abnormal ? "error" : "info",
+      stage: "게임 종료",
+      message: exit.message
     });
-    onExit();
+    onExit(exit);
   });
-  watcher.once("error", () => onExit());
+  watcher.once("error", (error) => {
+    const message = `Minecraft 프로세스를 시작하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
+    progress({ kind: "error", stage: "게임 실행", message });
+    onExit({ abnormal: true, message, code: null, signal: null, crashReportLocation: null });
+  });
   return { pid: gameProcess.pid ?? 0, version: version || baseVersion };
 }
 
