@@ -23,6 +23,12 @@ export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManif
     ];
   }
 
+  if (manifest.loader.kind === "fabric" && manifest.minecraftVersion === "1.21.4" && manifest.loader.version === "0.18.1") {
+    return [
+      bundled(resourcesRoot, "bweeep-connection-lock-1214-0.1.0.jar", "bweeep-client.jar", "f0c0fdd659add2341d392e3b4563df73629bb7c1790ddc22d2a76ac5e42caf6f")
+    ];
+  }
+
   if (manifest.loader.kind === "fabric" && manifest.minecraftVersion === "26.3" && manifest.loader.version === "0.19.5") {
     return [
       bundled(resourcesRoot, "bweeep-fabric-lock-26.3-0.1.0.jar", "bweeep-client.jar", "5fe104672975a1f42d7640fd9508235c6e83c779585b4bd84037df9179354f5a")
