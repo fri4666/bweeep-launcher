@@ -39,7 +39,7 @@ export interface ModpackManifest {
     version: string;
   };
   clientFeatures?: {
-    /** Requires a matching Bweeep client bridge and locks the game after a disconnect. */
+    /** False opts out; true requires a matching bridge. Omitted uses a verified bridge when available. */
     connectionLock: boolean;
   };
   server: {

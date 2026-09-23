@@ -70,6 +70,20 @@ try {
     loader: { kind: "fabric", version: "0.18.1" },
     clientFeatures: { connectionLock: true }
   }).length, 1);
+  const tycoonManifestWithoutFeatureFlag = {
+    ...manifest,
+    minecraftVersion: "1.21.4",
+    loader: { kind: "fabric", version: "0.18.1" }
+  };
+  assert.equal(bundledFeatureMods("/resources", tycoonManifestWithoutFeatureFlag).length, 1);
+  assert.equal(bundledFeatureMods("/resources", {
+    ...tycoonManifestWithoutFeatureFlag,
+    clientFeatures: { connectionLock: false }
+  }).length, 0);
+  assert.equal(bundledFeatureMods("/resources", {
+    ...tycoonManifestWithoutFeatureFlag,
+    loader: { kind: "fabric", version: "0.18.2" }
+  }).length, 0);
   const tycoonLockJar = await fs.readFile(new URL("../resources/client-mods/bweeep-connection-lock-1214-0.1.0.jar", import.meta.url));
   assert.equal(
     crypto.createHash("sha256").update(tycoonLockJar).digest("hex"),
