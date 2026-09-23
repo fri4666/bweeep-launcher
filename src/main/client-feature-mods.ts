@@ -25,7 +25,7 @@ export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManif
 
   if (manifest.loader.kind === "fabric" && manifest.minecraftVersion === "1.21.4" && manifest.loader.version === "0.18.1") {
     return [
-      bundled(resourcesRoot, "bweeep-connection-lock-1214-0.1.0.jar", "bweeep-client.jar", "f0c0fdd659add2341d392e3b4563df73629bb7c1790ddc22d2a76ac5e42caf6f")
+      bundled(resourcesRoot, "bweeep-connection-lock-1214-0.1.0.jar", "bweeep-client.jar", "bf0ffad350cc2f6df055d899a73cf956d943be97a911659543c01f304ff07876")
     ];
   }
 
