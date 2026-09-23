@@ -51,7 +51,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
           environment: "production",
           server: { host: "server.fri4666.com", port: 25565 },
           minecraftVersion: "1.21.1",
-          loader: { kind: "neoforge", version: "21.1.228" }
+          loader: { kind: "neoforge", version: "21.1.228" },
+          serverLoader: { kind: "fabric", version: "0.18.1" }
         },
         {
           id: "vanilla-survival-test",
@@ -221,6 +222,10 @@ if (catalogUnavailable) {
     throw new Error("misleading empty download progress remained on the main screen");
   }
   interactionChecks.push("server-address-hidden");
+  if (!(await page.locator(".quickFact").filter({ hasText: "클라이언트" }).innerText()).includes("서버: fabric 0.18.1")) {
+    throw new Error("server loader metadata was not displayed separately from the client loader");
+  }
+  interactionChecks.push("server-loader-visible");
   const serverFact = await page.locator(".quickFact").filter({ hasText: "서버 상태" }).innerText();
   if (!serverFact.includes("방금 전") || /\d{1,2}시\s*\d{1,2}분|\d{1,2}:\d{2}/.test(serverFact)) {
     throw new Error(`server checked time is not relative: ${serverFact}`);

@@ -582,7 +582,7 @@ function App() {
           <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatusMessage}</strong><small>{serverCheckedAt && !serverChecking && serverStatus?.online ? `${serverStatus.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)}` : serverStatus?.online ? "실시간 확인" : ""}</small></article>
           <article className="quickFact"><span className="factIcon">◆</span><span>게임</span><strong>{selected?.name ?? "없음"}</strong></article>
           <article className="quickFact"><span className="factIcon">▰</span><span>Minecraft</span><strong>{selected?.minecraftVersion ?? "-"}</strong></article>
-          <article className="quickFact"><span className="factIcon">◈</span><span>실행 방식</span><strong>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong></article>
+          <article className="quickFact"><span className="factIcon">◈</span><span>클라이언트</span><strong>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong><small>서버: {selected?.serverLoader ? `${selected.serverLoader.kind} ${selected.serverLoader.version}` : "정보 미등록"}</small></article>
         </section>
       </section>
 
