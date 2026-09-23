@@ -168,7 +168,7 @@ function App() {
         online: false,
         host: nextConnection.host,
         port: nextConnection.port,
-        message: "서버 상태를 확인할 수 없음"
+        message: "연결 끊김"
       });
     } finally {
       setServerCheckedAt(Date.now());
@@ -204,6 +204,14 @@ function App() {
 
   const canUseLauncher = Boolean(access?.allowed);
   const gameBusy = gameStatus.state !== "idle";
+  const currentProgress = logs[logs.length - 1];
+  const showLaunchProgress = syncing || gameStatus.state === "starting";
+  const progressPercent = currentProgress?.stage === "모드팩 파일"
+    && typeof currentProgress.completed === "number"
+    && typeof currentProgress.total === "number"
+    && currentProgress.total > 0
+      ? Math.round(Math.max(0, Math.min(1, currentProgress.completed / currentProgress.total)) * 100)
+      : null;
   const serverStatusMessage = serverChecking ? "서버 연결 확인 중" : serverStatus?.message ?? "서버 확인 중";
   const serverStatusDetail = connection
     ? serverChecking
@@ -554,8 +562,18 @@ function App() {
             </div>
           </div>
           <div className="actionDock" aria-live="polite">
+            {showLaunchProgress && (
+              <div className="launchProgress" role="status">
+                <div className="launchProgressHeading">
+                  <strong>{currentProgress?.stage ?? "게임 시작 준비"}</strong>
+                  {progressPercent !== null && <span>{progressPercent}%</span>}
+                </div>
+                <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />
+                <small>{currentProgress?.message ?? "서버 정보를 확인하는 중"}</small>
+              </div>
+            )}
             <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={gameBusy} onClick={launchSelected}>
-              {gameStatus.state === "running" ? "게임 중" : "게임 시작"}
+              {gameStatus.state === "running" ? "게임 중" : showLaunchProgress ? "게임 시작 중" : "게임 시작"}
             </button>
             {(gameStatus.exitMessage || launchError) && <p className={`launchNotice${gameStatus.exitError || launchError ? " isError" : ""}`}>{gameStatus.exitMessage || launchError}</p>}
           </div>

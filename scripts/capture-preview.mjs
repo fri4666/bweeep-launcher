@@ -20,6 +20,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   window.__exitGame = () => emitGameStatus({ state: "idle" });
   window.__failGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)", exitError: true });
   window.__exitBeforeLaunchResolves = false;
+  window.__zeroFileSync = false;
   window.__copiedText = null;
   window.__serverStatusCalls = 0;
   const result = {
@@ -116,15 +117,23 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
         emitGameStatus({ state: "idle", exitMessage: "Minecraft가 실행 직후 종료되었습니다. (신호 SIGSEGV)", exitError: true });
         return result;
       }
-      listeners.forEach((listener) => listener({ kind: "info", message: "Create Aeronautics 동기화 시작", completed: 0, total: 3 }));
+      if (window.__zeroFileSync) {
+        listeners.forEach((listener) => listener({ kind: "info", stage: "모드팩 파일", message: "모드팩 파일 검사 중", completed: 0, total: 0 }));
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        listeners.forEach((listener) => listener({ kind: "info", stage: "게임 실행", message: "Minecraft 실행 명령을 준비하는 중" }));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        emitGameStatus({ state: "running", pid: 4242 });
+        return result;
+      }
+      listeners.forEach((listener) => listener({ kind: "info", stage: "모드팩 파일", message: "Create Aeronautics 동기화 시작", completed: 0, total: 3 }));
       await new Promise((resolve) => setTimeout(resolve, 90));
-      listeners.forEach((listener) => listener({ kind: "download", message: "다운로드: mods/create.jar", completed: 0, total: 3, filePath: "mods/create.jar" }));
+      listeners.forEach((listener) => listener({ kind: "download", stage: "모드팩 파일", message: "다운로드: mods/create.jar", completed: 0, total: 3, filePath: "mods/create.jar" }));
       await new Promise((resolve) => setTimeout(resolve, 300));
-      listeners.forEach((listener) => listener({ kind: "info", message: "준비 완료: mods/create.jar", completed: 1, total: 3, filePath: "mods/create.jar" }));
+      listeners.forEach((listener) => listener({ kind: "info", stage: "모드팩 파일", message: "준비 완료: mods/create.jar", completed: 1, total: 3, filePath: "mods/create.jar" }));
       await new Promise((resolve) => setTimeout(resolve, 300));
-      listeners.forEach((listener) => listener({ kind: "download", message: "다운로드: mods/aeronautics.jar", completed: 1, total: 3, filePath: "mods/aeronautics.jar" }));
+      listeners.forEach((listener) => listener({ kind: "download", stage: "모드팩 파일", message: "다운로드: mods/aeronautics.jar", completed: 1, total: 3, filePath: "mods/aeronautics.jar" }));
       await new Promise((resolve) => setTimeout(resolve, 600));
-      listeners.forEach((listener) => listener({ kind: "done", message: "완료", completed: 3, total: 3 }));
+      listeners.forEach((listener) => listener({ kind: "done", stage: "모드팩 파일", message: "완료", completed: 3, total: 3 }));
       emitGameStatus({ state: "running", pid: 4242 });
       return result;
     },
@@ -253,16 +262,30 @@ if (catalogUnavailable) {
   interactionChecks.push("personal-content-folder-settings");
   await page.locator(".profileModal .closeButton").click();
   await page.getByRole("button", { name: "게임 시작" }).click();
-  await page.getByRole("button", { name: "게임 시작" }).waitFor();
-  if (!(await page.getByRole("button", { name: "게임 시작" }).isDisabled())) throw new Error("launch button was not locked while starting");
+  await page.getByRole("button", { name: "게임 시작 중" }).waitFor();
+  if (!(await page.getByRole("button", { name: "게임 시작 중" }).isDisabled())) throw new Error("launch button was not locked while starting");
   await page.waitForTimeout(480);
-  if (await page.locator(".updatePanel, .progressTrack").count()) throw new Error("progress panel returned during launch");
+  if (await page.locator(".launchProgress").count() !== 1 || !(await page.locator(".launchProgress").innerText()).includes("33%")) {
+    throw new Error("actual file progress was not visible during launch");
+  }
+  if (await page.locator(".updatePanel, .progressTrack").count()) throw new Error("obsolete progress panel returned during launch");
   await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
   await page.getByRole("button", { name: "게임 중" }).waitFor();
   if (!(await page.getByRole("button", { name: "게임 중" }).isDisabled())) throw new Error("launch button was not locked while running");
   await page.evaluate(() => window.__exitGame());
   await page.getByRole("button", { name: "게임 시작" }).waitFor();
   if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after exit");
+  await page.evaluate(() => { window.__zeroFileSync = true; });
+  await page.getByRole("button", { name: "게임 시작" }).click();
+  await page.getByRole("button", { name: "게임 시작 중" }).waitFor();
+  const emptyProgress = await page.locator(".launchProgress").innerText();
+  if (!emptyProgress.includes("모드팩 파일") || emptyProgress.includes("0%") || emptyProgress.includes("0개 파일 중 0개 처리")) {
+    throw new Error(`empty manifest showed fake progress: ${emptyProgress}`);
+  }
+  await page.getByRole("button", { name: "게임 중" }).waitFor();
+  await page.evaluate(() => { window.__zeroFileSync = false; window.__exitGame(); });
+  await page.getByRole("button", { name: "게임 시작" }).waitFor();
+  interactionChecks.push("truthful-empty-progress");
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 중" }).waitFor();
   await page.evaluate(() => window.__failGame());

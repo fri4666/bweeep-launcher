@@ -503,6 +503,33 @@ h3 {
   width: min(310px, calc(100% - 84px));
 }
 
+.launchProgress {
+  display: grid;
+  gap: 7px;
+  padding: 12px 14px;
+  background: rgba(17, 18, 20, 0.94);
+  border-radius: var(--control-radius);
+  color: #f0ece6;
+  font-size: 12px;
+}
+
+.launchProgressHeading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.launchProgressBar {
+  width: 100%;
+  height: 6px;
+  accent-color: #e4af72;
+}
+
+.launchProgress small {
+  color: #b7b1aa;
+  overflow-wrap: anywhere;
+}
+
 .launchNotice {
   margin: 0;
   padding: 10px 12px;

@@ -27,7 +27,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     "utf8"
   );
 
-  progress({ kind: "info", message: `${manifest.name} ${manifest.version} 동기화 시작`, completed: 0, total });
+  progress({ kind: "info", stage: "모드팩 파일", message: `${manifest.name} ${manifest.version} 동기화 시작`, completed: 0, total });
 
   for (const [index, file] of files.entries()) {
     const target = resolveInside(instanceDir, file.path);
@@ -35,6 +35,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
       skipped += 1;
       progress({
         kind: "skip",
+        stage: "모드팩 파일",
         message: `이미 최신: ${file.path}`,
         completed: index + 1,
         total,
@@ -44,7 +45,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     }
 
     await fsp.mkdir(path.dirname(target), { recursive: true });
-    progress({ kind: "download", message: `다운로드: ${file.path}`, completed: index, total, filePath: file.path });
+    progress({ kind: "download", stage: "모드팩 파일", message: `다운로드: ${file.path}`, completed: index, total, filePath: file.path });
     await downloadToFile(file.url, target, file.size);
 
     if (!(await fileMatches(target, file))) {
@@ -54,6 +55,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     downloaded += 1;
     progress({
       kind: "info",
+      stage: "모드팩 파일",
       message: `준비 완료: ${file.path}`,
       completed: index + 1,
       total,
@@ -66,7 +68,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     if (nextManagedFiles.has(obsoletePath)) continue;
     const obsoleteTarget = resolveInside(instanceDir, obsoletePath);
     await fsp.rm(obsoleteTarget, { force: true });
-    progress({ kind: "info", message: `서버 전용 파일 제거: ${obsoletePath}`, filePath: obsoletePath });
+    progress({ kind: "info", stage: "모드팩 파일", message: `서버 전용 파일 제거: ${obsoletePath}`, filePath: obsoletePath });
   }
   await fsp.mkdir(path.dirname(managedFilesPath), { recursive: true });
   await fsp.writeFile(managedFilesPath, JSON.stringify([...nextManagedFiles].sort(), null, 2), "utf8");
@@ -80,7 +82,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
   ].join("\n");
   await fsp.writeFile(path.join(instanceDir, "launch-info.txt"), `${launchInfo}\n`, "utf8");
 
-  progress({ kind: "done", message: `완료: 다운로드 ${downloaded}, 유지 ${skipped}`, completed: total, total });
+  progress({ kind: "done", stage: "모드팩 파일", message: `완료: 다운로드 ${downloaded}, 유지 ${skipped}`, completed: total, total });
   return { manifest, instanceDir, downloaded, skipped };
 }
 

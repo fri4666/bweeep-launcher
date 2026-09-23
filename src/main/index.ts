@@ -344,7 +344,7 @@ app.whenReady().then(async () => {
     const runId = ++gameRunId;
     setGameStatus({ state: "starting" });
     const progress = (payload: SyncProgress) => {
-      event.sender.send("modpack:progress", payload);
+      if (!event.sender.isDestroyed()) event.sender.send("modpack:progress", payload);
       void writeGameLog("launch.progress", {
         kind: payload.kind,
         stage: payload.stage ?? null,
@@ -367,7 +367,7 @@ app.whenReady().then(async () => {
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
       const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, configuredManifest);
-      progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리` });
+      progress({ kind: "info", stage: "개인 파일", message: `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리` });
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
