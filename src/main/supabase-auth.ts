@@ -43,6 +43,13 @@ interface FunctionManifest {
   version: string;
 }
 
+interface FunctionCatalog {
+  manifests: Array<{
+    manifest: ModpackManifest;
+    version: string;
+  }>;
+}
+
 interface FunctionGameTicket {
   ticket: string;
   expiresAt: string;
@@ -290,6 +297,15 @@ export class SupabaseAuth {
     const data = await this.invokeFunction<FunctionManifest>({ action: "manifest", packId }, "모드팩 정보를 가져오지 못했습니다.");
     if (!data.manifest) throw new Error("모드팩 정보를 가져오지 못했습니다.");
     return data.manifest;
+  }
+
+  async listManifests(user: LauncherUser | null): Promise<ModpackManifest[]> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    const data = await this.invokeFunction<FunctionCatalog>({ action: "catalog" }, "서버 목록을 가져오지 못했습니다.");
+    if (!Array.isArray(data.manifests) || data.manifests.length === 0) {
+      throw new Error("사용 가능한 서버 모드팩이 없습니다.");
+    }
+    return data.manifests.map(({ manifest }) => manifest);
   }
 
   async createGameLaunchAuthorization(user: LauncherUser | null): Promise<GameLaunchAuthorization> {

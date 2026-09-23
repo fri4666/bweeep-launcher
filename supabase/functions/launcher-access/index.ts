@@ -12,6 +12,7 @@ type RequestBody =
   | { action: "status" }
   | { action: "redeem"; code: string }
   | { action: "createInvite"; expiresInDays?: number; maxUses?: number }
+  | { action: "catalog" }
   | { action: "manifest"; packId: string }
   | { action: "setGameProfile"; gameName: string }
   | { action: "gameTicket"; gameName: string }
@@ -267,6 +268,8 @@ async function handleRequest(request: Request): Promise<Response> {
         .select("manifest, version")
         .eq("pack_id", body.packId)
         .eq("active", true)
+        .order("created_at", { ascending: false })
+        .limit(1)
         .maybeSingle();
       if (error) {
         return json({ message: "모드팩 정보를 조회하지 못했습니다." }, 500);
@@ -280,6 +283,31 @@ async function handleRequest(request: Request): Promise<Response> {
         return json({ message: "테스트 서버는 지정된 테스터만 접속할 수 있습니다." }, 403);
       }
       return json({ manifest, version: data.version });
+    }
+
+    if (body.action === "catalog") {
+      const { data, error } = await supabaseAdmin
+        .from("launcher_releases")
+        .select("pack_id, manifest, version, created_at")
+        .eq("active", true)
+        .order("created_at", { ascending: false });
+      if (error) return json({ message: "서버 모드팩 목록을 조회하지 못했습니다." }, 500);
+
+      // Releases are append-only. Keep the most recent active manifest for
+      // each pack, so a pack update needs no launcher release.
+      const newestByPack = new Map<string, { manifest: unknown; version: string }>();
+      for (const row of data ?? []) {
+        if (!newestByPack.has(row.pack_id)) {
+          newestByPack.set(row.pack_id, { manifest: row.manifest, version: row.version });
+        }
+      }
+      const manifests = await Promise.all(Array.from(newestByPack.values(), async (release) => ({
+        manifest: await resolveManifestDownloads(supabaseAdmin, release.manifest),
+        version: release.version
+      })));
+      return json({
+        manifests: manifests.filter(({ manifest }) => manifest.audience !== "testers" || testAllowed)
+      });
     }
 
     const expiresInDays = clamp(body.expiresInDays, 14, 1, 30);
@@ -311,6 +339,7 @@ function isRequestBody(value: unknown): value is RequestBody {
   const body = value as Record<string, unknown>;
   if (body.action === "status") return true;
   if (body.action === "redeem") return typeof body.code === "string";
+  if (body.action === "catalog") return true;
   if (body.action === "manifest") return typeof body.packId === "string";
   if (body.action === "setGameProfile") return isGameName(body.gameName);
   if (body.action === "gameTicket") return isGameName(body.gameName);

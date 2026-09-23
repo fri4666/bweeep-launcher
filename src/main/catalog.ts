@@ -30,6 +30,7 @@ export function toServerPreset(manifest: ModpackManifest): ServerPreset {
     name: manifest.name,
     description: describeManifest(manifest),
     packId: manifest.id,
+    default: manifest.default === true,
     server: manifest.server,
     minecraftVersion: manifest.minecraftVersion,
     java: manifest.java,

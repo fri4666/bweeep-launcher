@@ -56,6 +56,7 @@ export interface ServerPreset {
   id: string;
   name: string;
   packId: string;
+  default?: boolean;
   description: string;
   server: { host: string; port: number };
   minecraftVersion: string;
