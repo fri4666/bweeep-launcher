@@ -894,6 +894,21 @@ button:disabled {
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
 }
 
+.profileModal {
+  width: min(680px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  padding: 26px;
+}
+
+.profileModal .connectionPanel {
+  padding: 20px;
+}
+
+.profileModal .connectionPanel + .connectionPanel {
+  margin-top: 12px;
+}
+
 .modalHeader {
   display: flex;
   align-items: center;
@@ -908,9 +923,30 @@ button:disabled {
 
 .settingsGrid {
   display: grid;
-  grid-template-columns: 1.1fr 0.9fr;
-  gap: 14px;
-  margin-bottom: 14px;
+  align-items: start;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.settingsGrid > .serverSelectPanel {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+.settingsGrid > .connectionPanel {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.settingsGrid > .installPanel {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.settingsGrid > .accessPanel {
+  grid-column: 1 / -1;
+  grid-row: 3;
 }
 
 .panel {
@@ -1039,6 +1075,149 @@ input:focus {
   font-weight: 800;
 }
 
+.profileModal .connectionFields {
+  grid-template-columns: 1fr;
+}
+
+.serverChoiceGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.serverChoice {
+  display: grid;
+  gap: 7px;
+  min-height: 106px;
+  padding: 16px;
+  color: #cac6bd;
+  text-align: left;
+  background: #191a1e;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--control-radius);
+}
+
+.serverChoice:hover,
+.serverChoice.active {
+  color: #f2eee6;
+  background: #25262b;
+  border-color: rgba(217, 176, 114, 0.42);
+}
+
+.serverChoice.active {
+  box-shadow: inset 0 0 0 1px rgba(217, 176, 114, 0.32);
+}
+
+.serverChoice span {
+  justify-self: start;
+  padding: 5px 8px;
+  color: #211c15;
+  font-size: 11px;
+  font-weight: 900;
+  background: #d9b072;
+  border-radius: 7px;
+}
+
+.serverChoice strong {
+  color: inherit;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.serverChoice small {
+  color: #9c988f;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.contentFolderGroups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.contentFolderGroup {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  background: #191a1e;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 14px;
+}
+
+.contentFolderLabel {
+  display: grid;
+  gap: 3px;
+}
+
+.contentFolderLabel strong {
+  color: #eeece7;
+  font-size: 14px;
+}
+
+.contentFolderLabel span,
+.contentFolderList > p {
+  margin: 0;
+  color: #949189;
+  font-size: 12px;
+}
+
+.contentFolderList {
+  display: grid;
+  gap: 6px;
+  min-height: 30px;
+}
+
+.contentFolderItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 5px 0 9px;
+  color: #cfccc4;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.045);
+  border-radius: 8px;
+}
+
+.contentFolderItem span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contentFolderItem button {
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
+  color: #b9b4aa;
+  font-size: 18px;
+  line-height: 1;
+  background: transparent;
+  border-radius: 7px;
+}
+
+.contentFolderItem button:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.contentFolderAdd {
+  width: 100%;
+  min-height: 38px;
+  color: #e9ddc5;
+  font-weight: 800;
+  background: rgba(217, 176, 114, 0.12);
+  border: 1px solid rgba(217, 176, 114, 0.2);
+}
+
+.contentFolderAdd:hover:not(:disabled) {
+  background: rgba(217, 176, 114, 0.2);
+}
+
 .settingsFooter,
 .profileFooter {
   display: flex;
@@ -1046,6 +1225,21 @@ input:focus {
   justify-content: space-between;
   gap: 14px;
   margin-top: 14px;
+}
+
+@media (max-width: 620px) {
+  .profileModal {
+    padding: 18px;
+  }
+
+  .settingsGrid,
+  .serverChoiceGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .contentFolderGroups {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settingsFooter span {

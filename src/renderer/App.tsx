@@ -10,7 +10,9 @@ import type {
   ServerPreset,
   ServerStatus,
   SyncProgress,
-  SyncResult
+  SyncResult,
+  UserContentFolders,
+  UserContentKind
 } from "../shared/types.js";
 import "./styles.css";
 
@@ -73,6 +75,8 @@ function App() {
   const [updateOpen, setUpdateOpen] = useState(false);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
   const [gameNameInput, setGameNameInput] = useState("");
+  const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
+  const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
 
   useEffect(() => {
     void Promise.allSettled([
@@ -148,6 +152,13 @@ function App() {
       unsubscribeInvite();
     };
   }, []);
+
+  useEffect(() => {
+    if (!instanceRoot) return;
+    void window.bweeep.userContentFolders(instanceRoot).then(setPersonalFolders).catch((error) => {
+      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 불러오지 못했습니다.");
+    });
+  }, [instanceRoot]);
 
   const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
     setServerChecking(true);
@@ -367,12 +378,33 @@ function App() {
     }
   }
 
-  async function openPersonalFolder(kind: "mods" | "shaderpacks") {
+  async function choosePersonalFolders(kind: UserContentKind) {
+    if (contentAction) return;
+    setContentAction(kind);
     try {
-      const root = await window.bweeep.userContentRoot(instanceRoot.trim());
-      await window.bweeep.openPath(`${root}\\${kind}`);
+      const result = await window.bweeep.chooseUserContentFolders(instanceRoot.trim(), kind);
+      setPersonalFolders(result.folders);
+      setNotice(result.selected > 0
+        ? `${kind === "mods" ? "모드" : "셰이더"} 폴더 ${result.selected}개를 저장했습니다. 다음 게임 실행에 적용됩니다.`
+        : "폴더 선택을 취소했거나 이미 추가된 폴더입니다.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "내 콘텐츠 폴더를 열지 못했습니다.");
+      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
+    } finally {
+      setContentAction(null);
+    }
+  }
+
+  async function removePersonalFolder(kind: UserContentKind, folder: string) {
+    if (contentAction) return;
+    setContentAction(kind);
+    try {
+      const folders = await window.bweeep.removeUserContentFolder(instanceRoot.trim(), kind, folder);
+      setPersonalFolders(folders);
+      setNotice(`${kind === "mods" ? "모드" : "셰이더"} 폴더를 저장 목록에서 뺐습니다. 다음 게임 실행부터 적용하지 않습니다.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
+    } finally {
+      setContentAction(null);
     }
   }
 
@@ -505,7 +537,7 @@ function App() {
 
         <nav className="iconRail" aria-label="주 메뉴">
           <button className="iconButton active">홈</button>
-          <button className="iconButton" onClick={() => setProfileOpen(true)}>서버</button>
+          <button className="iconButton" onClick={() => setProfileOpen(true)}>계정</button>
           <button className="iconButton" onClick={() => setSettingsOpen(true)}>설정</button>
         </nav>
         <div className="supportPanel">
@@ -550,11 +582,6 @@ function App() {
             <p className="eyebrow">순정 생존 서버</p>
             <h2>{selected?.name ?? "서버 없음"}</h2>
             <p>서버에 맞는 Minecraft 버전을 준비하고, 바로 같은 월드로 접속합니다.</p>
-            <label className="serverPicker">서버 선택
-              <select value={selected?.id ?? ""} onChange={(event) => void selectServer(event.target.value)}>
-                {availableServers.map((server) => <option key={server.id} value={server.id}>{server.environment === "test" ? "테스트 서버 · " : "본 서버 · "}{server.name} · Minecraft {server.minecraftVersion}</option>)}
-              </select>
-            </label>
             <div className="chips">
               <span>Minecraft {selected?.minecraftVersion ?? "-"}</span>
               <span>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected?.loader.kind ?? "-"}</span>
@@ -609,6 +636,39 @@ function App() {
             </header>
 
             <div className="settingsGrid">
+              <article className="panel serverSelectPanel">
+                <div className="panelHeader">
+                  <h3>서버 선택</h3>
+                  <span>본섭과 테섭 전환은 여기에서만 바꿉니다.</span>
+                </div>
+                <div className="serverChoiceGrid">
+                  {availableServers.map((server) => (
+                    <button
+                      className={`serverChoice ${server.id === selected?.id ? "active" : ""}`}
+                      key={server.id}
+                      onClick={() => void selectServer(server.id)}
+                      type="button"
+                    >
+                      <span>{server.environment === "test" ? "테섭" : "본섭"}</span>
+                      <strong>{server.name}</strong>
+                      <small>Minecraft {server.minecraftVersion} · {server.loader.kind === "vanilla" ? "Vanilla" : `${server.loader.kind} ${server.loader.version}`}</small>
+                    </button>
+                  ))}
+                </div>
+              </article>
+
+              <article className="panel connectionPanel">
+                <div className="panelHeader">
+                  <h3>서버 연결</h3>
+                  <span>게임 실행과 상태 확인에 사용됩니다.</span>
+                </div>
+                <div className="connectionFields">
+                  <label>주소<input value={hostInput} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setHostInput(event.target.value)} /></label>
+                  <label>포트<input type="number" min="1" max="65535" value={portInput} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setPortInput(event.target.value)} /></label>
+                </div>
+                <button onClick={() => void saveConnection()}>서버 주소 저장</button>
+              </article>
+
               <article className="panel accessPanel">
                 <div className="panelHeader">
                   <h3>접근 권한</h3>
@@ -708,24 +768,30 @@ function App() {
             <section className="panel connectionPanel">
               <div className="panelHeader">
                 <h3>내 모드와 셰이더</h3>
-                <span>여기에 넣은 파일은 서버 전환 후에도 유지됩니다.</span>
+                <span>선택한 폴더를 모두 저장해 서버 전환 뒤에도 적용합니다.</span>
               </div>
-              <div className="updateActions">
-                <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("mods")}>내 모드 폴더 열기</button>
-                <button disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder("shaderpacks")}>셰이더 폴더 열기</button>
+              <div className="contentFolderGroups">
+                {(["mods", "shaderpacks"] as const).map((kind) => (
+                  <div className="contentFolderGroup" key={kind}>
+                    <div className="contentFolderLabel">
+                      <strong>{kind === "mods" ? "모드 폴더" : "셰이더 폴더"}</strong>
+                      <span>{kind === "mods" ? ".jar" : ".zip"} 파일 · 여러 폴더 가능</span>
+                    </div>
+                    <div className="contentFolderList">
+                      {personalFolders[kind].length === 0 ? <p>선택한 폴더가 없습니다.</p> : personalFolders[kind].map((folder) => (
+                        <div className="contentFolderItem" key={folder} title={folder}>
+                          <span>{folder}</span>
+                          <button aria-label={`${kind === "mods" ? "모드" : "셰이더"} 폴더 제거`} disabled={contentAction !== null} onClick={() => void removePersonalFolder(kind, folder)}>×</button>
+                        </div>
+                      ))}
+                    </div>
+                    <button className="contentFolderAdd" disabled={!instanceRoot.trim() || contentAction !== null} onClick={() => void choosePersonalFolders(kind)}>
+                      {contentAction === kind ? "저장 중…" : `${kind === "mods" ? "모드" : "셰이더"} 폴더 선택`}
+                    </button>
+                  </div>
+                ))}
               </div>
-              <p className="notice">모드는 .jar, 셰이더는 .zip 파일을 넣으세요. 현재 Minecraft 버전과 로더에 맞는 파일만 사용해야 합니다.</p>
-            </section>
-            <section className="panel connectionPanel">
-              <div className="panelHeader">
-                <h3>서버 연결</h3>
-                <span>게임 실행과 상태 확인에 사용됩니다.</span>
-              </div>
-              <div className="connectionFields">
-                <label>주소<input value={hostInput} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setHostInput(event.target.value)} /></label>
-                <label>포트<input type="number" min="1" max="65535" value={portInput} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setPortInput(event.target.value)} /></label>
-              </div>
-              <button onClick={() => void saveConnection()}>서버 주소 저장</button>
+              <p className="notice">같은 이름의 파일도 서로 다른 선택 폴더에 있으면 함께 적용합니다. 현재 Minecraft 버전과 로더에 맞는 파일만 사용하세요.</p>
             </section>
             <footer className="profileFooter">
               <button className="logoutButton" onClick={() => void logout()}>Discord 로그아웃</button>
@@ -772,7 +838,7 @@ function normalizeInviteCode(value: string): string {
 }
 
 function shouldShowUpdate(status: LauncherUpdateStatus): boolean {
-  return ["available", "downloading", "ready", "installing", "error"].includes(status.state);
+  return ["available", "downloading", "ready", "installing"].includes(status.state);
 }
 
 function formatRelativeTime(timestamp: number, now = Date.now()): string {

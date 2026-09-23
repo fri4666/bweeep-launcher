@@ -42,12 +42,27 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
         name: "Create Aeronautics",
         packId: "create-aeronautics",
         description: "하늘과 기계가 만나는 모드팩",
+        environment: "production",
         server: { host: "server.fri4666.com", port: 25565 },
         minecraftVersion: "1.21.1",
         loader: { kind: "neoforge", version: "21.1.228" }
+      },
+      {
+        id: "vanilla-survival-test",
+        name: "Vanilla Test",
+        packId: "vanilla-survival-test",
+        description: "테스터 검증용 순정 서버",
+        environment: "test",
+        server: { host: "server.fri4666.com", port: 25566 },
+        minecraftVersion: "26.3",
+        loader: { kind: "fabric", version: "0.19.5" }
       }
     ],
     defaultInstanceRoot: async () => "C:\\Bweeep\\instances",
+    userContentRoot: async () => "C:\\Bweeep\\instances\\.bweeep-user-content",
+    userContentFolders: async () => ({ mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] }),
+    chooseUserContentFolders: async (_root, kind) => ({ folders: kind === "mods" ? { mods: ["D:\\Minecraft\\my-mods", "D:\\Minecraft\\more-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] } : { mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders", "D:\\Minecraft\\more-shaders"] }, selected: 1 }),
+    removeUserContentFolder: async (_root, kind, folder) => ({ mods: kind === "mods" ? [] : ["D:\\Minecraft\\my-mods"], shaderpacks: kind === "shaderpacks" ? [] : ["D:\\Minecraft\\my-shaders"] }),
     serverStatus: async () => {
       window.__serverStatusCalls += 1;
       return {
@@ -62,6 +77,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       loggedIn: previewSignedIn,
       allowed: previewSignedIn && !previewAccessUnavailable && !previewAccessDenied,
       isAdmin: false,
+      testAllowed: true,
       unavailable: previewAccessUnavailable,
       reason: previewAccessUnavailable ? "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요." : previewAccessDenied ? "초대 코드가 필요합니다." : previewSignedIn ? "초대 확인 완료" : "로그인이 필요합니다.",
       user: previewSignedIn ? { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null } : undefined
@@ -81,9 +97,12 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     serverConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
     saveServerConnection: async (connection) => connection,
     resetServerConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
+    launcherChannel: async () => "production",
+    setGameProfile: async (gameName) => ({ id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, gameName }),
     checkLauncherUpdate: async () => ({ state: "current" }),
     launcherChannel: async () => "production",
-    launcherVersion: async () => "0.1.29",
+    openTestLauncher: async () => "opened",
+    launcherVersion: async () => "0.1.30",
     gameStatus: async () => gameStatus,
     launchGame: async () => {
       emitGameStatus({ state: "starting" });
@@ -164,6 +183,9 @@ if (accessUnavailable) {
   if (mainText.includes("server.fri4666.com") || mainText.includes(":25565")) {
     throw new Error("server address is visible on the main screen");
   }
+  if (mainText.includes("서버 선택")) {
+    throw new Error("server picker remained on the main screen");
+  }
   interactionChecks.push("server-address-hidden");
   const serverFact = await page.locator(".quickFact").filter({ hasText: "서버 상태" }).innerText();
   if (!serverFact.includes("방금 전") || /\d{1,2}시\s*\d{1,2}분|\d{1,2}:\d{2}/.test(serverFact)) {
@@ -172,6 +194,11 @@ if (accessUnavailable) {
   interactionChecks.push("relative-server-time");
   await page.getByRole("button", { name: "설정" }).click();
   await page.waitForTimeout(100);
+  const settingsText = await page.locator(".settingsModal").innerText();
+  if (!settingsText.includes("본섭") || !settingsText.includes("테섭")) {
+    throw new Error("production/test server choices are missing from settings");
+  }
+  interactionChecks.push("server-choice-in-settings");
   await page.getByRole("button", { name: "10명용 초대 만들기" }).click();
   await page.getByText("BWEEP-123456789ABC-123456789ABC", { exact: true }).waitFor();
   const copyButtonBox = await page.getByRole("button", { name: "코드 복사" }).boundingBox();
@@ -194,6 +221,12 @@ if (accessUnavailable) {
   interactionChecks.push("invite-code-copy");
   await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
   await page.locator(".settingsModal .closeButton").click();
+  await page.locator(".profileBox").click();
+  await page.getByRole("button", { name: "모드 폴더 선택" }).waitFor();
+  if (await page.locator(".contentFolderItem").count() !== 2) throw new Error("saved personal content folders are missing");
+  await page.screenshot({ path: "previews/bweeep-launcher-profile-preview.png" });
+  interactionChecks.push("personal-content-folder-settings");
+  await page.locator(".profileModal .closeButton").click();
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 시작 중" }).waitFor();
   if (!(await page.getByRole("button", { name: "게임 시작 중" }).isDisabled())) throw new Error("launch button was not locked while starting");

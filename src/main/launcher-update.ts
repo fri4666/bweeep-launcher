@@ -2,10 +2,12 @@ import { app } from "electron";
 import electronUpdater from "electron-updater";
 import type { LauncherUpdate, LauncherUpdateStatus } from "../shared/types.js";
 import { getLauncherChannel } from "./launcher-channel.js";
+import { koreanReleaseNotes } from "./update-copy.js";
+import { isNewerLauncherVersion } from "./version.js";
 
 const { autoUpdater } = electronUpdater;
 
-const CHECK_INTERVAL_MS = 30 * 60_000;
+const CHECK_INTERVAL_MS = 60_000;
 let status: LauncherUpdateStatus = { state: "checking" };
 let started = false;
 let installScheduled = false;
@@ -38,6 +40,10 @@ export function startLauncherUpdates(
   autoUpdater.on("checking-for-update", () => setStatus({ state: "checking" }));
   autoUpdater.on("update-not-available", () => setStatus({ state: "current" }));
   autoUpdater.on("update-available", (info) => {
+    if (!isNewerLauncherVersion(info.version, app.getVersion())) {
+      setStatus({ state: "current" });
+      return;
+    }
     setStatus({ state: "available", update: toLauncherUpdate(info), message: "새 업데이트를 설치할 수 있습니다." });
   });
   autoUpdater.on("download-progress", (progress) => {
@@ -107,7 +113,7 @@ function toLauncherUpdate(info: {
   const notes = typeof info.releaseNotes === "string"
     ? [info.releaseNotes]
     : (info.releaseNotes ?? []).flatMap((entry) => entry.note ? [entry.note] : []);
-  return { version: info.version, notes };
+  return { version: info.version, notes: koreanReleaseNotes(notes) };
 }
 
 function safeUpdateError(error: unknown): string {
