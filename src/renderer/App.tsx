@@ -531,19 +531,6 @@ function App() {
             <div><strong>{serverStatusMessage}</strong><small>{serverStatusDetail}</small></div>
           </div>
           <div className="topbarActions">
-            {launcherChannel === "production" && access.testAllowed && (
-              <button
-                type="button"
-                className="testLauncherInstallButton"
-                aria-label="테스트 런처 열기"
-                title="테스트 런처 열기"
-                onClick={() => void window.bweeep.openTestLauncher()}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 3v10m0 0 4-4m-4 4-4-4M5 17v3h14v-3" />
-                </svg>
-              </button>
-            )}
             <button className="profileBox" onClick={() => setProfileOpen(true)}>
               <ProfileAvatar user={user} />
               <div><strong>{user.globalName ?? user.username}</strong><small>Discord</small></div>
