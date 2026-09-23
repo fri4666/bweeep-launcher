@@ -6,9 +6,10 @@ const errors = [];
 const signedIn = process.env.BWEEP_PREVIEW_SIGNED_IN !== "false";
 const accessUnavailable = process.env.BWEEP_PREVIEW_ACCESS_UNAVAILABLE === "true";
 const accessDenied = process.env.BWEEP_PREVIEW_ACCESS_DENIED === "true";
+const catalogUnavailable = process.env.BWEEP_PREVIEW_CATALOG_UNAVAILABLE === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable }) => {
   const listeners = [];
   const gameStatusListeners = [];
   let gameStatus = { state: "idle" };
@@ -36,7 +37,9 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   };
 
   window.bweeep = {
-    listServers: async () => [
+    listServers: async () => {
+      if (previewCatalogUnavailable) throw new Error("서버 목록 연결 실패");
+      return [
       {
         id: "create-aeronautics",
         name: "Create Aeronautics",
@@ -57,7 +60,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
         minecraftVersion: "26.3",
         loader: { kind: "fabric", version: "0.19.5" }
       }
-    ],
+      ];
+    },
     defaultInstanceRoot: async () => "C:\\Bweeep\\instances",
     userContentRoot: async () => "C:\\Bweeep\\instances\\.bweeep-user-content",
     userContentFolders: async () => ({ mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] }),
@@ -143,7 +147,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(120);
@@ -166,9 +170,18 @@ async function verifyHover(selector, name) {
   await page.mouse.move(1, 1);
 }
 
-await verifyHover(accessUnavailable ? ".entryRecovery > button:first-child" : accessDenied ? ".entryLogout" : signedIn ? ".launchButton" : ".entryChoices button:first-child", accessUnavailable ? "recovery" : accessDenied ? "invite-screen" : signedIn ? "launch" : "login");
+if (!catalogUnavailable) {
+  await verifyHover(accessUnavailable ? ".entryRecovery > button:first-child" : accessDenied ? ".entryLogout" : signedIn ? ".launchButton" : ".entryChoices button:first-child", accessUnavailable ? "recovery" : accessDenied ? "invite-screen" : signedIn ? "launch" : "login");
+}
 await page.screenshot({ path: accessDenied ? "previews/bweeep-launcher-invite-entry.png" : signedIn ? "previews/bweeep-launcher-flow-ready.png" : "previews/bweeep-launcher-login-main.png" });
-if (accessUnavailable) {
+if (catalogUnavailable) {
+  const mainText = await page.locator("main").innerText();
+  if (!mainText.includes("서버 목록 연결 실패") || !mainText.includes("서버 없음") || mainText.includes("Create Aeronautics")) {
+    throw new Error("catalog failure did not fail closed with a visible reason");
+  }
+  if (!(await page.getByRole("button", { name: "게임 시작" }).isDisabled())) throw new Error("launch remained enabled without a catalog");
+  interactionChecks.push("catalog-failure-closed");
+} else if (accessUnavailable) {
   if (await page.getByRole("button", { name: "다시 확인" }).count() !== 1) throw new Error("access recovery action is missing");
   await page.screenshot({ path: "previews/bweeep-launcher-access-recovery.png" });
 } else if (accessDenied) {
@@ -185,6 +198,12 @@ if (accessUnavailable) {
   }
   if (mainText.includes("서버 선택")) {
     throw new Error("server picker remained on the main screen");
+  }
+  if (await page.locator(".updatePanel, .updateModal, .progressTrack").count()) {
+    throw new Error("obsolete update or progress UI remained on the main screen");
+  }
+  if (mainText.includes("0개 파일 중 0개 처리") || mainText.includes("서버 파일 목록을 확인하는 중")) {
+    throw new Error("misleading empty download progress remained on the main screen");
   }
   interactionChecks.push("server-address-hidden");
   const serverFact = await page.locator(".quickFact").filter({ hasText: "서버 상태" }).innerText();
@@ -228,9 +247,10 @@ if (accessUnavailable) {
   interactionChecks.push("personal-content-folder-settings");
   await page.locator(".profileModal .closeButton").click();
   await page.getByRole("button", { name: "게임 시작" }).click();
-  await page.getByRole("button", { name: "게임 시작 중" }).waitFor();
-  if (!(await page.getByRole("button", { name: "게임 시작 중" }).isDisabled())) throw new Error("launch button was not locked while starting");
+  await page.getByRole("button", { name: "게임 시작" }).waitFor();
+  if (!(await page.getByRole("button", { name: "게임 시작" }).isDisabled())) throw new Error("launch button was not locked while starting");
   await page.waitForTimeout(480);
+  if (await page.locator(".updatePanel, .progressTrack").count()) throw new Error("progress panel returned during launch");
   await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
   await page.getByRole("button", { name: "게임 중" }).waitFor();
   if (!(await page.getByRole("button", { name: "게임 중" }).isDisabled())) throw new Error("launch button was not locked while running");

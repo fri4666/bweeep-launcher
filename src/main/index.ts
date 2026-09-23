@@ -232,13 +232,8 @@ app.whenReady().then(async () => {
   const defaultServer = serverPresets[0]?.server;
   if (!defaultServer) throw new Error("사용 가능한 서버 manifest가 없습니다.");
   ipcMain.handle("catalog:list", async () => {
-    const fallback = await getServerPresets(launcherChannel);
-    try {
-      return (await auth.listManifests(sessionUser)).map(toServerPreset);
-    } catch {
-      // The packaged catalog is only a recovery path when the control plane is unavailable.
-      return fallback;
-    }
+    if (!sessionUser) return [];
+    return (await auth.listManifests(sessionUser)).map(toServerPreset);
   });
   ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
   ipcMain.handle("paths:defaultInstanceRoot", () =>

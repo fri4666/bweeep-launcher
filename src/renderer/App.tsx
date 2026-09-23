@@ -72,6 +72,18 @@ function App() {
   const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
   const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
 
+  function applyServerList(serverList: ServerPreset[]) {
+    setServers(serverList);
+    const savedId = window.localStorage.getItem(selectedPackStorageKey);
+    const initial = serverList.find((server) => server.id === savedId)
+      ?? serverList.find((server) => server.default)
+      ?? serverList[0];
+    setSelectedId(initial?.id ?? "");
+    setConnection(initial?.server ?? null);
+    setServerStatus(null);
+    setServerCheckedAt(null);
+  }
+
   useEffect(() => {
     void Promise.allSettled([
       window.bweeep.listServers(),
@@ -82,13 +94,10 @@ function App() {
       window.bweeep.launcherVersion()
     ]).then(([serverList, root, status, initialGameStatus, channel, version]) => {
       if (serverList.status === "fulfilled") {
-        setServers(serverList.value);
-        const savedId = window.localStorage.getItem(selectedPackStorageKey);
-        const initial = serverList.value.find((server) => server.id === savedId)
-          ?? serverList.value.find((server) => server.default)
-          ?? serverList.value[0];
-        setSelectedId(initial?.id ?? "");
-        if (initial) setConnection(initial.server);
+        applyServerList(serverList.value);
+      } else {
+        applyServerList([]);
+        setNotice(serverList.reason instanceof Error ? serverList.reason.message : "서버 목록을 불러오지 못했습니다.");
       }
       if (root.status === "fulfilled") setInstanceRoot(root.value);
       if (status.status === "fulfilled") {
@@ -111,6 +120,10 @@ function App() {
       setLoginPending(false);
       setUser(nextUser);
       void refreshAccessStatus(nextUser);
+      void window.bweeep.listServers().then(applyServerList).catch((error) => {
+        applyServerList([]);
+        setNotice(error instanceof Error ? error.message : "서버 목록을 불러오지 못했습니다.");
+      });
     });
     const unsubscribeGameStatus = window.bweeep.onGameStatus(setGameStatus);
     const unsubscribeError = window.bweeep.onAuthError((message) => {
@@ -494,7 +507,7 @@ function App() {
         <div className="supportPanel">
           <div>
             <span className="accessStamp">서버 멤버 전용</span>
-            <strong>함께 떠나는 생존 서버</strong>
+            <strong>함께하는 모드팩 서버</strong>
             <p>초대받은 친구들과 같은 Minecraft 버전으로 바로 시작할 수 있어요.</p>
           </div>
         </div>
@@ -517,9 +530,10 @@ function App() {
         <section className="hero">
           <div className="heroBackdrop" />
           <div className="heroCopy">
-            <p className="eyebrow">순정 생존 서버</p>
+            <p className="eyebrow">전용 서버</p>
             <h2>{selected?.name ?? "서버 없음"}</h2>
             <p>서버에 맞는 Minecraft 버전을 준비하고, 바로 같은 월드로 접속합니다.</p>
+            {!selected && <p className="notice">{notice || "서버 목록을 불러오지 못했습니다."}</p>}
             <div className="chips">
               <span>Minecraft {selected?.minecraftVersion ?? "-"}</span>
               <span>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected?.loader.kind ?? "-"}</span>
@@ -527,7 +541,7 @@ function App() {
             </div>
           </div>
           <div className="actionDock">
-            <button className="launchButton" disabled={!canUseLauncher || syncing || gameBusy} aria-busy={gameBusy} onClick={launchSelected}>
+            <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={gameBusy} onClick={launchSelected}>
               {gameStatus.state === "running" ? "게임 중" : "게임 시작"}
             </button>
           </div>
