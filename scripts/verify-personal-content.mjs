@@ -64,6 +64,17 @@ try {
     loader: { kind: "fabric", version: "0.19.5" },
     clientFeatures: { connectionLock: true }
   }).length, 1);
+  assert.equal(bundledFeatureMods("/resources", {
+    ...manifest,
+    minecraftVersion: "1.21.4",
+    loader: { kind: "fabric", version: "0.18.1" },
+    clientFeatures: { connectionLock: true }
+  }).length, 1);
+  const tycoonLockJar = await fs.readFile(new URL("../resources/client-mods/bweeep-connection-lock-1214-0.1.0.jar", import.meta.url));
+  assert.equal(
+    crypto.createHash("sha256").update(tycoonLockJar).digest("hex"),
+    "bf0ffad350cc2f6df055d899a73cf956d943be97a911659543c01f304ff07876"
+  );
   const fabricLockJar = await fs.readFile(new URL("../resources/client-mods/bweeep-fabric-lock-26.3-0.1.0.jar", import.meta.url));
   assert.equal(
     crypto.createHash("sha256").update(fabricLockJar).digest("hex"),

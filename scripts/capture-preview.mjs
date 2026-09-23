@@ -40,26 +40,26 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     listServers: async () => {
       if (previewCatalogUnavailable) throw new Error("서버 목록 연결 실패");
       return [
-      {
-        id: "create-aeronautics",
-        name: "Create Aeronautics",
-        packId: "create-aeronautics",
-        description: "하늘과 기계가 만나는 모드팩",
-        environment: "production",
-        server: { host: "server.fri4666.com", port: 25565 },
-        minecraftVersion: "1.21.1",
-        loader: { kind: "neoforge", version: "21.1.228" }
-      },
-      {
-        id: "vanilla-survival-test",
-        name: "Vanilla Test",
-        packId: "vanilla-survival-test",
-        description: "테스터 검증용 순정 서버",
-        environment: "test",
-        server: { host: "server.fri4666.com", port: 25566 },
-        minecraftVersion: "26.3",
-        loader: { kind: "fabric", version: "0.19.5" }
-      }
+        {
+          id: "create-aeronautics",
+          name: "Create Aeronautics",
+          packId: "create-aeronautics",
+          description: "하늘과 기계가 만나는 모드팩",
+          environment: "production",
+          server: { host: "server.fri4666.com", port: 25565 },
+          minecraftVersion: "1.21.1",
+          loader: { kind: "neoforge", version: "21.1.228" }
+        },
+        {
+          id: "vanilla-survival-test",
+          name: "Vanilla Test",
+          packId: "vanilla-survival-test",
+          description: "테스터 검증용 순정 서버",
+          environment: "test",
+          server: { host: "server.fri4666.com", port: 25566 },
+          minecraftVersion: "26.3",
+          loader: { kind: "fabric", version: "0.19.5" }
+        }
       ];
     },
     defaultInstanceRoot: async () => "C:\\Bweeep\\instances",

@@ -354,8 +354,10 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
+      progress({ kind: "info", stage: "서버 목록", message: "선택한 서버 정보 요청" });
       const manifest = await auth.getManifest(sessionUser, request.packId);
       assertManifest(manifest);
+      if (manifest.id !== request.packId) throw new Error("선택한 서버와 받은 모드팩 정보가 일치하지 않습니다.");
       const configuredManifest = manifest;
       const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), configuredManifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });

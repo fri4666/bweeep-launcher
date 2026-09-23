@@ -1,0 +1,38 @@
+name: 런처 PR 검증
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: node scripts/verify-launcher-update.mjs
+      - run: node scripts/verify-personal-content.mjs
+      - run: node scripts/verify-server-status.mjs
+      - run: node scripts/verify-launch-identity.mjs
+      - run: npx playwright install --with-deps chromium
+      - name: 홈 화면과 실행 흐름 확인
+        shell: bash
+        run: |
+          mkdir -p previews
+          npx vite --host 127.0.0.1 >/tmp/bweeep-vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail http://127.0.0.1:5173/ >/dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_CATALOG_UNAVAILABLE=true node scripts/capture-preview.mjs
