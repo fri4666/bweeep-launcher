@@ -16,6 +16,8 @@ import type {
 } from "../shared/types.js";
 import "./styles.css";
 
+const selectedPackStorageKey = "bweeep.selected-pack-id";
+
 function WindowControls() {
   return (
     <div className="windowControls" aria-label="창 제어">
@@ -67,8 +69,6 @@ function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [connection, setConnection] = useState<ServerConnection | null>(null);
-  const [hostInput, setHostInput] = useState("");
-  const [portInput, setPortInput] = useState("");
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [launcherVersion, setLauncherVersion] = useState("");
@@ -83,15 +83,19 @@ function App() {
       window.bweeep.listServers(),
       window.bweeep.defaultInstanceRoot(),
       window.bweeep.accessStatus(),
-      window.bweeep.serverConnection(),
       window.bweeep.checkLauncherUpdate(),
       window.bweeep.gameStatus(),
       window.bweeep.launcherChannel(),
       window.bweeep.launcherVersion()
-    ]).then(([serverList, root, status, savedConnection, updateStatus, initialGameStatus, channel, version]) => {
+    ]).then(([serverList, root, status, updateStatus, initialGameStatus, channel, version]) => {
       if (serverList.status === "fulfilled") {
         setServers(serverList.value);
-        setSelectedId(serverList.value[0]?.id ?? "");
+        const savedId = window.localStorage.getItem(selectedPackStorageKey);
+        const initial = serverList.value.find((server) => server.id === savedId)
+          ?? serverList.value.find((server) => server.default)
+          ?? serverList.value[0];
+        setSelectedId(initial?.id ?? "");
+        if (initial) setConnection(initial.server);
       }
       if (root.status === "fulfilled") setInstanceRoot(root.value);
       if (status.status === "fulfilled") {
@@ -102,11 +106,6 @@ function App() {
       } else {
         setAccess({ loggedIn: false, allowed: false, isAdmin: false, unavailable: true, reason: "로그인 상태를 확인하지 못했습니다." });
         setNotice("로그인 상태를 확인하지 못했습니다. 다시 시도해 주세요.");
-      }
-      if (savedConnection.status === "fulfilled") {
-        setConnection(savedConnection.value);
-        setHostInput(savedConnection.value.host);
-        setPortInput(String(savedConnection.value.port));
       }
       if (updateStatus.status === "fulfilled") {
         setLauncherUpdate(updateStatus.value);
@@ -321,34 +320,12 @@ function App() {
     }
   }
 
-  async function saveConnection() {
-    setNotice("");
-    try {
-      const saved = await window.bweeep.saveServerConnection({
-        host: hostInput.trim(),
-        port: Number(portInput)
-      });
-      setConnection(saved);
-      setHostInput(saved.host);
-      setPortInput(String(saved.port));
-      setNotice("서버 주소를 저장했습니다.");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    }
-  }
-
   async function selectServer(nextId: string) {
     const next = servers.find((server) => server.id === nextId);
     if (!next) return;
     setSelectedId(nextId);
+    window.localStorage.setItem(selectedPackStorageKey, nextId);
     setConnection(next.server);
-    setHostInput(next.server.host);
-    setPortInput(String(next.server.port));
-    try {
-      await window.bweeep.saveServerConnection(next.server);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "서버 선택을 저장하지 못했습니다.");
-    }
   }
 
   async function logout() {
@@ -411,13 +388,11 @@ function App() {
   async function resetSettings() {
     if (!window.confirm("서버 주소와 설치 위치, 화면 로그를 기본값으로 되돌릴까요? 모드팩 파일은 삭제하지 않습니다.")) return;
     try {
-      const [saved, root] = await Promise.all([
-        window.bweeep.resetServerConnection(),
-        window.bweeep.defaultInstanceRoot()
-      ]);
-      setConnection(saved);
-      setHostInput(saved.host);
-      setPortInput(String(saved.port));
+      const root = await window.bweeep.defaultInstanceRoot();
+      window.localStorage.removeItem(selectedPackStorageKey);
+      const initial = servers.find((server) => server.default) ?? servers[0];
+      setSelectedId(initial?.id ?? "");
+      if (initial) setConnection(initial.server);
       setInstanceRoot(root);
       setLogs([]);
       setResult(null);
@@ -660,13 +635,9 @@ function App() {
               <article className="panel connectionPanel">
                 <div className="panelHeader">
                   <h3>서버 연결</h3>
-                  <span>게임 실행과 상태 확인에 사용됩니다.</span>
-                </div>
-                <div className="connectionFields">
-                  <label>주소<input value={hostInput} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setHostInput(event.target.value)} /></label>
-                  <label>포트<input type="number" min="1" max="65535" value={portInput} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setPortInput(event.target.value)} /></label>
-                </div>
-                <button onClick={() => void saveConnection()}>서버 주소 저장</button>
+                <span>선택한 프리셋의 서버로 자동 연결합니다.</span>
+              </div>
+              <p className="connectionSummary">{selected ? `${selected.server.host}:${selected.server.port}` : "서버를 선택해 주세요."}</p>
               </article>
 
               <article className="panel accessPanel">
