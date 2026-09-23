@@ -46,7 +46,7 @@ export async function prepareMrpack(source: MrpackSource, instanceDir: string, p
   const indexBytes = entries.get("modrinth.index.json");
   if (!indexBytes) throw new Error("모드팩의 Modrinth 목록을 찾지 못했습니다.");
   const index = parseIndex(indexBytes, expected);
-  const files = index.files.map((entry) => ({
+  const files = index.files.filter((entry) => !isServerList(entry.path)).map((entry) => ({
     path: entry.path,
     size: entry.fileSize,
     sha512: entry.hashes.sha512!,
@@ -81,10 +81,11 @@ async function applyOverrides(instanceDir: string, entries: Map<string, Buffer>,
   for (const [entryPath, bytes] of entries) {
     const relative = entryPath.slice("overrides/".length);
     if (!safeRelativePath(relative)) throw new Error("모드팩 override 경로가 안전하지 않습니다.");
+    if (isServerList(relative)) continue;
     const target = path.resolve(instanceDir, relative);
     next.add(relative);
-    // Never replace a player's launcher and server-list preferences after first install.
-    if ((relative === "options.txt" || relative === "servers.dat") && await exists(target)) continue;
+    // Never replace a player's controls and video preferences after first install.
+    if (relative === "options.txt" && await exists(target)) continue;
     await fsp.mkdir(path.dirname(target), { recursive: true });
     await fsp.writeFile(target, bytes);
     progress({ kind: "info", stage: "모드팩", message: `기본 설정 적용: ${relative}`, filePath: relative });
@@ -123,6 +124,10 @@ async function readArchive(archivePath: string): Promise<Map<string, Buffer>> {
 
 function safeRelativePath(value: string): boolean {
   return Boolean(value) && !path.isAbsolute(value) && !value.split(/[\\/]+/).includes("..");
+}
+
+function isServerList(value: string): boolean {
+  return /^servers\.dat(?:_old)?$/i.test(value);
 }
 
 function sha512(bytes: Buffer): string { return crypto.createHash("sha512").update(bytes).digest("hex"); }
