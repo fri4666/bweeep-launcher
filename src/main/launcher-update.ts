@@ -32,7 +32,7 @@ export function startLauncherUpdates(
     return;
   }
 
-  autoUpdater.autoDownload = false;
+  autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   const testChannel = getLauncherChannel() === "test";
   autoUpdater.channel = testChannel ? "test" : "latest";

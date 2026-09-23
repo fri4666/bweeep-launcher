@@ -5,12 +5,10 @@ import type {
   CreatedInvite,
   GameStatus,
   LauncherUser,
-  LauncherUpdateStatus,
   ServerConnection,
   ServerPreset,
   ServerStatus,
   SyncProgress,
-  SyncResult,
   UserContentFolders,
   UserContentKind
 } from "../shared/types.js";
@@ -55,8 +53,7 @@ function App() {
   const [logs, setLogs] = useState<SyncProgress[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [loginPending, setLoginPending] = useState(false);
-  const [syncError, setSyncError] = useState("");
-  const [result, setResult] = useState<SyncResult | null>(null);
+  const [lastInstanceDir, setLastInstanceDir] = useState("");
   const [user, setUser] = useState<LauncherUser | null>(null);
   const [access, setAccess] = useState<AccessStatus | null>(null);
   const [inviteInput, setInviteInput] = useState("");
@@ -67,12 +64,9 @@ function App() {
   const [notice, setNotice] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [connection, setConnection] = useState<ServerConnection | null>(null);
-  const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [launcherVersion, setLauncherVersion] = useState("");
-  const [updateOpen, setUpdateOpen] = useState(false);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
   const [gameNameInput, setGameNameInput] = useState("");
   const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
@@ -83,11 +77,10 @@ function App() {
       window.bweeep.listServers(),
       window.bweeep.defaultInstanceRoot(),
       window.bweeep.accessStatus(),
-      window.bweeep.checkLauncherUpdate(),
       window.bweeep.gameStatus(),
       window.bweeep.launcherChannel(),
       window.bweeep.launcherVersion()
-    ]).then(([serverList, root, status, updateStatus, initialGameStatus, channel, version]) => {
+    ]).then(([serverList, root, status, initialGameStatus, channel, version]) => {
       if (serverList.status === "fulfilled") {
         setServers(serverList.value);
         const savedId = window.localStorage.getItem(selectedPackStorageKey);
@@ -107,17 +100,12 @@ function App() {
         setAccess({ loggedIn: false, allowed: false, isAdmin: false, unavailable: true, reason: "로그인 상태를 확인하지 못했습니다." });
         setNotice("로그인 상태를 확인하지 못했습니다. 다시 시도해 주세요.");
       }
-      if (updateStatus.status === "fulfilled") {
-        setLauncherUpdate(updateStatus.value);
-        setUpdateOpen(shouldShowUpdate(updateStatus.value));
-      }
       if (initialGameStatus.status === "fulfilled") setGameStatus(initialGameStatus.value);
       if (channel.status === "fulfilled") setLauncherChannel(channel.value);
       if (version.status === "fulfilled") setLauncherVersion(version.value);
     });
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
       setLogs((current) => [...current, event]);
-      setSyncProgress(event);
     });
     const unsubscribeSession = window.bweeep.onAuthSession((nextUser: LauncherUser) => {
       setLoginPending(false);
@@ -125,10 +113,6 @@ function App() {
       void refreshAccessStatus(nextUser);
     });
     const unsubscribeGameStatus = window.bweeep.onGameStatus(setGameStatus);
-    const unsubscribeLauncherUpdate = window.bweeep.onLauncherUpdate((status) => {
-      setLauncherUpdate(status);
-      setUpdateOpen(shouldShowUpdate(status));
-    });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
       setNotice(message);
@@ -146,7 +130,6 @@ function App() {
       unsubscribeProgress();
       unsubscribeSession();
       unsubscribeGameStatus();
-      unsubscribeLauncherUpdate();
       unsubscribeError();
       unsubscribeInvite();
     };
@@ -214,10 +197,6 @@ function App() {
           : ""
         : "검사 대기 중"
     : "연결 정보 확인 중";
-  const progressPercent = syncProgress?.total
-    ? Math.round(((syncProgress.completed ?? 0) / syncProgress.total) * 100)
-    : 0;
-
   async function refreshAccessStatus(fallbackUser: LauncherUser | null = user) {
     setNotice("");
     try {
@@ -395,8 +374,7 @@ function App() {
       if (initial) setConnection(initial.server);
       setInstanceRoot(root);
       setLogs([]);
-      setResult(null);
-      setSyncProgress(null);
+      setLastInstanceDir("");
       setNotice("런처 설정을 기본값으로 되돌렸습니다.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -407,15 +385,13 @@ function App() {
     if (!selected || !instanceRoot.trim() || !canUseLauncher || gameBusy) return;
     setSyncing(true);
     setLogs([]);
-    setSyncError("");
-    setResult(null);
-    setSyncProgress(null);
+    setLastInstanceDir("");
     try {
       const next = await window.bweeep.launchGame({ packId: selected.packId, instanceDir: instanceRoot.trim() });
+      setLastInstanceDir(next.instanceDir);
       setNotice(`Minecraft를 시작했습니다. (PID ${next.pid})`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setSyncError(message);
       setLogs((current) => [...current, { kind: "error", message }]);
       setNotice(message);
     } finally {
@@ -550,31 +526,9 @@ function App() {
               <span>{selected?.environment === "test" ? "지정 테스터 전용" : "서버 멤버 전용"}</span>
             </div>
           </div>
-          <div className="actionDock" aria-live="polite">
-            <section className={`updatePanel ${syncing ? "isSyncing" : result ? "isReady" : syncError ? "isError" : ""}`}>
-                <div className="updatePanelTop">
-                  <span>{syncing ? "업데이트 중" : syncError ? "업데이트 실패" : result ? "준비 완료" : serverStatusMessage}</span>
-                  {syncing && <strong>{progressPercent}%</strong>}
-                </div>
-                <strong className="updateTitle">
-                  {syncing
-                    ? `${syncProgress?.total ?? 0}개 파일 중 ${syncProgress?.completed ?? 0}개 처리`
-                    : syncError ? "업데이트를 완료하지 못했어요"
-                    : result ? "같은 버전으로 준비됐어요" : connection ? "전용 서버 연결 준비" : "연결 정보 확인 중"}
-                </strong>
-                {syncing ? (
-                  <>
-                    <div className="progressTrack"><i style={{ width: `${progressPercent}%` }} /></div>
-                    <p>{syncProgress?.filePath ?? "서버 파일 목록을 확인하는 중"}</p>
-                  </>
-                ) : syncError ? (
-                  <p>{syncError}</p>
-                ) : result ? (
-                  <p>다운로드 {result?.downloaded ?? 0}개 · 기존 파일 {result?.skipped ?? 0}개 유지</p>
-                ) : <p>실행하면 필요한 파일만 자동으로 맞춥니다.</p>}
-              </section>
-            <button className="launchButton" disabled={!canUseLauncher || syncing || gameBusy} onClick={launchSelected}>
-              {gameStatus.state === "running" ? "게임 중" : gameStatus.state === "starting" ? "게임 시작 중" : syncError ? "다시 시도" : "게임 시작"}
+          <div className="actionDock">
+            <button className="launchButton" disabled={!canUseLauncher || syncing || gameBusy} aria-busy={gameBusy} onClick={launchSelected}>
+              {gameStatus.state === "running" ? "게임 중" : "게임 시작"}
             </button>
           </div>
         </section>
@@ -666,7 +620,7 @@ function App() {
               <article className="panel installPanel">
                 <div className="panelHeader">
                   <h3>설치 위치</h3>
-                  {result && <button onClick={() => void window.bweeep.openPath(result.instanceDir)}>폴더 열기</button>}
+                  {lastInstanceDir && <button onClick={() => void window.bweeep.openPath(lastInstanceDir)}>폴더 열기</button>}
                 </div>
                 <input
                   value={instanceRoot}
@@ -678,7 +632,6 @@ function App() {
             <section className="panel logPanel">
               <div className="panelHeader">
                 <h3>설치 로그</h3>
-                {result && <span>{result.downloaded} 다운로드 · {result.skipped} 유지</span>}
               </div>
               <div className="log">
                 {logs.length === 0 ? (
@@ -758,45 +711,12 @@ function App() {
         </div>
       )}
 
-      {updateOpen && launcherUpdate && (
-        <div className="modalBackdrop">
-          <section className="updateModal" aria-label="런처 업데이트" onClick={(event) => event.stopPropagation()}>
-            <p className="eyebrow">Bweeep update</p>
-            <h2>{launcherUpdate.state === "error" ? "업데이트에 실패했어요" : launcherUpdate.state === "available" ? "새 런처 업데이트가 있어요" : "런처를 업데이트하고 있어요"}</h2>
-            {launcherUpdate.update && <p className="updateVersion">v{launcherUpdate.update.version}</p>}
-            {launcherUpdate.state === "downloading" && (
-              <>
-                <p>새 버전을 받는 중입니다. 완료되면 런처가 자동으로 재시작됩니다.</p>
-                <div className="progressTrack"><i style={{ width: `${launcherUpdate.percent ?? 0}%` }} /></div>
-                <small>{launcherUpdate.percent ?? 0}%</small>
-              </>
-            )}
-            {launcherUpdate.state === "available" && <p>여러 버그를 수정하고 안정성을 개선한 새 버전입니다.</p>}
-            {launcherUpdate.state === "ready" && <p>{gameBusy ? "게임이 종료되면 업데이트를 설치합니다." : "다운로드를 마쳤습니다. 잠시 후 자동으로 재시작합니다."}</p>}
-            {launcherUpdate.state === "installing" && <p>업데이트를 설치하고 다시 시작하는 중입니다.</p>}
-            {launcherUpdate.state === "error" && <p>{launcherUpdate.message ?? "자동 업데이트에 실패했습니다."}</p>}
-            {launcherUpdate.update && launcherUpdate.update.notes.length > 0 && <ul>{launcherUpdate.update.notes.map((note) => <li key={note}>{note}</li>)}</ul>}
-            {(launcherUpdate.state === "available" || launcherUpdate.state === "error") && (
-              <div className="updateActions">
-                {launcherUpdate.state === "available" && <button className="launchButton" onClick={() => void window.bweeep.downloadLauncherUpdate()}>업데이트하기</button>}
-                {launcherUpdate.state === "error" && <button className="launchButton" onClick={() => void window.bweeep.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest")}>릴리스 페이지 열기</button>}
-                <button className="closeButton" onClick={() => setUpdateOpen(false)}>닫기</button>
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-
     </main>
   );
 }
 
 function normalizeInviteCode(value: string): string {
   return value.trim().toUpperCase();
-}
-
-function shouldShowUpdate(status: LauncherUpdateStatus): boolean {
-  return ["available", "downloading", "ready", "installing"].includes(status.state);
 }
 
 function formatRelativeTime(timestamp: number, now = Date.now()): string {
