@@ -3,12 +3,13 @@ import type { ModpackManifest } from "../shared/types.js";
 import type { BundledClientMod } from "./companion-mod.js";
 
 /**
- * Launcher-owned features are version and loader specific.  Keep this registry
- * separate from a modpack manifest so a remote manifest can never claim that a
- * missing bridge provides connection protection.
+ * Launcher-owned features are version and loader specific. Supported clients
+ * are protected by default; a manifest can explicitly opt out, but cannot
+ * claim that an unsupported client has a connection lock.
  */
 export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManifest): BundledClientMod[] {
-  if (!manifest.clientFeatures?.connectionLock) return [];
+  if (manifest.clientFeatures?.connectionLock === false) return [];
+  if (typeof manifest.clientFeatures?.connectionLock === "object") return [];
 
   if (manifest.loader.kind === "neoforge" && manifest.minecraftVersion === "1.21.1") {
     return [
@@ -23,13 +24,22 @@ export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManif
     ];
   }
 
+  if (manifest.loader.kind === "fabric" && manifest.minecraftVersion === "1.21.4" && manifest.loader.version === "0.18.1") {
+    return [
+      bundled(resourcesRoot, "bweeep-connection-lock-1214-0.1.0.jar", "bweeep-client.jar", "bf0ffad350cc2f6df055d899a73cf956d943be97a911659543c01f304ff07876")
+    ];
+  }
+
   if (manifest.loader.kind === "fabric" && manifest.minecraftVersion === "26.3" && manifest.loader.version === "0.19.5") {
     return [
       bundled(resourcesRoot, "bweeep-fabric-lock-26.3-0.1.0.jar", "bweeep-client.jar", "5fe104672975a1f42d7640fd9508235c6e83c779585b4bd84037df9179354f5a")
     ];
   }
 
-  throw new Error(`${manifest.minecraftVersion} ${manifest.loader.kind}용 붸에엡 연결 보호 모드가 아직 검증되지 않았습니다. 안전을 위해 이 서버의 연결 잠금 기능은 실행하지 않습니다.`);
+  if (manifest.clientFeatures?.connectionLock === true) {
+    throw new Error(`${manifest.minecraftVersion} ${manifest.loader.kind}용 붸에엡 연결 보호 모드가 아직 검증되지 않았습니다. 안전을 위해 이 서버의 연결 잠금 기능은 실행하지 않습니다.`);
+  }
+  return [];
 }
 
 function bundled(resourcesRoot: string, sourceName: string, targetName: string, sha256: string): BundledClientMod {

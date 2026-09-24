@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getServerPresets, toServerPreset } from "./catalog.js";
+import { toServerPreset } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
@@ -10,7 +10,6 @@ import { installAndLaunch } from "./minecraft-runtime.js";
 import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
 import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
-import { readServerConnection, resetServerConnection, writeServerConnection } from "./server-config.js";
 import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, userContentPaths } from "./user-content.js";
@@ -38,6 +37,10 @@ function setGameStatus(status: GameStatus): void {
     window.webContents.send("game:status", status);
   }
   if (status.state === "idle") installPendingLauncherUpdate();
+}
+
+function gameIsStarting(): boolean {
+  return gameStatus.state === "starting";
 }
 
 function publishLauncherUpdate(status: LauncherUpdateStatus): void {
@@ -227,18 +230,12 @@ async function createWindow(): Promise<BrowserWindow> {
 
 app.whenReady().then(async () => {
   await session.defaultSession.setProxy({ mode: "system" });
-  const launcherChannel = getLauncherChannel();
-  const serverPresets = await getServerPresets(launcherChannel);
-  const defaultServer = serverPresets[0]?.server;
-  if (!defaultServer) throw new Error("사용 가능한 서버 manifest가 없습니다.");
   ipcMain.handle("catalog:list", async () => {
-    const fallback = await getServerPresets(launcherChannel);
-    try {
-      return (await auth.listManifests(sessionUser)).map(toServerPreset);
-    } catch {
-      // The packaged catalog is only a recovery path when the control plane is unavailable.
-      return fallback;
-    }
+    if (!sessionUser) return [];
+    return (await auth.listManifests(sessionUser)).map((manifest) => {
+      assertManifest(manifest);
+      return toServerPreset(manifest);
+    });
   });
   ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
   ipcMain.handle("paths:defaultInstanceRoot", () =>
@@ -330,9 +327,6 @@ app.whenReady().then(async () => {
     void processPendingDeepLinks();
     return firstInvite;
   });
-  ipcMain.handle("server:connection", () => readServerConnection(defaultServer));
-  ipcMain.handle("server:saveConnection", (_event, connection: unknown) => writeServerConnection(connection, defaultServer));
-  ipcMain.handle("server:resetConnection", () => resetServerConnection(defaultServer));
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
   ipcMain.handle("launcher:downloadUpdate", () => downloadLauncherUpdate());
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
@@ -343,9 +337,10 @@ app.whenReady().then(async () => {
       throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
     }
     const runId = ++gameRunId;
-    setGameStatus({ state: "starting" });
+    const startedAt = Date.now();
+    setGameStatus({ state: "starting", startedAt });
     const progress = (payload: SyncProgress) => {
-      event.sender.send("modpack:progress", payload);
+      if (!event.sender.isDestroyed()) event.sender.send("modpack:progress", payload);
       void writeGameLog("launch.progress", {
         kind: payload.kind,
         stage: payload.stage ?? null,
@@ -353,20 +348,23 @@ app.whenReady().then(async () => {
         elapsedMs: payload.elapsedMs ?? null,
         completed: payload.completed ?? null,
         total: payload.total ?? null,
+        unit: payload.unit ?? null,
         filePath: payload.filePath ?? null
       });
     };
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
+      progress({ kind: "info", stage: "서버 목록", message: "선택한 서버 정보 요청" });
       const manifest = await auth.getManifest(sessionUser, request.packId);
       assertManifest(manifest);
+      if (manifest.id !== request.packId) throw new Error("선택한 서버와 받은 모드팩 정보가 일치하지 않습니다.");
       const configuredManifest = manifest;
       const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), configuredManifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
       const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, configuredManifest);
-      progress({ kind: "info", message: `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리` });
+      progress({ kind: "info", stage: "개인 파일", message: `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리` });
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
@@ -381,15 +379,23 @@ app.whenReady().then(async () => {
             await writeGameLog("launch.authorization.created", { provider: "discord" });
             return authorization;
           };
-      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, () => {
-        if (gameRunId === runId) setGameStatus({ state: "idle" });
+      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
+        if (gameRunId === runId) setGameStatus({ state: "idle", exitMessage: exit.message, exitError: exit.abnormal });
         void captureSharedOptions(request.instanceDir, synced.instanceDir);
-        void writeGameLog("launch.minecraft.exited", { packId: request.packId });
+        void writeGameLog("launch.minecraft.exited", {
+          packId: request.packId,
+          code: exit.code,
+          signal: exit.signal,
+          abnormal: exit.abnormal,
+          crashReportLocation: exit.crashReportLocation
+        });
       });
-      if (gameRunId === runId) {
-        setGameStatus({ state: "running", pid: launched.pid });
+      if (gameRunId === runId && gameIsStarting()) {
+        setGameStatus({ state: "running", pid: launched.pid, startedAt });
+        await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
+      } else {
+        await writeGameLog("launch.exited-before-return", { packId: request.packId, version: launched.version });
       }
-      await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
       return { ...launched, instanceDir: synced.instanceDir };
     } catch (error) {
       if (gameRunId === runId) setGameStatus({ state: "idle" });

@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "id": "society-sunlit-valley",
+  "name": "Society: Sunlit Valley",
+  "version": "4.1.5",
+  "minecraftVersion": "1.20.1",
+  "java": {
+    "majorVersion": 17,
+    "component": "java-runtime-gamma"
+  },
+  "loader": {
+    "kind": "forge",
+    "version": "47.4.0"
+  },
+  "clientFeatures": {
+    "connectionLock": {
+      "protocolVersion": 1,
+      "path": "mods/bweeep-connection-lock.jar",
+      "sha256": "809872ab73c1281d573ef10f57cb53cfb633f8093003dbf0784de9ae723d4d74",
+      "minecraftVersion": "1.20.1",
+      "loaderKind": "forge"
+    }
+  },
+  "server": {
+    "host": "server.fri4666.com",
+    "port": 25565
+  },
+  "mrpack": {
+    "url": "https://cdn.modrinth.com/data/FpghCeHO/versions/NGTq0O9V/Society-Sunlit-Valley-4.1.5.mrpack",
+    "size": 76206828,
+    "sha512": "52cc258b0442ec98ac993cf1257edae86569393caaa8ed140240351980e31334c445f21cda8118235fd3d0c8fe153c11275b58b1ab6468745895e2db34ab2171"
+  },
+  "files": [
+    {
+      "path": "mods/bweeep-connection-lock.jar",
+      "size": 8127,
+      "sha256": "809872ab73c1281d573ef10f57cb53cfb633f8093003dbf0784de9ae723d4d74",
+      "url": "storage://bweeep-packs/society-sunlit-valley/4.1.5/bweeep-connection-lock.jar"
+    },
+    {
+      "path": "mods/bweeep-server-auth.jar",
+      "size": 11481,
+      "sha256": "81e78ba08d3eaa07069322da4c2991b94e3fbafe1a142c0661a786ee72fb403e",
+      "url": "storage://bweeep-packs/society-sunlit-valley/4.1.5/bweeep-server-auth.jar"
+    },
+    {
+      "path": "mods/BalloonBox1.20.1(Forge)vs.1.0.3.jar",
+      "size": 95711,
+      "sha256": "c8e818c5698dae385b88b4a4db63a6a4ef5e10bae5900fcb0d9bc00a14eea8e9",
+      "url": "https://edge.forgecdn.net/files/4715/994/BalloonBox1.20.1(Forge)vs.1.0.3.jar"
+    },
+    {
+      "path": "mods/connectivity-1.20.1-7.2.jar",
+      "size": 112268,
+      "sha256": "4b7278a0c5f9a13371ad08d235a91bc94c0783ec62f0be0103ba91a01106188a",
+      "url": "https://edge.forgecdn.net/files/7032/387/connectivity-1.20.1-7.2.jar"
+    },
+    {
+      "path": "mods/cosmeticarmorreworked-1.20.1-v1a.jar",
+      "size": 88752,
+      "sha256": "c790e8671625b05ec0aa19272e0ea74ea95619f953e3c6f39a6736af0d386804",
+      "url": "https://edge.forgecdn.net/files/4600/191/cosmeticarmorreworked-1.20.1-v1a.jar"
+    },
+    {
+      "path": "mods/cupboard-1.20.1-2.7.jar",
+      "size": 25983,
+      "sha256": "63a1b6e8e9cffd53f283fae04f64b8d63dcaaa99fe0e383bb664f23ec87d395f",
+      "url": "https://edge.forgecdn.net/files/5470/32/cupboard-1.20.1-2.7.jar"
+    },
+    {
+      "path": "mods/emberstextapi-1.4.1.jar",
+      "size": 124384,
+      "sha256": "2cde92dae642359f358a852a7ddeb49e26e276d1ba1056dcb6996641fd9dcd28",
+      "url": "https://edge.forgecdn.net/files/7503/929/emberstextapi-1.4.1.jar"
+    },
+    {
+      "path": "mods/farmlife-1.20.1-1.1.0.jar",
+      "size": 960006,
+      "sha256": "862b904315736ce5439a30c3d61cd846a92f846b60102f46304accbce7cbb85b",
+      "url": "https://edge.forgecdn.net/files/5456/879/farmlife-1.20.1-1.1.0.jar"
+    },
+    {
+      "path": "mods/FastLeafDecay-32.jar",
+      "size": 9835,
+      "sha256": "ce48db06bfb5830c147969793771a8f8b5a5774b182543b906bc439efd4e9469",
+      "url": "https://edge.forgecdn.net/files/5375/681/FastLeafDecay-32.jar"
+    },
+    {
+      "path": "mods/ftb-chunks-forge-2001.3.6.jar",
+      "size": 1158842,
+      "sha256": "caaa40aea64bba6f113fbddcabf77962b4b4e03bf57cbabace07ab05d28b38f9",
+      "url": "https://edge.forgecdn.net/files/6431/735/ftb-chunks-forge-2001.3.6.jar"
+    },
+    {
+      "path": "mods/ftb-library-forge-2001.2.12.jar",
+      "size": 780523,
+      "sha256": "f09335944fff8ca3ef37a40e0b125ffb6707759ede258c73f9ce9bac61bfbf96",
+      "url": "https://edge.forgecdn.net/files/7296/748/ftb-library-forge-2001.2.12.jar"
+    },
+    {
+      "path": "mods/ftb-quests-forge-2001.4.17.jar",
+      "size": 1227820,
+      "sha256": "0c9e8a8a0cbeb2f77f9f50a412758e66fb01d638c8b43feef7262d8c2cedd60d",
+      "url": "https://edge.forgecdn.net/files/7260/736/ftb-quests-forge-2001.4.17.jar"
+    },
+    {
+      "path": "mods/ftb-teams-forge-2001.3.2.jar",
+      "size": 252579,
+      "sha256": "b1cb4d82ea9f137a87e12a7aaf3329619294b56f7d70337dfd557a76e10b6e07",
+      "url": "https://edge.forgecdn.net/files/7499/810/ftb-teams-forge-2001.3.2.jar"
+    },
+    {
+      "path": "mods/ftb-xmod-compat-forge-2.1.3.jar",
+      "size": 129725,
+      "sha256": "16a8eb9de88d5c33d29cb076cc39dfb337b2c54348e1ef1efe9dd60cf85e5f72",
+      "url": "https://edge.forgecdn.net/files/6402/486/ftb-xmod-compat-forge-2.1.3.jar"
+    },
+    {
+      "path": "mods/ftbbackups2-forge-1.20-1.0.23.jar",
+      "size": 1954591,
+      "sha256": "19cea280a56e533b9669d4f866aef38ebe54f6d8627efe6798016e17b6b4afda",
+      "url": "https://edge.forgecdn.net/files/4834/403/ftbbackups2-forge-1.20-1.0.23.jar"
+    },
+    {
+      "path": "mods/irons_rpg_tweaks-1.20-1.4.0.jar",
+      "size": 290546,
+      "sha256": "a1b8f4ee7f01e932269ce1829777a28a69f4313cd617b263379dc1a0ede18694",
+      "url": "https://edge.forgecdn.net/files/6094/337/irons_rpg_tweaks-1.20-1.4.0.jar"
+    },
+    {
+      "path": "mods/item-filters-forge-2001.1.0-build.59.jar",
+      "size": 110191,
+      "sha256": "99417b1342ba51ccb9611b17ab01fc1299971aa34e8f9d2a8b3c63df5713eb49",
+      "url": "https://edge.forgecdn.net/files/4838/266/item-filters-forge-2001.1.0-build.59.jar"
+    },
+    {
+      "path": "mods/legendarycreatures-1.20.1-1.1.1.3.jar",
+      "size": 3704675,
+      "sha256": "f65772a0f92a3f913b9f502f0f0fc455499657f9481cfac4320fc1a24517fc29",
+      "url": "https://edge.forgecdn.net/files/6826/898/legendarycreatures-1.20.1-1.1.1.3.jar"
+    },
+    {
+      "path": "mods/moreminecarts-1.8.3.jar",
+      "size": 732356,
+      "sha256": "d338c923a5bb7c5b7333856e486c333b42e1fd76dfe57c8430cf0e8e2aedcf12",
+      "url": "https://edge.forgecdn.net/files/5134/64/moreminecarts-1.8.3.jar"
+    },
+    {
+      "path": "mods/questsadditions-1.4.7.jar",
+      "size": 112015,
+      "sha256": "c0914e53b3545972f1b81511a00363d724da209af290a0fda301836bc5b3f2ba",
+      "url": "https://edge.forgecdn.net/files/6004/490/questsadditions-1.4.7.jar"
+    },
+    {
+      "path": "mods/recipeessentials-1.20.1-4.0.jar",
+      "size": 50739,
+      "sha256": "eb0ff236212f83cfb04b39c72678282a1b964a5cfcb0cecb314e953f03347f14",
+      "url": "https://edge.forgecdn.net/files/6165/709/recipeessentials-1.20.1-4.0.jar"
+    },
+    {
+      "path": "mods/serializer_debug-1.0.1.jar",
+      "size": 400461,
+      "sha256": "fe77df10d803e08c95b9d47608444982629d2a426d1f74ac41ec569eb8fe96a8",
+      "url": "https://edge.forgecdn.net/files/6028/801/serializer_debug-1.0.1.jar"
+    },
+    {
+      "path": "mods/SewingKit-1.20.1-1.8.1.jar",
+      "size": 210967,
+      "sha256": "2c1190712b37c5ac74e5263c2a753746d6f3be80520080a6e95784c1f279289b",
+      "url": "https://edge.forgecdn.net/files/5188/41/SewingKit-1.20.1-1.8.1.jar"
+    },
+    {
+      "path": "mods/structureessentials-1.20.1-4.8.jar",
+      "size": 63134,
+      "sha256": "fdc7cdf075d4d32bbc96760be0695aee88d0e635eeab5da3e2e7777cb08135c3",
+      "url": "https://edge.forgecdn.net/files/6732/854/structureessentials-1.20.1-4.8.jar"
+    },
+    {
+      "path": "mods/ToolBelt-1.20.1-1.20.02.jar",
+      "size": 253567,
+      "sha256": "717cad5de08223433f9f5ae467cf731288e69564eb7c4c19bcc2b49bc9191c3c",
+      "url": "https://edge.forgecdn.net/files/5929/61/ToolBelt-1.20.1-1.20.02.jar"
+    },
+    {
+      "path": "mods/pamhc2trees-1.20-1.0.2.jar",
+      "size": 777303,
+      "sha256": "69e0c722c786b78aea299e7faf27991e6533a671a66f281fb5ced279eb31b0dd",
+      "url": "https://edge.forgecdn.net/files/4625/518/pamhc2trees-1.20-1.0.2.jar"
+    }
+  ],
+  "audience": "members",
+  "default": true,
+  "serverLoader": {
+    "kind": "forge",
+    "version": "47.4.0"
+  }
+}

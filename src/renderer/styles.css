@@ -344,34 +344,6 @@ h3 {
   -webkit-app-region: no-drag;
 }
 
-.testLauncherInstallButton {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  padding: 0;
-  color: #d6b277;
-  background: #202125;
-  border: 0;
-  border-radius: 10px;
-}
-
-.testLauncherInstallButton:hover {
-  color: #17130d;
-  background: #d9b072;
-  transform: translateY(-1px);
-}
-
-.testLauncherInstallButton svg {
-  width: 18px;
-  height: 18px;
-  margin: auto;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
-}
-
 .windowControls {
   display: flex;
   align-self: stretch;
@@ -529,6 +501,59 @@ h3 {
   display: grid;
   gap: 10px;
   width: min(310px, calc(100% - 84px));
+}
+
+.launchProgress {
+  display: grid;
+  gap: 7px;
+  padding: 12px 14px;
+  background: rgba(17, 18, 20, 0.94);
+  border-radius: var(--control-radius);
+  color: #f0ece6;
+  font-size: 12px;
+}
+
+.launchProgressHeading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.launchProgressBar {
+  width: 100%;
+  height: 6px;
+  accent-color: #e4af72;
+}
+
+.launchProgress small {
+  color: #b7b1aa;
+  overflow-wrap: anywhere;
+}
+
+.launchProgressHistory {
+  display: grid;
+  gap: 3px;
+  margin: 3px 0 0;
+  padding-left: 17px;
+  color: #938d86;
+  font-size: 11px;
+  max-height: 55px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.launchNotice {
+  margin: 0;
+  padding: 10px 12px;
+  color: #e5c49d;
+  background: rgba(17, 18, 20, 0.9);
+  border-radius: var(--control-radius);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.launchNotice.isError {
+  color: #f1aaa3;
 }
 
 .entryScreen {
@@ -708,74 +733,6 @@ h3 {
   margin-top: 12px;
   color: #aaa69d;
   background: transparent;
-}
-
-.updatePanel {
-  padding: 14px 16px;
-  color: #c5c1b9;
-  background: rgba(19, 20, 23, 0.72);
-  border-radius: var(--control-radius);
-  backdrop-filter: blur(12px);
-}
-
-.updatePanelTop {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 7px;
-  color: #9f9b91;
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.updatePanelTop strong {
-  color: #e6c28b;
-}
-
-.updateTitle {
-  display: block;
-  color: #eeebe4;
-  font-size: 15px;
-}
-
-.updatePanel p {
-  margin-top: 7px;
-  color: #aaa69d;
-  font-size: 12px;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.progressTrack {
-  height: 7px;
-  margin-top: 11px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 999px;
-}
-
-.progressTrack i {
-  display: block;
-  height: 100%;
-  min-width: 8px;
-  background: #d9b072;
-  border-radius: inherit;
-  transition: width 180ms ease;
-}
-
-.updatePanel.isReady .updateTitle {
-  color: #e6c28b;
-}
-
-.updatePanel.isError .updateTitle {
-  color: #f0a49b;
-}
-
-.updatePanel.isError p {
-  color: #f0b7ae;
-  white-space: normal;
 }
 
 .launchButton {
@@ -992,8 +949,7 @@ input:focus {
 
 @media (prefers-reduced-motion: reduce) {
   button,
-  .quickFact,
-  .progressTrack i {
+  .quickFact {
     transition-duration: 0.01ms;
   }
 

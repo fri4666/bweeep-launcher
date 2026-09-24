@@ -5,12 +5,10 @@ import type {
   CreatedInvite,
   GameStatus,
   LauncherUser,
-  LauncherUpdateStatus,
   ServerConnection,
   ServerPreset,
   ServerStatus,
   SyncProgress,
-  SyncResult,
   UserContentFolders,
   UserContentKind
 } from "../shared/types.js";
@@ -53,10 +51,11 @@ function App() {
   const [serverCheckedAt, setServerCheckedAt] = useState<number | null>(null);
   const [instanceRoot, setInstanceRoot] = useState("");
   const [logs, setLogs] = useState<SyncProgress[]>([]);
+  const [lastProgressAt, setLastProgressAt] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [launchError, setLaunchError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
-  const [syncError, setSyncError] = useState("");
-  const [result, setResult] = useState<SyncResult | null>(null);
+  const [lastInstanceDir, setLastInstanceDir] = useState("");
   const [user, setUser] = useState<LauncherUser | null>(null);
   const [access, setAccess] = useState<AccessStatus | null>(null);
   const [inviteInput, setInviteInput] = useState("");
@@ -67,35 +66,41 @@ function App() {
   const [notice, setNotice] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [connection, setConnection] = useState<ServerConnection | null>(null);
-  const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [launcherVersion, setLauncherVersion] = useState("");
-  const [updateOpen, setUpdateOpen] = useState(false);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
+  const [clockNow, setClockNow] = useState(Date.now());
   const [gameNameInput, setGameNameInput] = useState("");
   const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
   const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
+
+  function applyServerList(serverList: ServerPreset[]) {
+    setServers(serverList);
+    const savedId = window.localStorage.getItem(selectedPackStorageKey);
+    const initial = serverList.find((server) => server.id === savedId)
+      ?? serverList.find((server) => server.default)
+      ?? serverList[0];
+    setSelectedId(initial?.id ?? "");
+    setConnection(initial?.server ?? null);
+    setServerStatus(null);
+    setServerCheckedAt(null);
+  }
 
   useEffect(() => {
     void Promise.allSettled([
       window.bweeep.listServers(),
       window.bweeep.defaultInstanceRoot(),
       window.bweeep.accessStatus(),
-      window.bweeep.checkLauncherUpdate(),
       window.bweeep.gameStatus(),
       window.bweeep.launcherChannel(),
       window.bweeep.launcherVersion()
-    ]).then(([serverList, root, status, updateStatus, initialGameStatus, channel, version]) => {
+    ]).then(([serverList, root, status, initialGameStatus, channel, version]) => {
       if (serverList.status === "fulfilled") {
-        setServers(serverList.value);
-        const savedId = window.localStorage.getItem(selectedPackStorageKey);
-        const initial = serverList.value.find((server) => server.id === savedId)
-          ?? serverList.value.find((server) => server.default)
-          ?? serverList.value[0];
-        setSelectedId(initial?.id ?? "");
-        if (initial) setConnection(initial.server);
+        applyServerList(serverList.value);
+      } else {
+        applyServerList([]);
+        setNotice(serverList.reason instanceof Error ? serverList.reason.message : "서버 목록을 불러오지 못했습니다.");
       }
       if (root.status === "fulfilled") setInstanceRoot(root.value);
       if (status.status === "fulfilled") {
@@ -107,27 +112,27 @@ function App() {
         setAccess({ loggedIn: false, allowed: false, isAdmin: false, unavailable: true, reason: "로그인 상태를 확인하지 못했습니다." });
         setNotice("로그인 상태를 확인하지 못했습니다. 다시 시도해 주세요.");
       }
-      if (updateStatus.status === "fulfilled") {
-        setLauncherUpdate(updateStatus.value);
-        setUpdateOpen(shouldShowUpdate(updateStatus.value));
-      }
       if (initialGameStatus.status === "fulfilled") setGameStatus(initialGameStatus.value);
       if (channel.status === "fulfilled") setLauncherChannel(channel.value);
       if (version.status === "fulfilled") setLauncherVersion(version.value);
     });
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
-      setLogs((current) => [...current, event]);
-      setSyncProgress(event);
+      setLogs((current) => [...current.slice(-99), event]);
+      setLastProgressAt(Date.now());
+      if (event.kind === "error") setLaunchError(event.message);
     });
     const unsubscribeSession = window.bweeep.onAuthSession((nextUser: LauncherUser) => {
       setLoginPending(false);
       setUser(nextUser);
       void refreshAccessStatus(nextUser);
+      void window.bweeep.listServers().then(applyServerList).catch((error) => {
+        applyServerList([]);
+        setNotice(error instanceof Error ? error.message : "서버 목록을 불러오지 못했습니다.");
+      });
     });
-    const unsubscribeGameStatus = window.bweeep.onGameStatus(setGameStatus);
-    const unsubscribeLauncherUpdate = window.bweeep.onLauncherUpdate((status) => {
-      setLauncherUpdate(status);
-      setUpdateOpen(shouldShowUpdate(status));
+    const unsubscribeGameStatus = window.bweeep.onGameStatus((status) => {
+      setGameStatus(status);
+      if (status.exitMessage) setNotice(status.exitMessage);
     });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
@@ -146,7 +151,6 @@ function App() {
       unsubscribeProgress();
       unsubscribeSession();
       unsubscribeGameStatus();
-      unsubscribeLauncherUpdate();
       unsubscribeError();
       unsubscribeInvite();
     };
@@ -159,6 +163,13 @@ function App() {
     });
   }, [instanceRoot]);
 
+  useEffect(() => {
+    if (gameStatus.state === "idle") return;
+    setClockNow(Date.now());
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [gameStatus.state]);
+
   const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
     setServerChecking(true);
     try {
@@ -168,7 +179,7 @@ function App() {
         online: false,
         host: nextConnection.host,
         port: nextConnection.port,
-        message: "서버 상태를 확인할 수 없음"
+        message: "연결 끊김"
       });
     } finally {
       setServerCheckedAt(Date.now());
@@ -193,6 +204,13 @@ function App() {
     return () => window.clearInterval(interval);
   }, [connection, refreshServerStatus]);
 
+  useEffect(() => {
+    if (!settingsOpen || !user) return;
+    void window.bweeep.listServers().then(applyServerList).catch((error) => {
+      setNotice(error instanceof Error ? error.message : "서버 목록을 새로고침하지 못했습니다.");
+    });
+  }, [settingsOpen]);
+
   const availableServers = useMemo(
     () => servers.filter((server) => server.environment !== "test" || access?.testAllowed === true),
     [servers, access?.testAllowed]
@@ -204,6 +222,19 @@ function App() {
 
   const canUseLauncher = Boolean(access?.allowed);
   const gameBusy = gameStatus.state !== "idle";
+  const currentProgress = logs[logs.length - 1];
+  const displayProgress = gameStatus.state === "running" && (!currentProgress || currentProgress.stage === "모드팩 파일")
+    ? { kind: "info" as const, stage: "게임 프로세스", message: "Minecraft 프로세스 실행 중 · 서버 참가 확인 전" }
+    : currentProgress;
+  const showLaunchProgress = syncing || gameBusy;
+  const progressPercent = typeof displayProgress?.completed === "number"
+    && typeof displayProgress.total === "number"
+    && displayProgress.total > 0
+      ? Math.round(Math.max(0, Math.min(1, displayProgress.completed / displayProgress.total)) * 100)
+      : null;
+  const elapsedSeconds = gameStatus.startedAt ? Math.max(0, Math.floor((clockNow - gameStatus.startedAt) / 1_000)) : null;
+  const quietSeconds = lastProgressAt ? Math.max(0, Math.floor((clockNow - lastProgressAt) / 1_000)) : 0;
+  const recentProgress = logs.filter((event) => event.stage && event.kind !== "skip").slice(-3);
   const serverStatusMessage = serverChecking ? "서버 연결 확인 중" : serverStatus?.message ?? "서버 확인 중";
   const serverStatusDetail = connection
     ? serverChecking
@@ -214,10 +245,6 @@ function App() {
           : ""
         : "검사 대기 중"
     : "연결 정보 확인 중";
-  const progressPercent = syncProgress?.total
-    ? Math.round(((syncProgress.completed ?? 0) / syncProgress.total) * 100)
-    : 0;
-
   async function refreshAccessStatus(fallbackUser: LauncherUser | null = user) {
     setNotice("");
     try {
@@ -395,8 +422,7 @@ function App() {
       if (initial) setConnection(initial.server);
       setInstanceRoot(root);
       setLogs([]);
-      setResult(null);
-      setSyncProgress(null);
+      setLastInstanceDir("");
       setNotice("런처 설정을 기본값으로 되돌렸습니다.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -407,16 +433,24 @@ function App() {
     if (!selected || !instanceRoot.trim() || !canUseLauncher || gameBusy) return;
     setSyncing(true);
     setLogs([]);
-    setSyncError("");
-    setResult(null);
-    setSyncProgress(null);
+    setLastProgressAt(null);
+    setNotice("");
+    setLaunchError("");
+    setLastInstanceDir("");
     try {
       const next = await window.bweeep.launchGame({ packId: selected.packId, instanceDir: instanceRoot.trim() });
-      setNotice(`Minecraft를 시작했습니다. (PID ${next.pid})`);
+      setLastInstanceDir(next.instanceDir);
+      const currentStatus = await window.bweeep.gameStatus();
+      setGameStatus(currentStatus);
+      if (currentStatus.state === "idle") {
+        const message = currentStatus.exitMessage ?? "Minecraft가 실행 직후 종료되었습니다. 게임 폴더의 logs/latest.log를 확인하세요.";
+        setLaunchError(message);
+        setNotice(message);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setSyncError(message);
       setLogs((current) => [...current, { kind: "error", message }]);
+      setLaunchError(message);
       setNotice(message);
     } finally {
       setSyncing(false);
@@ -518,7 +552,7 @@ function App() {
         <div className="supportPanel">
           <div>
             <span className="accessStamp">서버 멤버 전용</span>
-            <strong>함께 떠나는 생존 서버</strong>
+            <strong>함께하는 모드팩 서버</strong>
             <p>초대받은 친구들과 같은 Minecraft 버전으로 바로 시작할 수 있어요.</p>
           </div>
         </div>
@@ -531,19 +565,6 @@ function App() {
             <div><strong>{serverStatusMessage}</strong><small>{serverStatusDetail}</small></div>
           </div>
           <div className="topbarActions">
-            {launcherChannel === "production" && access.testAllowed && (
-              <button
-                type="button"
-                className="testLauncherInstallButton"
-                aria-label="테스트 런처 열기"
-                title="테스트 런처 열기"
-                onClick={() => void window.bweeep.openTestLauncher()}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 3v10m0 0 4-4m-4 4-4-4M5 17v3h14v-3" />
-                </svg>
-              </button>
-            )}
             <button className="profileBox" onClick={() => setProfileOpen(true)}>
               <ProfileAvatar user={user} />
               <div><strong>{user.globalName ?? user.username}</strong><small>Discord</small></div>
@@ -554,9 +575,10 @@ function App() {
         <section className="hero">
           <div className="heroBackdrop" />
           <div className="heroCopy">
-            <p className="eyebrow">순정 생존 서버</p>
+            <p className="eyebrow">전용 서버</p>
             <h2>{selected?.name ?? "서버 없음"}</h2>
             <p>서버에 맞는 Minecraft 버전을 준비하고, 바로 같은 월드로 접속합니다.</p>
+            {!selected && <p className="notice">{notice || "서버 목록을 불러오지 못했습니다."}</p>}
             <div className="chips">
               <span>Minecraft {selected?.minecraftVersion ?? "-"}</span>
               <span>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected?.loader.kind ?? "-"}</span>
@@ -564,38 +586,39 @@ function App() {
             </div>
           </div>
           <div className="actionDock" aria-live="polite">
-            <section className={`updatePanel ${syncing ? "isSyncing" : result ? "isReady" : syncError ? "isError" : ""}`}>
-                <div className="updatePanelTop">
-                  <span>{syncing ? "업데이트 중" : syncError ? "업데이트 실패" : result ? "준비 완료" : serverStatusMessage}</span>
-                  {syncing && <strong>{progressPercent}%</strong>}
+            {showLaunchProgress && (
+              <div className="launchProgress" role="status">
+                <div className="launchProgressHeading">
+                  <strong>{displayProgress?.stage ?? "게임 시작 준비"}</strong>
+                  <span>{progressPercent !== null ? `${progressPercent}%` : elapsedSeconds !== null ? `${Math.floor(elapsedSeconds / 60)}분 ${String(elapsedSeconds % 60).padStart(2, "0")}초` : "진행 중"}</span>
                 </div>
-                <strong className="updateTitle">
-                  {syncing
-                    ? `${syncProgress?.total ?? 0}개 파일 중 ${syncProgress?.completed ?? 0}개 처리`
-                    : syncError ? "업데이트를 완료하지 못했어요"
-                    : result ? "같은 버전으로 준비됐어요" : connection ? "전용 서버 연결 준비" : "연결 정보 확인 중"}
-                </strong>
-                {syncing ? (
-                  <>
-                    <div className="progressTrack"><i style={{ width: `${progressPercent}%` }} /></div>
-                    <p>{syncProgress?.filePath ?? "서버 파일 목록을 확인하는 중"}</p>
-                  </>
-                ) : syncError ? (
-                  <p>{syncError}</p>
-                ) : result ? (
-                  <p>다운로드 {result?.downloaded ?? 0}개 · 기존 파일 {result?.skipped ?? 0}개 유지</p>
-                ) : <p>실행하면 필요한 파일만 자동으로 맞춥니다.</p>}
-              </section>
-            <button className="launchButton" disabled={!canUseLauncher || syncing || gameBusy} onClick={launchSelected}>
-              {gameStatus.state === "running" ? "게임 중" : gameStatus.state === "starting" ? "게임 시작 중" : syncError ? "다시 시도" : "게임 시작"}
+                <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />
+                <small>{displayProgress?.message ?? "서버 정보를 확인하는 중"}</small>
+                {quietSeconds >= 30 && <small>마지막 진행 신호 {quietSeconds}초 전 · 새 단계 신호를 기다리는 중</small>}
+                {progressPercent !== null && displayProgress?.unit === "bytes" && (
+                  <small>{(displayProgress.completed! / 1048576).toFixed(1)} / {(displayProgress.total! / 1048576).toFixed(1)} MB 수신</small>
+                )}
+                {progressPercent !== null && (displayProgress?.unit === "files" || displayProgress?.stage === "모드팩 파일") && (
+                  <small>{displayProgress.completed}/{displayProgress.total}개 파일 처리</small>
+                )}
+                {recentProgress.length > 1 && (
+                  <ol className="launchProgressHistory">
+                    {recentProgress.map((event, index) => <li key={`${index}-${event.message}`}>{event.stage}: {event.message}</li>)}
+                  </ol>
+                )}
+              </div>
+            )}
+            <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={gameBusy} onClick={launchSelected}>
+              {gameStatus.state === "running" ? "게임 중" : showLaunchProgress ? "게임 시작 중" : "게임 시작"}
             </button>
+            {(launchError || gameStatus.exitMessage) && <p className={`launchNotice${gameStatus.exitError || launchError ? " isError" : ""}`}>{launchError || gameStatus.exitMessage}</p>}
           </div>
         </section>
         <section className="serverSummary" aria-label="서버 정보">
           <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatusMessage}</strong><small>{serverCheckedAt && !serverChecking && serverStatus?.online ? `${serverStatus.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)}` : serverStatus?.online ? "실시간 확인" : ""}</small></article>
           <article className="quickFact"><span className="factIcon">◆</span><span>게임</span><strong>{selected?.name ?? "없음"}</strong></article>
           <article className="quickFact"><span className="factIcon">▰</span><span>Minecraft</span><strong>{selected?.minecraftVersion ?? "-"}</strong></article>
-          <article className="quickFact"><span className="factIcon">◈</span><span>실행 방식</span><strong>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong></article>
+          <article className="quickFact"><span className="factIcon">◈</span><span>클라이언트</span><strong>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong><small>서버: {selected?.serverLoader ? `${selected.serverLoader.kind} ${selected.serverLoader.version}` : "정보 미등록"}</small></article>
         </section>
       </section>
 
@@ -679,7 +702,7 @@ function App() {
               <article className="panel installPanel">
                 <div className="panelHeader">
                   <h3>설치 위치</h3>
-                  {result && <button onClick={() => void window.bweeep.openPath(result.instanceDir)}>폴더 열기</button>}
+                  {lastInstanceDir && <button onClick={() => void window.bweeep.openPath(lastInstanceDir)}>폴더 열기</button>}
                 </div>
                 <input
                   value={instanceRoot}
@@ -691,7 +714,6 @@ function App() {
             <section className="panel logPanel">
               <div className="panelHeader">
                 <h3>설치 로그</h3>
-                {result && <span>{result.downloaded} 다운로드 · {result.skipped} 유지</span>}
               </div>
               <div className="log">
                 {logs.length === 0 ? (
@@ -771,45 +793,12 @@ function App() {
         </div>
       )}
 
-      {updateOpen && launcherUpdate && (
-        <div className="modalBackdrop">
-          <section className="updateModal" aria-label="런처 업데이트" onClick={(event) => event.stopPropagation()}>
-            <p className="eyebrow">Bweeep update</p>
-            <h2>{launcherUpdate.state === "error" ? "업데이트에 실패했어요" : launcherUpdate.state === "available" ? "새 런처 업데이트가 있어요" : "런처를 업데이트하고 있어요"}</h2>
-            {launcherUpdate.update && <p className="updateVersion">v{launcherUpdate.update.version}</p>}
-            {launcherUpdate.state === "downloading" && (
-              <>
-                <p>새 버전을 받는 중입니다. 완료되면 런처가 자동으로 재시작됩니다.</p>
-                <div className="progressTrack"><i style={{ width: `${launcherUpdate.percent ?? 0}%` }} /></div>
-                <small>{launcherUpdate.percent ?? 0}%</small>
-              </>
-            )}
-            {launcherUpdate.state === "available" && <p>여러 버그를 수정하고 안정성을 개선한 새 버전입니다.</p>}
-            {launcherUpdate.state === "ready" && <p>{gameBusy ? "게임이 종료되면 업데이트를 설치합니다." : "다운로드를 마쳤습니다. 잠시 후 자동으로 재시작합니다."}</p>}
-            {launcherUpdate.state === "installing" && <p>업데이트를 설치하고 다시 시작하는 중입니다.</p>}
-            {launcherUpdate.state === "error" && <p>{launcherUpdate.message ?? "자동 업데이트에 실패했습니다."}</p>}
-            {launcherUpdate.update && launcherUpdate.update.notes.length > 0 && <ul>{launcherUpdate.update.notes.map((note) => <li key={note}>{note}</li>)}</ul>}
-            {(launcherUpdate.state === "available" || launcherUpdate.state === "error") && (
-              <div className="updateActions">
-                {launcherUpdate.state === "available" && <button className="launchButton" onClick={() => void window.bweeep.downloadLauncherUpdate()}>업데이트하기</button>}
-                {launcherUpdate.state === "error" && <button className="launchButton" onClick={() => void window.bweeep.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest")}>릴리스 페이지 열기</button>}
-                <button className="closeButton" onClick={() => setUpdateOpen(false)}>닫기</button>
-              </div>
-            )}
-          </section>
-        </div>
-      )}
-
     </main>
   );
 }
 
 function normalizeInviteCode(value: string): string {
   return value.trim().toUpperCase();
-}
-
-function shouldShowUpdate(status: LauncherUpdateStatus): boolean {
-  return ["available", "downloading", "ready", "installing"].includes(status.state);
 }
 
 function formatRelativeTime(timestamp: number, now = Date.now()): string {

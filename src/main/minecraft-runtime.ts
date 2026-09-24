@@ -22,6 +22,9 @@ import {
 import type { ModpackManifest, SyncProgress } from "../shared/types.js";
 import { ensureBundledClientMods, type BundledClientMod } from "./companion-mod.js";
 import type { LaunchIdentity } from "./launch-identity.js";
+import { describeGameExit, type GameExitResult } from "./game-exit.js";
+import { createGameOutputObserver } from "./game-telemetry.js";
+import { verifyRemoteConnectionLock } from "./connection-lock.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
 
 type ProgressSink = (event: SyncProgress) => void;
@@ -32,33 +35,56 @@ export async function installAndLaunch(
   getLaunchAuthorization: () => Promise<{ identity: LaunchIdentity; ticket: string }>,
   bundledClientMods: BundledClientMod[],
   progress: ProgressSink,
-  onExit: () => void
+  onExit: (exit: GameExitResult) => void
 ): Promise<{ pid: number; version: string }> {
   if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
     throw new Error("지원하지 않는 Minecraft 로더입니다.");
   }
 
+  let activeStage = "게임 파일";
+  let downloadBatch = 0;
+  const report: ProgressSink = (event) => {
+    if (event.stage) activeStage = event.stage;
+    progress(event);
+  };
   const runtime = createDefaultNodeInstallRuntime({
     maxConcurrency: 2,
-    download: downloadInstallFilesWithSystemNetwork
+    download: (files) => {
+      const batchStage = `${activeStage} · 다운로드 묶음 ${++downloadBatch}`;
+      return downloadInstallFilesWithSystemNetwork(files, (completed, total, filePath, phase) => {
+        progress({
+          kind: phase === "start" ? "download" : "info",
+          stage: batchStage,
+          message: `${path.basename(filePath)} ${phase === "start" ? "다운로드 중" : "다운로드 완료"}`,
+          completed,
+          total,
+          unit: "files"
+        });
+      });
+    }
   });
   const minecraft = MinecraftFolder.from(instanceDir);
-  const javaPath = await runStage(progress, "Java 런타임", () => resolveRuntime(instanceDir, manifest.java, runtime, progress));
-  const baseVersion = await runStage(progress, "Minecraft 기본 파일", () => installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, progress));
+  const javaPath = await runStage(report, "Java 런타임", () => resolveRuntime(instanceDir, manifest.java, runtime, report));
+  const baseVersion = await runStage(report, "Minecraft 기본 파일", () => installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, report));
   const version = manifest.loader.kind === "vanilla" ? baseVersion
     : manifest.loader.kind === "fabric"
-      ? await runStage(progress, "Fabric 설치", () => installFabric(minecraft, manifest, runtime, progress))
-      : await runStage(progress, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", () => installForgeFamily(minecraft, manifest, javaPath, runtime, progress));
-  await runStage(progress, "실행 라이브러리", () => installLaunchLibraries(minecraft, version, runtime, progress));
+      ? await runStage(report, "Fabric 설치", () => installFabric(minecraft, manifest, runtime, report))
+      : await runStage(report, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", () => installForgeFamily(minecraft, manifest, javaPath, runtime, report));
+  await runStage(report, "실행 라이브러리", () => installLaunchLibraries(minecraft, version, runtime, report));
   if (manifest.loader.kind !== "vanilla") {
     await ensureBundledClientMods(instanceDir, bundledClientMods);
+  }
+  const remoteLock = manifest.clientFeatures?.connectionLock;
+  if (typeof remoteLock === "object") {
+    await verifyRemoteConnectionLock(instanceDir, manifest);
+    report({ kind: "info", stage: "서버 연결 보호", message: `${manifest.minecraftVersion} ${manifest.loader.kind} 연결 보호 모드 검증 완료` });
   }
   const quickPlayPath = path.join(instanceDir, "quickPlay", "bweeep.json");
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
-  progress({ kind: "info", stage: "접속 인증", message: "서버 접속 인증표 준비 중" });
-  const { identity, ticket: gameTicket } = await runStage(progress, "접속 인증", getLaunchAuthorization);
-  progress({ kind: "info", stage: "게임 실행", message: "Minecraft 실행 명령을 준비하는 중" });
+  report({ kind: "info", stage: "접속 인증", message: "서버 접속 인증표 준비 중" });
+  const { identity, ticket: gameTicket } = await runStage(report, "접속 인증", getLaunchAuthorization);
+  report({ kind: "info", stage: "게임 실행", message: "Minecraft 실행 명령을 준비하는 중" });
   const gameProcess = await launch({
     gamePath: instanceDir,
     resourcePath: instanceDir,
@@ -68,6 +94,7 @@ export async function installAndLaunch(
     gameProfile: { id: identity.id, name: identity.name },
     userType: "legacy",
     quickPlayMultiplayer: `${manifest.server.host}:${manifest.server.port}`,
+    extraJVMArgs: typeof remoteLock === "object" ? [`-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`] : [],
     extraMCArgs: ["--quickPlayPath", quickPlayPath],
     extraExecOption: {
       env: { ...process.env, BWEEP_GAME_TICKET: gameTicket }
@@ -75,15 +102,27 @@ export async function installAndLaunch(
     minMemory: 2048,
     maxMemory: 6144
   });
+  report({ kind: "info", stage: "게임 프로세스", message: `Minecraft 프로세스 실행 중${gameProcess.pid ? ` · PID ${gameProcess.pid}` : ""} · 서버 참가 확인 전` });
+  gameProcess.stdout?.on("data", createGameOutputObserver(report));
+  gameProcess.stderr?.on("data", createGameOutputObserver(report));
   const watcher = createMinecraftProcessWatcher(gameProcess);
-  watcher.once("minecraft-exit", ({ code, crashReport }) => {
-    progress({
-      kind: crashReport || (typeof code === "number" && code !== 0) ? "error" : "info",
-      message: crashReport || `Minecraft가 종료되었습니다. (코드 ${code ?? "없음"})`
-    });
-    onExit();
+  watcher.once("minecraft-window-ready", () => {
+    report({ kind: "info", stage: "게임 초기화", message: "Minecraft 클라이언트 초기화 신호 감지 · 서버 참가 확인 전" });
   });
-  watcher.once("error", () => onExit());
+  watcher.once("minecraft-exit", ({ code, signal, crashReport, crashReportLocation }) => {
+    const exit = describeGameExit({ code, signal, crashReport, crashReportLocation });
+    report({
+      kind: exit.abnormal ? "error" : "info",
+      stage: "게임 종료",
+      message: exit.message
+    });
+    onExit(exit);
+  });
+  watcher.once("error", (error) => {
+    const message = `Minecraft 프로세스를 시작하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
+    report({ kind: "error", stage: "게임 실행", message });
+    onExit({ abnormal: true, message, code: null, signal: null, crashReportLocation: null });
+  });
   return { pid: gameProcess.pid ?? 0, version: version || baseVersion };
 }
 
@@ -149,7 +188,7 @@ async function resolveRuntime(
   const candidates = [bundled, ...(await getPotentialJavaLocations())];
   for (const candidate of candidates) {
     const java = await resolveJava(candidate);
-    if (java && java.majorVersion >= requiredJava.majorVersion) return java.path;
+    if (java && java.majorVersion === requiredJava.majorVersion) return java.path;
   }
 
   progress({ kind: "info", stage: "Java 런타임", message: `Minecraft용 Java ${requiredJava.majorVersion}을 찾지 못해 다운로드를 시작합니다.` });
@@ -168,7 +207,7 @@ async function resolveRuntime(
     { onEvent: (event) => publishInstallerEvent(progress, "Java 런타임", event) }
   );
   const java = await resolveJava(bundled);
-  if (!java || java.majorVersion < requiredJava.majorVersion) {
+  if (!java || java.majorVersion !== requiredJava.majorVersion) {
     throw new Error(`Java ${requiredJava.majorVersion} 설치를 확인하지 못했습니다.`);
   }
   return java.path;
@@ -212,14 +251,17 @@ async function installForgeFamily(
   const project = manifest.loader.kind === "forge" ? "forge" : "neoforge";
   const stage = project === "forge" ? "Forge" : "NeoForge";
   progress({ kind: "info", stage, message: `${stage} ${manifest.loader.version} 설치 파일을 준비하는 중` });
-  const installer = await resolveNeoForgedInstallerFile(project, manifest.loader.version, minecraft, {});
+  const forgeVersion = `${manifest.minecraftVersion}-${manifest.loader.version}`;
+  const installer = project === "forge"
+    ? await resolveForgeInstallerFile(minecraft, forgeVersion)
+    : (await resolveNeoForgedInstallerFile(project, manifest.loader.version, minecraft, {})).file;
   const installed = await executeInstallWorkflow(
     createModernForgeInstallWorkflow({
-      id: `${project}-${manifest.loader.version}`,
+      id: `${project}-${project === "forge" ? forgeVersion : manifest.loader.version}`,
       minecraft,
       minecraftVersion: manifest.minecraftVersion,
-      installer: installer.file,
-      artifactVersion: manifest.loader.version,
+      installer,
+      artifactVersion: project === "forge" ? forgeVersion : manifest.loader.version,
       java: javaPath,
       installOptions: {},
       side: "client"
@@ -228,6 +270,20 @@ async function installForgeFamily(
     { onEvent: (event) => publishInstallerEvent(progress, stage, event) }
   );
   return installed.version;
+}
+
+async function resolveForgeInstallerFile(minecraft: MinecraftFolder, version: string) {
+  const relative = `net/minecraftforge/forge/${version}/forge-${version}-installer.jar`;
+  const url = `https://maven.minecraftforge.net/${relative}`;
+  const response = await fetchWithSystemNetwork(`${url}.sha1`);
+  if (!response.ok) throw new Error("Forge 설치 파일의 해시를 가져오지 못했습니다.");
+  const sha1 = (await response.text()).trim();
+  if (!/^[a-f0-9]{40}$/i.test(sha1)) throw new Error("Forge 설치 파일의 해시가 올바르지 않습니다.");
+  return {
+    path: minecraft.getLibraryByPath(relative),
+    urls: [url],
+    checksum: { algorithm: "sha1" as const, value: sha1 }
+  };
 }
 
 function publishInstallerEvent(progress: ProgressSink, stage: string, event: unknown): void {

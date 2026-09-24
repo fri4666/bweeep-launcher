@@ -2,10 +2,13 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import type { ModpackManifest, SyncProgress, SyncRequest, SyncResult } from "../shared/types.js";
+import type { SyncProgress, SyncRequest, SyncResult } from "../shared/types.js";
 import { fetchWithSystemNetwork } from "./system-network.js";
 import { prepareMrpack } from "./mrpack.js";
+export { assertManifest } from "./manifest-validation.js";
 
 type ProgressSink = (event: SyncProgress) => void;
 
@@ -27,7 +30,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     "utf8"
   );
 
-  progress({ kind: "info", message: `${manifest.name} ${manifest.version} 동기화 시작`, completed: 0, total });
+  progress({ kind: "info", stage: "모드팩 파일", message: `${manifest.name} ${manifest.version} 동기화 시작`, completed: 0, total, unit: "files" });
 
   for (const [index, file] of files.entries()) {
     const target = resolveInside(instanceDir, file.path);
@@ -35,17 +38,29 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
       skipped += 1;
       progress({
         kind: "skip",
+        stage: "모드팩 파일",
         message: `이미 최신: ${file.path}`,
         completed: index + 1,
         total,
+        unit: "files",
         filePath: file.path
       });
       continue;
     }
 
     await fsp.mkdir(path.dirname(target), { recursive: true });
-    progress({ kind: "download", message: `다운로드: ${file.path}`, completed: index, total, filePath: file.path });
-    await downloadToFile(file.url, target, file.size);
+    progress({ kind: "download", stage: "모드팩 파일", message: `다운로드: ${file.path}`, completed: index, total, unit: "files", filePath: file.path });
+    await downloadToFile(file.url, target, file.size, (received) => {
+      progress({
+        kind: "download",
+        stage: "모드팩 파일",
+        message: `다운로드: ${file.path} · ${(received / 1048576).toFixed(1)} / ${(file.size / 1048576).toFixed(1)} MB`,
+        completed: index,
+        total,
+        unit: "files",
+        filePath: file.path
+      });
+    });
 
     if (!(await fileMatches(target, file))) {
       await fsp.rm(target, { force: true });
@@ -54,9 +69,11 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     downloaded += 1;
     progress({
       kind: "info",
+      stage: "모드팩 파일",
       message: `준비 완료: ${file.path}`,
       completed: index + 1,
       total,
+      unit: "files",
       filePath: file.path
     });
   }
@@ -66,7 +83,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
     if (nextManagedFiles.has(obsoletePath)) continue;
     const obsoleteTarget = resolveInside(instanceDir, obsoletePath);
     await fsp.rm(obsoleteTarget, { force: true });
-    progress({ kind: "info", message: `서버 전용 파일 제거: ${obsoletePath}`, filePath: obsoletePath });
+    progress({ kind: "info", stage: "모드팩 파일", message: `서버 전용 파일 제거: ${obsoletePath}`, filePath: obsoletePath });
   }
   await fsp.mkdir(path.dirname(managedFilesPath), { recursive: true });
   await fsp.writeFile(managedFilesPath, JSON.stringify([...nextManagedFiles].sort(), null, 2), "utf8");
@@ -80,7 +97,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
   ].join("\n");
   await fsp.writeFile(path.join(instanceDir, "launch-info.txt"), `${launchInfo}\n`, "utf8");
 
-  progress({ kind: "done", message: `완료: 다운로드 ${downloaded}, 유지 ${skipped}`, completed: total, total });
+  progress({ kind: "done", stage: "모드팩 파일", message: `완료: 다운로드 ${downloaded}, 유지 ${skipped}`, completed: total, total, unit: "files" });
   return { manifest, instanceDir, downloaded, skipped };
 }
 
@@ -96,74 +113,43 @@ async function readManagedFiles(filePath: string): Promise<string[]> {
   }
 }
 
-export function assertManifest(manifest: ModpackManifest): void {
-  if (
-    manifest.schemaVersion !== 1 ||
-    !Array.isArray(manifest.files) ||
-    !manifest.id ||
-    !manifest.minecraftVersion ||
-    !manifest.loader?.kind ||
-    !["vanilla", "fabric", "neoforge", "forge"].includes(manifest.loader.kind) ||
-    !Number.isSafeInteger(manifest.java?.majorVersion) ||
-    manifest.java.majorVersion < 21 ||
-    !manifest.java.component
-  ) {
-    throw new Error("지원하지 않는 manifest 형식입니다.");
-  }
-  if (manifest.serverLoader && !["vanilla", "fabric", "neoforge", "forge", "paper", "folia"].includes(manifest.serverLoader.kind)) {
-    throw new Error("지원하지 않는 서버 로더 정보입니다.");
-  }
-  if (manifest.clientFeatures && typeof manifest.clientFeatures.connectionLock !== "boolean") {
-    throw new Error("클라이언트 기능 정보가 올바르지 않습니다.");
-  }
-  if (manifest.mrpack && (!/^https:\/\//.test(manifest.mrpack.url) || !Number.isSafeInteger(manifest.mrpack.size) || manifest.mrpack.size < 1 || !/^[a-f0-9]{128}$/i.test(manifest.mrpack.sha512))) {
-    throw new Error("Modrinth 모드팩 정보가 올바르지 않습니다.");
-  }
-  for (const file of manifest.files) {
-    if (
-      !file.path ||
-      path.isAbsolute(file.path) ||
-      file.path.split(/[\\/]+/).includes("..") ||
-      !file.url ||
-      !Number.isSafeInteger(file.size) ||
-      file.size < 0 ||
-      !((typeof file.sha256 === "string" && /^[a-f0-9]{64}$/i.test(file.sha256)) || (typeof file.sha512 === "string" && /^[a-f0-9]{128}$/i.test(file.sha512)))
-    ) {
-      throw new Error("manifest 파일 정보가 올바르지 않습니다.");
-    }
-  }
-}
-
-async function downloadToFile(url: string, target: string, expectedSize: number): Promise<void> {
+async function downloadToFile(url: string, target: string, expectedSize: number, onBytes: (received: number) => void): Promise<void> {
   if (url.startsWith("file:")) {
     await fsp.copyFile(fileURLToPath(url), target);
+    onBytes((await fsp.stat(target)).size);
     return;
   }
 
-  const response = await fetchWithSystemNetwork(url, { signal: AbortSignal.timeout(60_000) });
+  const response = await fetchWithSystemNetwork(url, { signal: AbortSignal.timeout(300_000) });
   if (!response.ok || !response.body) {
     throw new Error(`파일 다운로드 실패: ${path.basename(target)}`);
   }
 
   const temp = `${target}.part`;
   await fsp.rm(temp, { force: true });
-  const file = fs.createWriteStream(temp);
-  await new Promise<void>((resolve, reject) => {
-    response.body!.pipeTo(
-      new WritableStream({
-        write(chunk) {
-          file.write(Buffer.from(chunk));
-        },
-        close() {
-          file.end(resolve);
-        },
-        abort(reason) {
-          file.destroy();
-          reject(reason);
+  let received = 0;
+  let lastReport = 0;
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream),
+      new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          received += chunk.length;
+          if (received > expectedSize) return callback(new Error("다운로드 크기가 맞지 않습니다."));
+          const now = Date.now();
+          if (now - lastReport >= 250 || received === expectedSize) {
+            lastReport = now;
+            onBytes(received);
+          }
+          callback(null, chunk);
         }
-      })
-    ).catch(reject);
-  });
+      }),
+      fs.createWriteStream(temp)
+    );
+  } catch (error) {
+    await fsp.rm(temp, { force: true });
+    throw error;
+  }
   const stat = await fsp.stat(temp);
   if (stat.size !== expectedSize) {
     await fsp.rm(temp, { force: true });

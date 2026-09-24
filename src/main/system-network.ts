@@ -30,8 +30,15 @@ export async function fetchWithSystemNetwork(url: string, init?: RequestInit): P
   }
 }
 
-export async function downloadInstallFilesWithSystemNetwork(files: InstallFile[]): Promise<void> {
-  for (const file of files) await downloadInstallFile(file);
+export async function downloadInstallFilesWithSystemNetwork(
+  files: InstallFile[],
+  onProgress?: (completed: number, total: number, filePath: string, phase: "start" | "done") => void
+): Promise<void> {
+  for (const [index, file] of files.entries()) {
+    onProgress?.(index, files.length, file.path, "start");
+    await downloadInstallFile(file);
+    onProgress?.(index + 1, files.length, file.path, "done");
+  }
 }
 
 async function downloadInstallFile(file: InstallFile): Promise<void> {

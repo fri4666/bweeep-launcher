@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "bweeep_connection_lock",
+  "version": "${version}",
+  "name": "Bweeep Connection Lock",
+  "description": "Closes Minecraft when the selected Bweeep server session ends.",
+  "authors": ["fri4666"],
+  "license": "All Rights Reserved",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.fri4666.bweeep.lock.BweeepConnectionLockClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.18.1",
+    "minecraft": "1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

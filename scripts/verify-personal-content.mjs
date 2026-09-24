@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { bundledFeatureMods } from "../dist/src/main/client-feature-mods.js";
+import { verifyRemoteConnectionLock } from "../dist/src/main/connection-lock.js";
+import { assertManifest } from "../dist/src/main/manifest-validation.js";
 import { captureSharedOptions, prepareUserContent } from "../dist/src/main/user-content.js";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "bweeep-user-content-"));
@@ -58,12 +60,57 @@ try {
     loader: { kind: "forge", version: "47.3.0" },
     clientFeatures: { connectionLock: true }
   }));
+  const lockContents = Buffer.from("test remote bridge");
+  const lockHash = crypto.createHash("sha256").update(lockContents).digest("hex");
+  const remoteLockManifest = {
+    ...manifest,
+    minecraftVersion: "1.20.1",
+    java: { majorVersion: 17, component: "java-runtime-gamma" },
+    loader: { kind: "forge", version: "47.4.0" },
+    files: [{ path: "mods/bweeep-connection-lock.jar", size: lockContents.length, sha256: lockHash, url: "https://example.test/bridge.jar" }],
+    clientFeatures: { connectionLock: { protocolVersion: 1, path: "mods/bweeep-connection-lock.jar", sha256: lockHash, minecraftVersion: "1.20.1", loaderKind: "forge" } }
+  };
+  assertManifest(remoteLockManifest);
+  assert.equal(bundledFeatureMods("/resources", remoteLockManifest).length, 0);
+  assert.throws(() => assertManifest({ ...remoteLockManifest, files: [] }));
+  const remoteInstance = path.join(root, "remote-bridge");
+  await fs.mkdir(path.join(remoteInstance, "mods"), { recursive: true });
+  const remoteJar = path.join(remoteInstance, "mods", "bweeep-connection-lock.jar");
+  await fs.writeFile(remoteJar, lockContents);
+  await verifyRemoteConnectionLock(remoteInstance, remoteLockManifest);
+  await fs.writeFile(remoteJar, "personal replacement");
+  await assert.rejects(() => verifyRemoteConnectionLock(remoteInstance, remoteLockManifest));
   assert.equal(bundledFeatureMods("/resources", {
     ...manifest,
     minecraftVersion: "26.3",
     loader: { kind: "fabric", version: "0.19.5" },
     clientFeatures: { connectionLock: true }
   }).length, 1);
+  assert.equal(bundledFeatureMods("/resources", {
+    ...manifest,
+    minecraftVersion: "1.21.4",
+    loader: { kind: "fabric", version: "0.18.1" },
+    clientFeatures: { connectionLock: true }
+  }).length, 1);
+  const tycoonManifestWithoutFeatureFlag = {
+    ...manifest,
+    minecraftVersion: "1.21.4",
+    loader: { kind: "fabric", version: "0.18.1" }
+  };
+  assert.equal(bundledFeatureMods("/resources", tycoonManifestWithoutFeatureFlag).length, 1);
+  assert.equal(bundledFeatureMods("/resources", {
+    ...tycoonManifestWithoutFeatureFlag,
+    clientFeatures: { connectionLock: false }
+  }).length, 0);
+  assert.equal(bundledFeatureMods("/resources", {
+    ...tycoonManifestWithoutFeatureFlag,
+    loader: { kind: "fabric", version: "0.18.2" }
+  }).length, 0);
+  const tycoonLockJar = await fs.readFile(new URL("../resources/client-mods/bweeep-connection-lock-1214-0.1.0.jar", import.meta.url));
+  assert.equal(
+    crypto.createHash("sha256").update(tycoonLockJar).digest("hex"),
+    "bf0ffad350cc2f6df055d899a73cf956d943be97a911659543c01f304ff07876"
+  );
   const fabricLockJar = await fs.readFile(new URL("../resources/client-mods/bweeep-fabric-lock-26.3-0.1.0.jar", import.meta.url));
   assert.equal(
     crypto.createHash("sha256").update(fabricLockJar).digest("hex"),
