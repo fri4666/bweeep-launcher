@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "bweeep_connection_lock",
+  "version": "${version}",
+  "name": "Bweeep Connection Lock",
+  "description": "Closes Minecraft after disconnect and blocks access to other servers or worlds.",
+  "authors": ["fri4666"],
+  "license": "All Rights Reserved",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.fri4666.bweeep.lock.BweeepConnectionLockClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "26.3",
+    "fabric-api": "*"
+  }
+}

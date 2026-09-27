@@ -12,6 +12,12 @@ import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import net.minecraft.client.multiplayer.ServerData;
 
 public final class BweeepConnectionLockClient implements ClientModInitializer {
+    // The launcher watches the game's stdout for these markers to show
+    // "joined", "left" and "rejected" states instead of a silent exit.
+    private static final String JOINED_MARKER = "BWEEP_TARGET_JOINED";
+    private static final String LEFT_MARKER = "BWEEP_TARGET_LEFT";
+    private static final String REJECTED_MARKER = "BWEEP_TARGET_REJECTED";
+
     private boolean joined;
     private boolean stopping;
 
@@ -22,6 +28,8 @@ public final class BweeepConnectionLockClient implements ClientModInitializer {
                     || screen instanceof JoinMultiplayerScreen
                     || screen instanceof SelectWorldScreen
                     || (joined && screen instanceof TitleScreen)) {
+                if (screen instanceof DisconnectedScreen && !joined) System.out.println(REJECTED_MARKER);
+                markLeft();
                 stop(client);
             }
         });
@@ -30,14 +38,23 @@ public final class BweeepConnectionLockClient implements ClientModInitializer {
                 stop(client);
                 return;
             }
-            joined = true;
+            if (!joined) {
+                joined = true;
+                System.out.println(JOINED_MARKER);
+            }
         });
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             if (!joined) return;
-            joined = false;
+            markLeft();
             stop(client);
         });
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> stopping = true);
+    }
+
+    private void markLeft() {
+        if (!joined) return;
+        joined = false;
+        System.out.println(LEFT_MARKER);
     }
 
     private boolean matchesSelectedServer(Minecraft client) {

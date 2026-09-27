@@ -13,7 +13,7 @@ export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManif
 
   if (manifest.loader.kind === "neoforge" && manifest.minecraftVersion === "1.21.1") {
     return [
-      bundled(resourcesRoot, "bweeep-client-1.2.0.jar", "bweeep-client.jar", "4c8840d126f1939a1e66182cc086f3293bd0a8f75d5780d89df94ba23f02e70b"),
+      bundled(resourcesRoot, "bweeep-client-1.2.0.jar", "bweeep-client.jar", "71d39158b5899867a43759e86606e06e6a2483ac52eb799eeb10950a56f7257e"),
       bundled(resourcesRoot, "bweeep-display-name-0.2.0.jar", "bweeep-display-name.jar", "23f0c716cc8cb857ecf384f648a5c493745dd1bc9f53d1ab04ca9c40b632fed2")
     ];
   }
@@ -26,13 +26,14 @@ export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManif
 
   if (manifest.loader.kind === "fabric" && manifest.minecraftVersion === "1.21.4" && manifest.loader.version === "0.18.1") {
     return [
-      bundled(resourcesRoot, "bweeep-connection-lock-1214-0.1.0.jar", "bweeep-client.jar", "bf0ffad350cc2f6df055d899a73cf956d943be97a911659543c01f304ff07876")
+      bundled(resourcesRoot, "bweeep-connection-lock-1214-0.1.0.jar", "bweeep-client.jar", "60505e9e418f8c3c9ea60ac3124412b703e3642e22a083f3ef8a968156ee6c69")
     ];
   }
 
   if (manifest.loader.kind === "fabric" && manifest.minecraftVersion === "26.3" && manifest.loader.version === "0.19.5") {
     return [
-      bundled(resourcesRoot, "bweeep-fabric-lock-26.3-0.1.0.jar", "bweeep-client.jar", "5fe104672975a1f42d7640fd9508235c6e83c779585b4bd84037df9179354f5a")
+      bundled(resourcesRoot, "bweeep-fabric-api-26.3.jar", "fabric-api.jar", "86f16178a3cecc887a85a4cfe9a79d92fa7341d8f39b5951a4d6ad800ab657a6"),
+      bundled(resourcesRoot, "bweeep-fabric-lock-26.3-0.2.0.jar", "bweeep-client.jar", "27ed412e5bd1fb6d3b407776e9bd6c24c6297051a2862298289c51be1f98c472")
     ];
   }
 
