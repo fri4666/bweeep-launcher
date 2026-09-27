@@ -17,7 +17,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     gameStatus = status;
     gameStatusListeners.forEach((listener) => listener(status));
   };
-  window.__exitGame = () => emitGameStatus({ state: "idle" });
+  window.__exitGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
   window.__failGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)", exitError: true });
   window.__rejectGame = () => {
     listeners.forEach((listener) => listener({ kind: "error", stage: "서버 접속 실패", message: "선택 서버가 연결을 거절했습니다." }));
@@ -173,7 +173,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
 }, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
-await page.waitForTimeout(120);
+const expectedEntrySelector = accessUnavailable ? ".entryRecovery > button:first-child" : accessDenied ? ".entryInvite" : signedIn ? ".launchButton" : ".entryChoices button:first-child";
+await page.locator(expectedEntrySelector).waitFor({ state: "visible", timeout: 10000 });
 const interactionChecks = [];
 
 async function verifyHover(selector, name) {
@@ -245,6 +246,10 @@ if (catalogUnavailable) {
     throw new Error("production/test server choices are missing from settings");
   }
   interactionChecks.push("server-choice-in-settings");
+  if (!settingsText.includes("붸에엡 v0.1.30")) {
+    throw new Error("launcher version is missing from the settings footer");
+  }
+  interactionChecks.push("launcher-version-in-settings");
   await page.getByRole("button", { name: "10명용 초대 만들기" }).click();
   await page.getByText("BWEEP-123456789ABC-123456789ABC", { exact: true }).waitFor();
   const copyButtonBox = await page.getByRole("button", { name: "코드 복사" }).boundingBox();
@@ -270,8 +275,14 @@ if (catalogUnavailable) {
   await page.locator(".profileBox").click();
   await page.getByRole("button", { name: "모드 폴더 선택" }).waitFor();
   if (await page.locator(".contentFolderItem").count() !== 2) throw new Error("saved personal content folders are missing");
+  await page.locator(".profileModal input[maxlength='16']").fill("seos_py_new");
+  await page.getByRole("button", { name: "인게임 이름 저장" }).click();
+  await page.getByText("인게임 이름 변경됨 · 다음 실행부터 적용", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "모드 폴더 선택" }).click();
+  await page.getByText("모드 폴더 1개 추가됨 · 다음 실행부터 적용", { exact: true }).waitFor();
   await page.screenshot({ path: "previews/bweeep-launcher-profile-preview.png" });
   interactionChecks.push("personal-content-folder-settings");
+  interactionChecks.push("successful-actions-toast");
   await page.locator(".profileModal .closeButton").click();
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 시작 중" }).waitFor();
@@ -280,7 +291,8 @@ if (catalogUnavailable) {
   if (await page.locator(".launchProgress").count() !== 1 || !(await page.locator(".launchProgress").innerText()).includes("33%")) {
     throw new Error("actual file progress was not visible during launch");
   }
-  if (await page.locator(".updatePanel, .progressTrack").count()) throw new Error("obsolete progress panel returned during launch");
+  if (await page.locator(".updatePanel, .progressTrack, .launchProgressHistory").count()) throw new Error("obsolete progress panel or stale stage history returned during launch");
+  if (await page.locator(".launchProgressHeading strong").evaluate((element) => getComputedStyle(element).whiteSpace) !== "nowrap") throw new Error("active progress message is not constrained to one line");
   await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
   await page.getByRole("button", { name: "게임 중" }).waitFor();
   if (!(await page.getByRole("button", { name: "게임 중" }).isDisabled())) throw new Error("launch button was not locked while running");
@@ -291,6 +303,7 @@ if (catalogUnavailable) {
   await page.evaluate(() => window.__exitGame());
   await page.getByRole("button", { name: "게임 시작" }).waitFor();
   if (await page.locator(".launchProgress").count()) throw new Error("progress remained after game exit");
+  if (await page.getByText("Minecraft가 종료되었습니다.", { exact: true }).count()) throw new Error("normal game exit message was shown");
   if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after exit");
   await page.evaluate(() => { window.__zeroFileSync = true; });
   await page.getByRole("button", { name: "게임 시작" }).click();

@@ -79,6 +79,9 @@ export async function installAndLaunch(
     await verifyRemoteConnectionLock(instanceDir, manifest);
     report({ kind: "info", stage: "서버 연결 보호", message: `${manifest.minecraftVersion} ${manifest.loader.kind} 연결 보호 모드 검증 완료` });
   }
+  const connectionLockEnabled = remoteLock === true
+    || typeof remoteLock === "object"
+    || bundledClientMods.some((mod) => mod.targetName === "bweeep-client.jar");
   const quickPlayPath = path.join(instanceDir, "quickPlay", "bweeep.json");
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
@@ -94,7 +97,7 @@ export async function installAndLaunch(
     gameProfile: { id: identity.id, name: identity.name },
     userType: "legacy",
     quickPlayMultiplayer: `${manifest.server.host}:${manifest.server.port}`,
-    extraJVMArgs: typeof remoteLock === "object" ? [`-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`] : [],
+    extraJVMArgs: connectionLockEnabled ? [`-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`] : [],
     extraMCArgs: ["--quickPlayPath", quickPlayPath],
     extraExecOption: {
       env: { ...process.env, BWEEP_GAME_TICKET: gameTicket }

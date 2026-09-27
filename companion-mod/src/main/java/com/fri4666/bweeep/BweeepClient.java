@@ -2,6 +2,10 @@ package com.fri4666.bweeep;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.DisconnectedScreen;
+import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
+import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
+import net.minecraft.client.multiplayer.ServerData;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ScreenEvent;
 import net.neoforged.neoforge.common.NeoForge;
@@ -11,6 +15,7 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
 final class BweeepClient {
     private static boolean connected;
     private static boolean stopping;
+    private static final String TARGET_SERVER_PROPERTY = "bweeep.targetServer";
     private static boolean ticketSent;
 
     private BweeepClient() {}
@@ -32,6 +37,10 @@ final class BweeepClient {
     }
 
     private static void onLogin(ClientPlayerNetworkEvent.LoggingIn event) {
+        if (!isSelectedServerAllowed()) {
+            stopMinecraft();
+            return;
+        }
         connected = true;
         if (ticketSent) return;
         String ticket = System.getenv("BWEEP_GAME_TICKET");
@@ -48,9 +57,27 @@ final class BweeepClient {
     }
 
     private static void onScreenOpening(ScreenEvent.Opening event) {
-        if (event.getNewScreen() instanceof DisconnectedScreen) {
+        var screen = event.getNewScreen();
+        if (screen instanceof DisconnectedScreen
+                || screen instanceof JoinMultiplayerScreen
+                || screen instanceof SelectWorldScreen
+                || (connected && screen instanceof TitleScreen)) {
             stopMinecraft();
         }
+    }
+
+    private static boolean isSelectedServerAllowed() {
+        String required = normalizeAddress(System.getProperty(TARGET_SERVER_PROPERTY, ""));
+        ServerData selected = Minecraft.getInstance().getCurrentServer();
+        return !required.isEmpty() && selected != null && required.equals(normalizeAddress(selected.ip));
+    }
+
+    private static String normalizeAddress(String address) {
+        String normalized = address == null ? "" : address.trim().toLowerCase(java.util.Locale.ROOT);
+        if (normalized.isEmpty()) return "";
+        if (normalized.startsWith("[") && normalized.indexOf(']') == normalized.length() - 1) return normalized + ":25565";
+        if (!normalized.startsWith("[") && normalized.indexOf(':') < 0) return normalized + ":25565";
+        return normalized;
     }
 
     private static void stopMinecraft() {

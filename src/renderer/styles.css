@@ -517,6 +517,14 @@ h3 {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
+}
+
+.launchProgressHeading strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .launchProgressBar {
@@ -530,16 +538,15 @@ h3 {
   overflow-wrap: anywhere;
 }
 
-.launchProgressHistory {
-  display: grid;
-  gap: 3px;
-  margin: 3px 0 0;
-  padding-left: 17px;
-  color: #938d86;
+.actionToast {
+  justify-self: end;
+  padding: 7px 11px;
+  border: 1px solid rgba(228, 175, 114, 0.35);
+  border-radius: 999px;
+  color: #f0ece6;
+  background: rgba(17, 18, 20, 0.96);
   font-size: 11px;
-  max-height: 55px;
-  overflow: hidden;
-  overflow-wrap: anywhere;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
 }
 
 .launchNotice {

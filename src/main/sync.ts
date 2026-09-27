@@ -23,18 +23,16 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
 
   await fsp.mkdir(instanceDir, { recursive: true });
   const managedFilesPath = path.join(instanceDir, ".bweeep", "managed-files.json");
+  const manifestPath = path.join(instanceDir, "bweeep-manifest.json");
   const previousManagedFiles = await readManagedFiles(managedFilesPath);
-  await fsp.writeFile(
-    path.join(instanceDir, "bweeep-manifest.json"),
-    JSON.stringify(manifest, null, 2),
-    "utf8"
-  );
+  const previousVersion = await readManifestVersion(manifestPath);
+  const serverVersionChanged = previousVersion !== manifest.version;
 
   progress({ kind: "info", stage: "모드팩 파일", message: `${manifest.name} ${manifest.version} 동기화 시작`, completed: 0, total, unit: "files" });
 
   for (const [index, file] of files.entries()) {
     const target = resolveInside(instanceDir, file.path);
-    if (await fileMatches(target, file)) {
+    if (!serverVersionChanged && await fileMatches(target, file)) {
       skipped += 1;
       progress({
         kind: "skip",
@@ -88,6 +86,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
   await fsp.mkdir(path.dirname(managedFilesPath), { recursive: true });
   await fsp.writeFile(managedFilesPath, JSON.stringify([...nextManagedFiles].sort(), null, 2), "utf8");
   if (mrpack) await mrpack.applyOverrides(instanceDir, progress);
+  await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
 
   const launchInfo = [
     `name=${manifest.name}`,
@@ -99,6 +98,17 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
 
   progress({ kind: "done", stage: "모드팩 파일", message: `완료: 다운로드 ${downloaded}, 유지 ${skipped}`, completed: total, total, unit: "files" });
   return { manifest, instanceDir, downloaded, skipped };
+}
+
+async function readManifestVersion(filePath: string): Promise<string | null> {
+  try {
+    const value: unknown = JSON.parse(await fsp.readFile(filePath, "utf8"));
+    if (value && typeof value === "object" && "version" in value && typeof value.version === "string") return value.version;
+    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return null;
+  }
 }
 
 async function readManagedFiles(filePath: string): Promise<string[]> {

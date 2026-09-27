@@ -44,8 +44,14 @@ jobs:
           java-version: '17'
       - run: bash gradlew --no-daemon build
         working-directory: forge-connection-lock-1201
-      - run: bash gradlew --no-daemon build
+      - run: bash gradlew --no-daemon verifyIdentityStore build
         working-directory: forge-server-auth-1201
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - run: bash gradlew --no-daemon build
+        working-directory: fabric-connection-lock-263
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.5.3

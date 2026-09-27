@@ -3,9 +3,11 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { bundledFeatureMods } from "../dist/src/main/client-feature-mods.js";
 import { verifyRemoteConnectionLock } from "../dist/src/main/connection-lock.js";
 import { assertManifest } from "../dist/src/main/manifest-validation.js";
+import { syncModpack } from "../dist/src/main/sync.js";
 import { captureSharedOptions, prepareUserContent } from "../dist/src/main/user-content.js";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "bweeep-user-content-"));
@@ -80,12 +82,14 @@ try {
   await verifyRemoteConnectionLock(remoteInstance, remoteLockManifest);
   await fs.writeFile(remoteJar, "personal replacement");
   await assert.rejects(() => verifyRemoteConnectionLock(remoteInstance, remoteLockManifest));
-  assert.equal(bundledFeatureMods("/resources", {
+  const fabric263Mods = bundledFeatureMods("/resources", {
     ...manifest,
     minecraftVersion: "26.3",
     loader: { kind: "fabric", version: "0.19.5" },
     clientFeatures: { connectionLock: true }
-  }).length, 1);
+  });
+  assert.equal(fabric263Mods.length, 2);
+  assert.deepEqual(fabric263Mods.map((mod) => mod.targetName).sort(), ["bweeep-client.jar", "fabric-api.jar"]);
   assert.equal(bundledFeatureMods("/resources", {
     ...manifest,
     minecraftVersion: "1.21.4",
@@ -109,12 +113,17 @@ try {
   const tycoonLockJar = await fs.readFile(new URL("../resources/client-mods/bweeep-connection-lock-1214-0.1.0.jar", import.meta.url));
   assert.equal(
     crypto.createHash("sha256").update(tycoonLockJar).digest("hex"),
-    "bf0ffad350cc2f6df055d899a73cf956d943be97a911659543c01f304ff07876"
+    "60505e9e418f8c3c9ea60ac3124412b703e3642e22a083f3ef8a968156ee6c69"
   );
-  const fabricLockJar = await fs.readFile(new URL("../resources/client-mods/bweeep-fabric-lock-26.3-0.1.0.jar", import.meta.url));
+  const fabricLockJar = await fs.readFile(new URL("../resources/client-mods/bweeep-fabric-lock-26.3-0.2.0.jar", import.meta.url));
   assert.equal(
     crypto.createHash("sha256").update(fabricLockJar).digest("hex"),
-    "5fe104672975a1f42d7640fd9508235c6e83c779585b4bd84037df9179354f5a"
+    "27ed412e5bd1fb6d3b407776e9bd6c24c6297051a2862298289c51be1f98c472"
+  );
+  const fabricApiJar = await fs.readFile(new URL("../resources/client-mods/bweeep-fabric-api-26.3.jar", import.meta.url));
+  assert.equal(
+    crypto.createHash("sha256").update(fabricApiJar).digest("hex"),
+    "86f16178a3cecc887a85a4cfe9a79d92fa7341d8f39b5951a4d6ad800ab657a6"
   );
   assert.throws(() => bundledFeatureMods("/resources", {
     ...manifest,
@@ -134,6 +143,38 @@ try {
     loader: { kind: "vanilla", version: "none" },
     clientFeatures: { connectionLock: true }
   }));
+  const versionRoot = path.join(root, "server-version");
+  const instanceRoot = path.join(versionRoot, "instances");
+  const higherPackFile = path.join(versionRoot, "pack-high.jar");
+  const lowerPackFile = path.join(versionRoot, "pack-low.jar");
+  await fs.mkdir(versionRoot, { recursive: true });
+  await Promise.all([fs.writeFile(higherPackFile, "server-pack-version-10"), fs.writeFile(lowerPackFile, "server-pack-version-2")]);
+  const makeVersionManifest = (version, file) => {
+    const contents = version === "10.0" ? "server-pack-version-10" : "server-pack-version-2";
+    return {
+      schemaVersion: 1, id: "versioned-pack", name: "Versioned Pack", version,
+      minecraftVersion: "1.20.1", java: { majorVersion: 17, component: "java-runtime-gamma" },
+      loader: { kind: "forge", version: "47.4.0" }, server: { host: "example.test", port: 25565 },
+      files: [{ path: "mods/managed.jar", size: Buffer.byteLength(contents), sha256: crypto.createHash("sha256").update(contents).digest("hex"), url: pathToFileURL(file).href }]
+    };
+  };
+  const reportProgress = () => {};
+  const higherManifest = makeVersionManifest("10.0", higherPackFile);
+  const initialSync = await syncModpack({ instanceDir: instanceRoot, manifest: higherManifest }, reportProgress);
+  assert.equal(initialSync.downloaded, 1);
+  const managedPackPath = path.join(initialSync.instanceDir, "mods", "managed.jar");
+  assert.equal(await fs.readFile(managedPackPath, "utf8"), "server-pack-version-10");
+
+  const lowerManifest = makeVersionManifest("2.0", lowerPackFile);
+  const downgradeSync = await syncModpack({ instanceDir: instanceRoot, manifest: lowerManifest }, reportProgress);
+  assert.equal(downgradeSync.downloaded, 1, "a lower server manifest version must replace the newer local managed file");
+  assert.equal(await fs.readFile(managedPackPath, "utf8"), "server-pack-version-2");
+  assert.equal(JSON.parse(await fs.readFile(path.join(downgradeSync.instanceDir, "bweeep-manifest.json"), "utf8")).version, "2.0");
+
+  const upgradeSync = await syncModpack({ instanceDir: instanceRoot, manifest: higherManifest }, reportProgress);
+  assert.equal(upgradeSync.downloaded, 1, "a higher server manifest version must replace the lower local managed file");
+  assert.equal(await fs.readFile(managedPackPath, "utf8"), "server-pack-version-10");
+  console.log("server-manifest-version-upgrade-and-downgrade=passed");
   console.log("personal-content-and-connection-lock-regressions=passed");
 } finally {
   await fs.rm(root, { recursive: true, force: true });

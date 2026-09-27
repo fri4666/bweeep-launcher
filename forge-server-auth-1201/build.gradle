@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'com.fri4666.bweeep'
-version = '0.1.0'
+version = '0.2.0'
 
 base {
     archivesName = 'bweeep-server-auth-1201'
@@ -28,4 +28,10 @@ tasks.withType(JavaCompile).configureEach {
 
 tasks.named('jar', Jar).configure {
     finalizedBy 'reobfJar'
+}
+
+tasks.register('verifyIdentityStore', JavaExec) {
+    group = 'verification'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fri4666.bweeep.auth.PlayerIdentityStoreCheck'
 }

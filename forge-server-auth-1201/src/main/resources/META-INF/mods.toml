@@ -4,7 +4,7 @@ license="All Rights Reserved"
 
 [[mods]]
 modId="bweeep_server_auth"
-version="0.1.0"
+version="0.2.0"
 displayName="Bweeep Server Authentication"
 description="Requires a one-time launcher ticket during Forge login."
 
