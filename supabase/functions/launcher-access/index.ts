@@ -1,6 +1,7 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
 import { getBearerToken } from "./authorization.ts";
+import { previousGameNames } from "./profile-history.ts";
 import {
   createDisplaySessionToken,
   isDisplaySessionToken,
@@ -89,6 +90,16 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ message: "게임 서버 인증을 확인하지 못했습니다." }, 500);
     }
     if (!consumed) return json({ ok: false, message: "만료되었거나 이미 사용한 인증표입니다." }, 401);
+    const { data: nameHistory, error: nameHistoryError } = await supabaseAdmin
+      .from("launcher_game_name_history")
+      .select("game_name")
+      .eq("user_id", consumed.user_id)
+      .order("created_at", { ascending: false })
+      .limit(1024);
+    if (nameHistoryError) {
+      console.error("game name history lookup failed", nameHistoryError);
+      return json({ message: "기존 게임 이름을 확인하지 못했습니다." }, 500);
+    }
     const displaySessionToken = createDisplaySessionToken();
     const now = new Date();
     const displaySessionExpiresAt = new Date(now.getTime() + 2 * 60 * 60_000).toISOString();
@@ -116,6 +127,7 @@ async function handleRequest(request: Request): Promise<Response> {
       userId: consumed.user_id,
       discordId: consumed.discord_id,
       role: consumed.member_role,
+      previousGameNames: previousGameNames(body.gameName, nameHistory ?? []),
       displaySessionToken,
       displaySessionExpiresAt,
       displayName: savedName?.display_name ?? null

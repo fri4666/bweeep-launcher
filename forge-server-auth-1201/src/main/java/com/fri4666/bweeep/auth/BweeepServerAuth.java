@@ -7,8 +7,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,10 +17,12 @@ import java.util.function.IntSupplier;
 import net.minecraft.network.Connection;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.network.ServerLoginPacketListenerImpl;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerNegotiationEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.loading.FMLPaths;
 import net.minecraftforge.network.HandshakeHandler;
 import net.minecraftforge.network.NetworkDirection;
 import net.minecraftforge.network.NetworkEvent;
@@ -39,7 +41,7 @@ public final class BweeepServerAuth {
         VERSION::equals
     );
     private static final Map<Connection, Pending> PENDING = new ConcurrentHashMap<>();
-    private static final Set<Connection> VERIFIED = ConcurrentHashMap.newKeySet();
+    private static final Map<Connection, VerifiedIdentity> VERIFIED = new ConcurrentHashMap<>();
 
     public BweeepServerAuth() {
         CHANNEL.messageBuilder(LoginQuery.class, 0, NetworkDirection.LOGIN_TO_CLIENT)
@@ -94,17 +96,38 @@ public final class BweeepServerAuth {
             fail(connection, pending);
             return;
         }
-        TicketVerifier.consume(answer.ticket, pending.gameName).whenComplete((valid, error) ->
+        TicketVerifier.consume(answer.ticket, pending.gameName).whenComplete((identity, error) ->
             connection.channel().eventLoop().execute(() -> {
                 if (!connection.isConnected()) {
                     pending.gate.complete(null);
                     return;
                 }
-                if (error != null || !Boolean.TRUE.equals(valid)) {
+                if (error != null || identity == null) {
                     fail(connection, pending);
                     return;
                 }
-                VERIFIED.add(connection);
+                if (!(connection.getPacketListener() instanceof ServerLoginPacketListenerImpl login)
+                        || login.gameProfile == null) {
+                    fail(connection, pending);
+                    return;
+                }
+                UUID playerId;
+                try {
+                    playerId = PlayerIdentityStore.resolve(
+                        FMLPaths.GAMEDIR.get(),
+                        identity.userId(),
+                        login.gameProfile.getId(),
+                        login.gameProfile.getName(),
+                        identity.previousGameNames(),
+                        identity.role()
+                    );
+                } catch (Exception storageError) {
+                    storageError.printStackTrace();
+                    fail(connection, pending);
+                    return;
+                }
+                login.gameProfile = new com.mojang.authlib.GameProfile(playerId, login.gameProfile.getName());
+                VERIFIED.put(connection, identity);
                 PENDING.remove(connection, pending);
                 pending.gate.complete(null);
             })
@@ -122,8 +145,15 @@ public final class BweeepServerAuth {
     private static void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!(event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player)) return;
         Connection connection = player.connection.connection;
-        if (!VERIFIED.remove(connection)) {
+        VerifiedIdentity identity = VERIFIED.remove(connection);
+        if (identity == null) {
             connection.disconnect(AUTH_FAILED);
+            return;
+        }
+        if ("admin".equals(identity.role())) {
+            player.getServer().getPlayerList().op(player.getGameProfile());
+        } else {
+            player.getServer().getPlayerList().deop(player.getGameProfile());
         }
     }
 
@@ -149,6 +179,8 @@ public final class BweeepServerAuth {
         private Pending(String gameName) { this.gameName = gameName; }
     }
 
+    private record VerifiedIdentity(UUID userId, String role, List<String> previousGameNames) {}
+
     private static final class TicketVerifier {
         private static final URI DEFAULT_ENDPOINT = URI.create(
             "https://tmwvrglzjfzauuygofpp.supabase.co/functions/v1/launcher-access"
@@ -173,7 +205,7 @@ public final class BweeepServerAuth {
             return uri;
         }
 
-        private static CompletableFuture<Boolean> consume(String ticket, String gameName) {
+        private static CompletableFuture<VerifiedIdentity> consume(String ticket, String gameName) {
             JsonObject body = new JsonObject();
             body.addProperty("action", "consumeGameTicket");
             body.addProperty("ticket", ticket);
@@ -184,19 +216,29 @@ public final class BweeepServerAuth {
                 .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
                 .build();
             return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply(response -> {
-                if (response.statusCode() != 200) return false;
+                if (response.statusCode() != 200) return null;
                 JsonObject data = JsonParser.parseString(response.body()).getAsJsonObject();
-                if (!data.has("ok") || !data.get("ok").getAsBoolean()) return false;
+                if (!data.has("ok") || !data.get("ok").getAsBoolean()) return null;
                 String userId = data.has("userId") ? data.get("userId").getAsString() : "";
                 String discordId = data.has("discordId") ? data.get("discordId").getAsString() : "";
                 String role = data.has("role") ? data.get("role").getAsString() : "";
+                List<String> previousGameNames = new java.util.ArrayList<>();
                 try {
                     UUID.fromString(userId);
                 } catch (IllegalArgumentException error) {
-                    return false;
+                    return null;
                 }
-                return discordId.matches("\\d{15,22}")
-                    && ("admin".equals(role) || "member".equals(role));
+                if (!discordId.matches("\\d{15,22}")) return null;
+                if (!data.has("previousGameNames") || !data.get("previousGameNames").isJsonArray()
+                        || data.getAsJsonArray("previousGameNames").size() > 1024) return null;
+                for (var name : data.getAsJsonArray("previousGameNames")) {
+                    if (!name.isJsonPrimitive() || !name.getAsJsonPrimitive().isString()
+                            || !name.getAsString().matches("[A-Za-z0-9_]{3,16}")) return null;
+                    previousGameNames.add(name.getAsString());
+                }
+                return ("admin".equals(role) || "member".equals(role))
+                    ? new VerifiedIdentity(UUID.fromString(userId), role, List.copyOf(previousGameNames))
+                    : null;
             });
         }
     }
