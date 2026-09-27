@@ -27,7 +27,26 @@ try {
   await removeUserContentFolder(root, "mods", second);
   await prepareUserContent(root, instance, manifest);
   assert.equal((await fsp.readdir(path.join(instance, "mods"))).length, 1, "removing a saved folder must remove only its prior personal file");
+
+  for (const [loader, minecraftVersion] of [["forge", "1.20.1"], ["neoforge", "1.21.1"]]) {
+    const compatibleRoot = path.join(root, loader);
+    const compatibleInstance = path.join(root, loader + "-instance");
+    const compatibilityId = loader + "-" + minecraftVersion;
+    const mods = path.join(compatibleRoot, ".bweeep-user-content", "mods", compatibilityId);
+    const shaders = path.join(compatibleRoot, ".bweeep-user-content", "shaderpacks", compatibilityId);
+    await Promise.all([fsp.mkdir(mods, { recursive: true }), fsp.mkdir(shaders, { recursive: true }), fsp.mkdir(compatibleInstance, { recursive: true })]);
+    await Promise.all([fsp.writeFile(path.join(mods, "personal.jar"), loader), fsp.writeFile(path.join(shaders, "personal.zip"), loader)]);
+    const status = await prepareUserContent(compatibleRoot, compatibleInstance, {
+      loader: { kind: loader }, minecraftVersion, files: []
+    });
+    assert.equal(await fsp.readFile(path.join(compatibleInstance, "mods", "personal.jar"), "utf8"), loader);
+    assert.equal(await fsp.readFile(path.join(compatibleInstance, "shaderpacks", "personal.zip"), "utf8"), loader);
+    assert.equal(status.copiedMods, 1);
+    assert.equal(status.copiedShaders, 1);
+  }
+
   console.log("user-content-folder-selection-regression=passed");
+  console.log("forge-neoforge-personal-mods-and-shaders=passed");
 } finally {
   await fsp.rm(root, { recursive: true, force: true });
 }

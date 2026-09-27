@@ -380,7 +380,7 @@ app.whenReady().then(async () => {
             return authorization;
           };
       const launched = await installAndLaunch(configuredManifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
-        if (gameRunId === runId) setGameStatus({ state: "idle", exitMessage: exit.message, exitError: exit.abnormal });
+        if (gameRunId === runId) setGameStatus(exit.abnormal ? { state: "idle", exitMessage: exit.message, exitError: true } : { state: "idle" });
         void captureSharedOptions(request.instanceDir, synced.instanceDir);
         void writeGameLog("launch.minecraft.exited", {
           packId: request.packId,

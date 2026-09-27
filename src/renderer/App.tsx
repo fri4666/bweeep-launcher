@@ -51,7 +51,6 @@ function App() {
   const [serverCheckedAt, setServerCheckedAt] = useState<number | null>(null);
   const [instanceRoot, setInstanceRoot] = useState("");
   const [logs, setLogs] = useState<SyncProgress[]>([]);
-  const [lastProgressAt, setLastProgressAt] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [launchError, setLaunchError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
@@ -64,6 +63,7 @@ function App() {
   const [inviteLinkCopied, setInviteLinkCopied] = useState(false);
   const [inviteMaxUses, setInviteMaxUses] = useState(10);
   const [notice, setNotice] = useState("");
+  const [actionToast, setActionToast] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [connection, setConnection] = useState<ServerConnection | null>(null);
@@ -118,7 +118,6 @@ function App() {
     });
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
       setLogs((current) => [...current.slice(-99), event]);
-      setLastProgressAt(Date.now());
       if (event.kind === "error") setLaunchError(event.message);
     });
     const unsubscribeSession = window.bweeep.onAuthSession((nextUser: LauncherUser) => {
@@ -132,7 +131,7 @@ function App() {
     });
     const unsubscribeGameStatus = window.bweeep.onGameStatus((status) => {
       setGameStatus(status);
-      if (status.exitMessage) setNotice(status.exitMessage);
+      if (status.exitError && status.exitMessage) setNotice(status.exitMessage);
     });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
@@ -155,6 +154,12 @@ function App() {
       unsubscribeInvite();
     };
   }, []);
+
+  useEffect(() => {
+    if (!actionToast) return;
+    const timer = window.setTimeout(() => setActionToast(""), 2200);
+    return () => window.clearTimeout(timer);
+  }, [actionToast]);
 
   useEffect(() => {
     if (!instanceRoot) return;
@@ -233,8 +238,6 @@ function App() {
       ? Math.round(Math.max(0, Math.min(1, displayProgress.completed / displayProgress.total)) * 100)
       : null;
   const elapsedSeconds = gameStatus.startedAt ? Math.max(0, Math.floor((clockNow - gameStatus.startedAt) / 1_000)) : null;
-  const quietSeconds = lastProgressAt ? Math.max(0, Math.floor((clockNow - lastProgressAt) / 1_000)) : 0;
-  const recentProgress = logs.filter((event) => event.stage && event.kind !== "skip").slice(-3);
   const serverStatusMessage = serverChecking ? "서버 연결 확인 중" : serverStatus?.message ?? "서버 확인 중";
   const serverStatusDetail = connection
     ? serverChecking
@@ -371,12 +374,13 @@ function App() {
   }
 
   async function saveGameProfile() {
+    setNotice("");
     try {
       const saved = await window.bweeep.setGameProfile(gameNameInput.trim());
       setUser(saved);
       setAccess((current) => current ? { ...current, user: saved } : current);
       setGameNameInput(saved.gameName ?? "");
-      setNotice("인게임 이름을 저장했습니다. 다음 실행부터 적용됩니다.");
+      setActionToast("인게임 이름 변경됨 · 다음 실행부터 적용");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "인게임 이름을 저장하지 못했습니다.");
     }
@@ -385,12 +389,15 @@ function App() {
   async function choosePersonalFolders(kind: UserContentKind) {
     if (contentAction) return;
     setContentAction(kind);
+    setNotice("");
     try {
       const result = await window.bweeep.chooseUserContentFolders(instanceRoot.trim(), kind);
       setPersonalFolders(result.folders);
-      setNotice(result.selected > 0
-        ? `${kind === "mods" ? "모드" : "셰이더"} 폴더 ${result.selected}개를 저장했습니다. 다음 게임 실행에 적용됩니다.`
-        : "폴더 선택을 취소했거나 이미 추가된 폴더입니다.");
+      if (result.selected > 0) {
+        setActionToast((kind === "mods" ? "모드" : "셰이더") + " 폴더 " + result.selected + "개 추가됨 · 다음 실행부터 적용");
+      } else {
+        setNotice("폴더 선택을 취소했거나 이미 추가된 폴더입니다.");
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
     } finally {
@@ -401,10 +408,11 @@ function App() {
   async function removePersonalFolder(kind: UserContentKind, folder: string) {
     if (contentAction) return;
     setContentAction(kind);
+    setNotice("");
     try {
       const folders = await window.bweeep.removeUserContentFolder(instanceRoot.trim(), kind, folder);
       setPersonalFolders(folders);
-      setNotice(`${kind === "mods" ? "모드" : "셰이더"} 폴더를 저장 목록에서 뺐습니다. 다음 게임 실행부터 적용하지 않습니다.`);
+      setActionToast((kind === "mods" ? "모드" : "셰이더") + " 폴더 제거됨 · 다음 실행부터 미적용");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
     } finally {
@@ -423,7 +431,7 @@ function App() {
       setInstanceRoot(root);
       setLogs([]);
       setLastInstanceDir("");
-      setNotice("런처 설정을 기본값으로 되돌렸습니다.");
+      setActionToast("런처 설정 초기화됨");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -433,7 +441,6 @@ function App() {
     if (!selected || !instanceRoot.trim() || !canUseLauncher || gameBusy) return;
     setSyncing(true);
     setLogs([]);
-    setLastProgressAt(null);
     setNotice("");
     setLaunchError("");
     setLastInstanceDir("");
@@ -442,8 +449,8 @@ function App() {
       setLastInstanceDir(next.instanceDir);
       const currentStatus = await window.bweeep.gameStatus();
       setGameStatus(currentStatus);
-      if (currentStatus.state === "idle") {
-        const message = currentStatus.exitMessage ?? "Minecraft가 실행 직후 종료되었습니다. 게임 폴더의 logs/latest.log를 확인하세요.";
+      if (currentStatus.state === "idle" && currentStatus.exitError) {
+        const message = currentStatus.exitMessage ?? "Minecraft 실행 중 오류가 발생했습니다. 게임 로그를 확인하세요.";
         setLaunchError(message);
         setNotice(message);
       }
@@ -586,32 +593,20 @@ function App() {
             </div>
           </div>
           <div className="actionDock" aria-live="polite">
+            {actionToast && <div className="actionToast" role="status">{actionToast}</div>}
             {showLaunchProgress && (
               <div className="launchProgress" role="status">
                 <div className="launchProgressHeading">
-                  <strong>{displayProgress?.stage ?? "게임 시작 준비"}</strong>
-                  <span>{progressPercent !== null ? `${progressPercent}%` : elapsedSeconds !== null ? `${Math.floor(elapsedSeconds / 60)}분 ${String(elapsedSeconds % 60).padStart(2, "0")}초` : "진행 중"}</span>
+                  <strong>{[displayProgress?.stage, displayProgress?.message].filter(Boolean).join(" · ") || "게임 시작 준비"}</strong>
+                  <span>{progressPercent !== null ? String(progressPercent) + "%" : elapsedSeconds !== null ? String(Math.floor(elapsedSeconds / 60)) + "분 " + String(elapsedSeconds % 60).padStart(2, "0") + "초" : "진행 중"}</span>
                 </div>
                 <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />
-                <small>{displayProgress?.message ?? "서버 정보를 확인하는 중"}</small>
-                {quietSeconds >= 30 && <small>마지막 진행 신호 {quietSeconds}초 전 · 새 단계 신호를 기다리는 중</small>}
-                {progressPercent !== null && displayProgress?.unit === "bytes" && (
-                  <small>{(displayProgress.completed! / 1048576).toFixed(1)} / {(displayProgress.total! / 1048576).toFixed(1)} MB 수신</small>
-                )}
-                {progressPercent !== null && (displayProgress?.unit === "files" || displayProgress?.stage === "모드팩 파일") && (
-                  <small>{displayProgress.completed}/{displayProgress.total}개 파일 처리</small>
-                )}
-                {recentProgress.length > 1 && (
-                  <ol className="launchProgressHistory">
-                    {recentProgress.map((event, index) => <li key={`${index}-${event.message}`}>{event.stage}: {event.message}</li>)}
-                  </ol>
-                )}
               </div>
             )}
             <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={gameBusy} onClick={launchSelected}>
               {gameStatus.state === "running" ? "게임 중" : showLaunchProgress ? "게임 시작 중" : "게임 시작"}
             </button>
-            {(launchError || gameStatus.exitMessage) && <p className={`launchNotice${gameStatus.exitError || launchError ? " isError" : ""}`}>{launchError || gameStatus.exitMessage}</p>}
+            {(launchError || (gameStatus.exitError ? gameStatus.exitMessage : "")) && <p className={"launchNotice" + (gameStatus.exitError || launchError ? " isError" : "")}>{launchError || gameStatus.exitMessage}</p>}
           </div>
         </section>
         <section className="serverSummary" aria-label="서버 정보">

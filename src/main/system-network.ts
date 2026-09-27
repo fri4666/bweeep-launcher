@@ -4,13 +4,13 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { net, session } from "electron";
 import type { InstallFile } from "@xmcl/installer";
 
 let directSessionReady: Promise<Electron.Session> | null = null;
 
 export async function fetchWithSystemNetwork(url: string, init?: RequestInit): Promise<Response> {
   const target = requireHttpsUrl(url);
+  const { net } = await import("electron");
   try {
     return await net.fetch(target.toString(), { ...init, bypassCustomProtocolHandlers: true });
   } catch (systemError) {
@@ -100,6 +100,7 @@ function requireHttpsUrl(value: string): URL {
 async function getDirectSession(): Promise<Electron.Session> {
   if (!directSessionReady) {
     directSessionReady = (async () => {
+      const { session } = await import("electron");
       const direct = session.fromPartition("bweeep-direct-network", { cache: false });
       await direct.setProxy({ mode: "direct" });
       return direct;
@@ -120,6 +121,7 @@ async function writeNetworkAttempt(event: string, target: URL, error?: unknown):
 
 async function diagnoseSystemRoute(target: URL): Promise<Record<string, unknown>> {
   try {
+    const { session } = await import("electron");
     const [host, proxy] = await Promise.all([
       session.defaultSession.resolveHost(target.hostname),
       session.defaultSession.resolveProxy(target.toString())
