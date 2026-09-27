@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { app, safeStorage, shell } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { AccessStatus, CreatedInvite, LauncherUser, LoginCancellationResult, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
+import type { AccessStatus, CreatedInvite, InviteList, LauncherUser, LoginCancellationResult, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
 import { parseAuthCallback } from "./deep-link.js";
 import { authFingerprint, writeAuthLog } from "./auth-log.js";
 import { createOfflineLaunchIdentity, type LaunchIdentity } from "./launch-identity.js";
@@ -33,6 +33,7 @@ interface FunctionInviteResult extends FunctionStatus {
 }
 
 interface FunctionCreatedInvite {
+  id?: string;
   code: string;
   expiresAt: string;
   maxUses: number;
@@ -270,7 +271,23 @@ export class SupabaseAuth {
       { action: "createInvite", maxUses },
       "초대 코드를 만들지 못했습니다."
     );
-    return { code: data.code, expiresAt: data.expiresAt, maxUses: data.maxUses };
+    return { id: data.id, code: data.code, expiresAt: data.expiresAt, maxUses: data.maxUses };
+  }
+
+  async listInvites(user: LauncherUser | null): Promise<InviteList> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    const data = await this.invokeFunction<InviteList>({ action: "listInvites" }, "초대 코드 목록을 불러오지 못했습니다.");
+    return {
+      role: data.role === "admin" ? "admin" : "member",
+      maxUsesLimit: typeof data.maxUsesLimit === "number" ? data.maxUsesLimit : 1,
+      activeLimit: typeof data.activeLimit === "number" ? data.activeLimit : null,
+      invites: Array.isArray(data.invites) ? data.invites : []
+    };
+  }
+
+  async revokeInvite(user: LauncherUser | null, inviteId: string): Promise<void> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    await this.invokeFunction<{ ok: boolean }>({ action: "revokeInvite", inviteId }, "초대 코드를 취소하지 못했습니다.");
   }
 
   async setGameProfile(user: LauncherUser | null, gameName: string): Promise<LauncherUser> {

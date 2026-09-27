@@ -14,7 +14,7 @@ import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncher
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, userContentPaths } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherUpdateStatus, LauncherUser, SyncProgress, UserContentKind } from "../shared/types.js";
+import type { GameStatus, LauncherUpdateStatus, LauncherUser, LogTarget, SyncProgress, UserContentKind } from "../shared/types.js";
 import type { ModpackManifest } from "../shared/types.js";
 import { bundledFeatureMods } from "./client-feature-mods.js";
 
@@ -29,6 +29,9 @@ const pendingInviteCodes: string[] = [];
 let inviteReceiverReady = false;
 let gameStatus: GameStatus = { state: "idle" };
 let gameRunId = 0;
+let stopRequestedRunId = 0;
+// The most useful file to open after a failed or crashed run.
+let lastGameLogFile: string | null = null;
 const testLauncherSetupUrl = "https://github.com/fri4666/bweeep-launcher/releases/download/v0.1.25-test.1/Bweeep-Test-Setup-0.1.25.exe";
 
 function setGameStatus(status: GameStatus): void {
@@ -316,6 +319,29 @@ app.whenReady().then(async () => {
   ipcMain.handle("access:createInvite", (_event, maxUses: unknown) =>
     auth.createInvite(sessionUser, typeof maxUses === "number" ? maxUses : 1)
   );
+  ipcMain.handle("access:listInvites", () => auth.listInvites(sessionUser));
+  ipcMain.handle("access:revokeInvite", (_event, inviteId: unknown) => {
+    if (typeof inviteId !== "string") throw new Error("초대 코드 정보가 올바르지 않습니다.");
+    return auth.revokeInvite(sessionUser, inviteId);
+  });
+  ipcMain.handle("paths:chooseInstanceRoot", async (event, current: unknown) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: "게임 설치 위치 선택",
+      buttonLabel: "이 폴더에 설치",
+      defaultPath: typeof current === "string" && current.trim() ? current : undefined,
+      properties: ["openDirectory", "createDirectory"] as Array<"openDirectory" | "createDirectory">
+    };
+    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    return picked.canceled ? null : picked.filePaths[0] ?? null;
+  });
+  ipcMain.handle("logs:open", async (_event, target: LogTarget) => {
+    if (target === "game" && lastGameLogFile) {
+      const failed = await shell.openPath(lastGameLogFile);
+      if (!failed) return;
+    }
+    shell.showItemInFolder(gameLogPath());
+  });
   ipcMain.handle("account:setGameProfile", async (_event, gameName: unknown) => {
     if (typeof gameName !== "string") throw new Error("인게임 이름 형식이 올바르지 않습니다.");
     sessionUser = await auth.setGameProfile(sessionUser, gameName);
@@ -332,12 +358,19 @@ app.whenReady().then(async () => {
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:status", () => gameStatus);
+  ipcMain.handle("game:stop", async () => {
+    if (gameStatus.state !== "running" || !gameStatus.pid) throw new Error("종료할 게임이 없습니다.");
+    stopRequestedRunId = gameRunId;
+    await writeGameLog("launch.minecraft.stop-requested", { pid: gameStatus.pid });
+    process.kill(gameStatus.pid);
+  });
   ipcMain.handle("game:launch", async (event, request: { packId: string; instanceDir: string }) => {
     if (gameStatus.state !== "idle") {
       throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
     }
     const runId = ++gameRunId;
     const startedAt = Date.now();
+    lastGameLogFile = null;
     setGameStatus({ state: "starting", startedAt });
     const progress = (payload: SyncProgress) => {
       if (!event.sender.isDestroyed()) event.sender.send("modpack:progress", payload);
@@ -379,8 +412,15 @@ app.whenReady().then(async () => {
             await writeGameLog("launch.authorization.created", { provider: "discord" });
             return authorization;
           };
+      lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
       const launched = await installAndLaunch(configuredManifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
-        if (gameRunId === runId) setGameStatus(exit.abnormal ? { state: "idle", exitMessage: exit.message, exitError: true } : { state: "idle" });
+        if (exit.crashReportLocation) lastGameLogFile = path.resolve(synced.instanceDir, exit.crashReportLocation);
+        const stoppedByPlayer = stopRequestedRunId === runId;
+        if (gameRunId === runId) {
+          setGameStatus(exit.abnormal && !stoppedByPlayer
+            ? { state: "idle", exitMessage: exit.message, exitError: true, crashReport: Boolean(exit.crashReportLocation) }
+            : { state: "idle" });
+        }
         void captureSharedOptions(request.instanceDir, synced.instanceDir);
         void writeGameLog("launch.minecraft.exited", {
           packId: request.packId,
@@ -401,7 +441,7 @@ app.whenReady().then(async () => {
       if (gameRunId === runId) setGameStatus({ state: "idle" });
       const details = gameErrorDetails(error);
       await writeGameLog("launch.failed", details);
-      throw new Error(`${details.message} (로그: ${gameLogPath()})`);
+      throw new Error(details.message);
     }
   });
 

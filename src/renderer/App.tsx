@@ -1,20 +1,63 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   AccessStatus,
   CreatedInvite,
   GameStatus,
+  InviteList,
+  LauncherUpdateStatus,
   LauncherUser,
+  LoaderKind,
   ServerConnection,
   ServerPreset,
+  ServerSoftwareKind,
   ServerStatus,
   SyncProgress,
   UserContentFolders,
   UserContentKind
 } from "../shared/types.js";
+import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./styles.css";
 
 const selectedPackStorageKey = "bweeep.selected-pack-id";
+const instanceRootStorageKey = "bweeep.instance-root";
+const gameNamePattern = /^[A-Za-z0-9_]{3,16}$/;
+const adminInviteSizes = [1, 5, 10, 20];
+
+type LogEntry = SyncProgress & { at: number };
+type CatalogState = "loading" | "ready" | "error";
+type DockError = { title: string; message: string };
+type ConfirmRequest = {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => void;
+};
+
+function readStorage(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: string | null): void {
+  try {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch {
+    // Storage is only a convenience; the launcher still works without it.
+  }
+}
+
+/** Electron prefixes rejected IPC calls with the channel name; players only need the reason. */
+function errorMessage(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const message = raw.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^Error:\s*/, "").trim();
+  return message || fallback;
+}
 
 function WindowControls() {
   return (
@@ -23,6 +66,10 @@ function WindowControls() {
       <button type="button" className="closeWindowButton" aria-label="닫기" onClick={() => window.bweeep.closeWindow()}>×</button>
     </div>
   );
+}
+
+function Spinner() {
+  return <span className="spinner" aria-hidden="true" />;
 }
 
 function ProfileAvatar({ user }: { user: LauncherUser }) {
@@ -43,41 +90,92 @@ function ProfileAvatar({ user }: { user: LauncherUser }) {
   );
 }
 
+function EntryLayout({ eyebrow, title, children }: { eyebrow: string; title: string; children?: ReactNode }) {
+  return (
+    <main className="entryScreen">
+      <WindowControls />
+      <section className="entryCard">
+        <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
+        <p className="eyebrow">{eyebrow}</p>
+        <h1>{title}</h1>
+        {children}
+      </section>
+    </main>
+  );
+}
+
+function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; onClose: () => void }) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => cancelRef.current?.focus(), []);
+  return (
+    <div className="modalBackdrop confirmBackdrop" onClick={onClose}>
+      <section className="confirmDialog" role="alertdialog" aria-modal="true" aria-label={request.title} onClick={(event) => event.stopPropagation()}>
+        <h2>{request.title}</h2>
+        <p>{request.body}</p>
+        <div className="confirmActions">
+          <button ref={cancelRef} className="secondaryButton" onClick={onClose}>취소</button>
+          <button
+            className={request.danger ? "dangerButton" : "primaryButton"}
+            onClick={() => {
+              onClose();
+              request.onConfirm();
+            }}
+          >
+            {request.confirmLabel}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function App() {
   const [servers, setServers] = useState<ServerPreset[]>([]);
+  const [catalogState, setCatalogState] = useState<CatalogState>("loading");
+  const [catalogError, setCatalogError] = useState("");
   const [selectedId, setSelectedId] = useState<string>("");
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const [serverChecking, setServerChecking] = useState(false);
   const [serverCheckedAt, setServerCheckedAt] = useState<number | null>(null);
   const [instanceRoot, setInstanceRoot] = useState("");
-  const [logs, setLogs] = useState<SyncProgress[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [syncing, setSyncing] = useState(false);
-  const [launchError, setLaunchError] = useState("");
+  const [dockError, setDockError] = useState<DockError | null>(null);
+  const [joinedServer, setJoinedServer] = useState(false);
   const [loginPending, setLoginPending] = useState(false);
-  const [lastInstanceDir, setLastInstanceDir] = useState("");
+  const [entryError, setEntryError] = useState("");
+  const [accessChecking, setAccessChecking] = useState(false);
   const [user, setUser] = useState<LauncherUser | null>(null);
   const [access, setAccess] = useState<AccessStatus | null>(null);
   const [inviteInput, setInviteInput] = useState("");
+  const [inviteError, setInviteError] = useState("");
+  const [redeeming, setRedeeming] = useState(false);
   const [createdInvite, setCreatedInvite] = useState<CreatedInvite | null>(null);
   const [inviteCopied, setInviteCopied] = useState(false);
   const [inviteLinkCopied, setInviteLinkCopied] = useState(false);
-  const [inviteMaxUses, setInviteMaxUses] = useState(10);
-  const [notice, setNotice] = useState("");
+  const [inviteMaxUses, setInviteMaxUses] = useState(1);
+  const [inviteList, setInviteList] = useState<InviteList | null>(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [settingsNotice, setSettingsNotice] = useState("");
+  const [profileNotice, setProfileNotice] = useState("");
   const [actionToast, setActionToast] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [connection, setConnection] = useState<ServerConnection | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [launcherVersion, setLauncherVersion] = useState("");
+  const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
   const [clockNow, setClockNow] = useState(Date.now());
   const [gameNameInput, setGameNameInput] = useState("");
   const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
   const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
+  const createdInviteRef = useRef<HTMLDivElement>(null);
 
   function applyServerList(serverList: ServerPreset[]) {
     setServers(serverList);
-    const savedId = window.localStorage.getItem(selectedPackStorageKey);
+    const savedId = readStorage(selectedPackStorageKey);
     const initial = serverList.find((server) => server.id === savedId)
       ?? serverList.find((server) => server.default)
       ?? serverList[0];
@@ -87,60 +185,81 @@ function App() {
     setServerCheckedAt(null);
   }
 
+  async function loadCatalog(options: { quiet?: boolean } = {}) {
+    if (!options.quiet) setCatalogState("loading");
+    try {
+      const serverList = await window.bweeep.listServers();
+      applyServerList(serverList);
+      setCatalogError("");
+      setCatalogState(serverList.length > 0 ? "ready" : "error");
+      if (serverList.length === 0) setCatalogError("지금 접속할 수 있는 서버가 없어요.");
+    } catch (error) {
+      if (options.quiet) return;
+      applyServerList([]);
+      setCatalogError(errorMessage(error, "서버 목록을 불러오지 못했어요."));
+      setCatalogState("error");
+    }
+  }
+
   useEffect(() => {
     void Promise.allSettled([
-      window.bweeep.listServers(),
       window.bweeep.defaultInstanceRoot(),
       window.bweeep.accessStatus(),
       window.bweeep.gameStatus(),
       window.bweeep.launcherChannel(),
-      window.bweeep.launcherVersion()
-    ]).then(([serverList, root, status, initialGameStatus, channel, version]) => {
-      if (serverList.status === "fulfilled") {
-        applyServerList(serverList.value);
-      } else {
-        applyServerList([]);
-        setNotice(serverList.reason instanceof Error ? serverList.reason.message : "서버 목록을 불러오지 못했습니다.");
-      }
-      if (root.status === "fulfilled") setInstanceRoot(root.value);
+      window.bweeep.launcherVersion(),
+      window.bweeep.checkLauncherUpdate()
+    ]).then(([root, status, initialGameStatus, channel, version, update]) => {
+      const savedRoot = readStorage(instanceRootStorageKey);
+      if (savedRoot) setInstanceRoot(savedRoot);
+      else if (root.status === "fulfilled") setInstanceRoot(root.value);
       if (status.status === "fulfilled") {
         setAccess(status.value);
         setUser(status.value.user ?? null);
         setGameNameInput(status.value.user?.gameName ?? "");
-        if (status.value.unavailable) setNotice(status.value.reason);
       } else {
         setAccess({ loggedIn: false, allowed: false, isAdmin: false, unavailable: true, reason: "로그인 상태를 확인하지 못했습니다." });
-        setNotice("로그인 상태를 확인하지 못했습니다. 다시 시도해 주세요.");
       }
       if (initialGameStatus.status === "fulfilled") setGameStatus(initialGameStatus.value);
       if (channel.status === "fulfilled") setLauncherChannel(channel.value);
       if (version.status === "fulfilled") setLauncherVersion(version.value);
+      if (update.status === "fulfilled") setLauncherUpdate(update.value);
     });
+    void loadCatalog();
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
-      setLogs((current) => [...current.slice(-99), event]);
-      if (event.kind === "error") setLaunchError(event.message);
+      setLogs((current) => [...current.slice(-199), { ...event, at: Date.now() }]);
+      if (event.stage === "선택 서버 입장") setJoinedServer(true);
+      if (event.stage === "서버 연결 종료" || event.stage === "연결 종료") setJoinedServer(false);
+      // Crashes arrive through the game status; progress errors cover install and connection failures.
+      if (event.kind === "error" && event.stage !== "게임 종료") {
+        setDockError({
+          title: event.stage === "서버 접속 실패" ? "서버에 접속하지 못했어요" : "게임을 시작하지 못했어요",
+          message: event.message
+        });
+      }
     });
     const unsubscribeSession = window.bweeep.onAuthSession((nextUser: LauncherUser) => {
       setLoginPending(false);
+      setEntryError("");
       setUser(nextUser);
       void refreshAccessStatus(nextUser);
-      void window.bweeep.listServers().then(applyServerList).catch((error) => {
-        applyServerList([]);
-        setNotice(error instanceof Error ? error.message : "서버 목록을 불러오지 못했습니다.");
-      });
+      void loadCatalog();
     });
     const unsubscribeGameStatus = window.bweeep.onGameStatus((status) => {
       setGameStatus(status);
-      if (status.exitError && status.exitMessage) setNotice(status.exitMessage);
+      if (status.state === "idle") setJoinedServer(false);
+      if (status.exitError && status.exitMessage) {
+        setDockError({ title: "게임이 비정상 종료됐어요", message: status.exitMessage });
+      }
     });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
-      setNotice(message);
+      setEntryError(message);
     });
+    const unsubscribeUpdate = window.bweeep.onLauncherUpdate(setLauncherUpdate);
     const acceptInvite = (code: string) => {
       setInviteInput(code);
-      setSettingsOpen(true);
-      setNotice("초대 링크를 받았습니다. 로그인 후 참여를 눌러 주세요.");
+      setInviteError("");
     };
     const unsubscribeInvite = window.bweeep.onInviteReceived(acceptInvite);
     void window.bweeep.readyForInvite().then((code) => {
@@ -151,20 +270,21 @@ function App() {
       unsubscribeSession();
       unsubscribeGameStatus();
       unsubscribeError();
+      unsubscribeUpdate();
       unsubscribeInvite();
     };
   }, []);
 
   useEffect(() => {
     if (!actionToast) return;
-    const timer = window.setTimeout(() => setActionToast(""), 2200);
+    const timer = window.setTimeout(() => setActionToast(""), 2400);
     return () => window.clearTimeout(timer);
   }, [actionToast]);
 
   useEffect(() => {
     if (!instanceRoot) return;
     void window.bweeep.userContentFolders(instanceRoot).then(setPersonalFolders).catch((error) => {
-      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 불러오지 못했습니다.");
+      setProfileNotice(errorMessage(error, "개인 콘텐츠 폴더를 불러오지 못했습니다."));
     });
   }, [instanceRoot]);
 
@@ -174,6 +294,17 @@ function App() {
     const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [gameStatus.state]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (confirmRequest) setConfirmRequest(null);
+      else if (settingsOpen) setSettingsOpen(false);
+      else if (profileOpen) setProfileOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [confirmRequest, settingsOpen, profileOpen]);
 
   const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
     setServerChecking(true);
@@ -211,10 +342,14 @@ function App() {
 
   useEffect(() => {
     if (!settingsOpen || !user) return;
-    void window.bweeep.listServers().then(applyServerList).catch((error) => {
-      setNotice(error instanceof Error ? error.message : "서버 목록을 새로고침하지 못했습니다.");
-    });
+    setSettingsNotice("");
+    void loadCatalog({ quiet: true });
+    void refreshInvites();
   }, [settingsOpen]);
+
+  useEffect(() => {
+    if (createdInvite) createdInviteRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [createdInvite]);
 
   const availableServers = useMemo(
     () => servers.filter((server) => server.environment !== "test" || access?.testAllowed === true),
@@ -227,37 +362,44 @@ function App() {
 
   const canUseLauncher = Boolean(access?.allowed);
   const gameBusy = gameStatus.state !== "idle";
+  const gameRunning = gameStatus.state === "running";
   const currentProgress = logs[logs.length - 1];
-  const displayProgress = gameStatus.state === "running" && (!currentProgress || currentProgress.stage === "모드팩 파일")
-    ? { kind: "info" as const, stage: "게임 프로세스", message: "Minecraft 프로세스 실행 중 · 서버 참가 확인 전" }
+  const displayProgress: SyncProgress | undefined = gameRunning && (!currentProgress || currentProgress.stage === "모드팩 파일")
+    ? { kind: "info", stage: "게임 프로세스", message: "게임 창을 여는 중" }
     : currentProgress;
   const showLaunchProgress = syncing || gameBusy;
-  const progressPercent = typeof displayProgress?.completed === "number"
+  const progressPercent = !gameRunning
+    && typeof displayProgress?.completed === "number"
     && typeof displayProgress.total === "number"
     && displayProgress.total > 0
       ? Math.round(Math.max(0, Math.min(1, displayProgress.completed / displayProgress.total)) * 100)
       : null;
   const elapsedSeconds = gameStatus.startedAt ? Math.max(0, Math.floor((clockNow - gameStatus.startedAt) / 1_000)) : null;
-  const serverStatusMessage = serverChecking ? "서버 연결 확인 중" : serverStatus?.message ?? "서버 확인 중";
-  const serverStatusDetail = connection
-    ? serverChecking
-      ? "실시간 검사 중"
-      : serverCheckedAt
-        ? serverStatus?.online
-          ? `${serverStatus.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)} 확인`
-          : ""
-        : "검사 대기 중"
-    : "연결 정보 확인 중";
+  const progressTitle = gameRunning
+    ? joinedServer ? "서버에서 플레이 중" : "게임 실행 중"
+    : displayProgress?.stage ?? "게임 시작 준비";
+  const progressDetail = gameRunning && joinedServer
+    ? selected?.name ?? ""
+    : stripStage(displayProgress?.stage, displayProgress?.message);
+  const savedGameName = user?.gameName ?? "";
+  const vanillaServer = selected ? isVanillaServer(selected) : false;
+  const serverState = catalogState === "error"
+    ? "catalogError"
+    : catalogState === "loading" || !connection
+      ? "loading"
+      : serverStatus
+        ? serverStatus.online ? "online" : "offline"
+        : "checking";
+
   async function refreshAccessStatus(fallbackUser: LauncherUser | null = user) {
-    setNotice("");
+    setAccessChecking(true);
     try {
       const status = await window.bweeep.accessStatus();
       setAccess(status);
-      setUser(status.user ?? fallbackUser);
+      setUser(status.user ?? (status.loggedIn ? fallbackUser : null));
       setGameNameInput(status.user?.gameName ?? fallbackUser?.gameName ?? "");
-      setNotice(status.reason);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "접근 권한을 확인하지 못했습니다.";
+      const message = errorMessage(error, "접근 권한을 확인하지 못했습니다.");
       setAccess({
         loggedIn: Boolean(fallbackUser),
         allowed: false,
@@ -266,87 +408,110 @@ function App() {
         reason: message,
         user: fallbackUser ?? undefined
       });
-      setNotice(message);
+    } finally {
+      setAccessChecking(false);
     }
   }
 
   async function login() {
     if (loginPending) return;
-    setNotice("");
+    setEntryError("");
     setLoginPending(true);
     try {
       const result = await window.bweeep.login();
       if (!result.configured) {
         setLoginPending(false);
-        setNotice(result.message ?? "로그인 설정이 필요합니다.");
+        setEntryError(result.message ?? "로그인 설정이 필요합니다.");
         return;
       }
       if (result.user) {
         setLoginPending(false);
         setUser(result.user);
-        const status = await window.bweeep.accessStatus();
-        setAccess(status);
-        setNotice(status.reason);
-      } else {
-        setNotice(result.message ?? "브라우저에서 로그인을 완료해 주세요.");
+        await refreshAccessStatus(result.user);
+        void loadCatalog();
       }
     } catch (error) {
       setLoginPending(false);
-      setNotice(error instanceof Error ? error.message : String(error));
+      setEntryError(errorMessage(error, "로그인을 시작하지 못했습니다."));
     }
   }
 
   async function cancelLogin() {
     const result = await window.bweeep.cancelLogin();
     if (result.cancelled) setLoginPending(false);
-    setNotice(result.message);
   }
 
   async function redeemInvite() {
-    setNotice("");
+    if (redeeming) return;
+    setInviteError("");
+    setRedeeming(true);
     try {
       const code = normalizeInviteCode(inviteInput);
       const result = await window.bweeep.redeemInvite(code);
-      setAccess(result.status);
-      setNotice(result.message);
-      if (result.ok) setInviteInput("");
+      if (result.ok) {
+        setInviteInput("");
+        setAccess({ ...result.status, user: result.status.user ?? user ?? undefined });
+        await refreshAccessStatus(user);
+        void loadCatalog();
+      } else {
+        setInviteError(result.message);
+      }
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "초대 코드를 사용할 수 없습니다.");
+      setInviteError(errorMessage(error, "초대 코드를 사용할 수 없습니다."));
+    } finally {
+      setRedeeming(false);
     }
   }
+
+  async function refreshInvites() {
+    try {
+      setInviteList(await window.bweeep.listInvites());
+    } catch {
+      // Older launcher-access deployments have no invite list; creating codes still works.
+      setInviteList(null);
+    }
+  }
+
+  const inviteRole = inviteList?.role ?? (access?.isAdmin ? "admin" : "member");
+  const openInviteCount = inviteList?.invites.length ?? 0;
+  const inviteLimitReached = inviteList?.activeLimit != null && openInviteCount >= inviteList.activeLimit;
 
   async function createInvite() {
-    setNotice("");
+    if (inviteBusy) return;
+    setSettingsNotice("");
+    setInviteBusy(true);
     try {
-      setCreatedInvite(await window.bweeep.createInvite(inviteMaxUses));
+      setCreatedInvite(await window.bweeep.createInvite(inviteRole === "admin" ? inviteMaxUses : 1));
       setInviteCopied(false);
       setInviteLinkCopied(false);
+      await refreshInvites();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setSettingsNotice(errorMessage(error, "초대 코드를 만들지 못했습니다."));
+    } finally {
+      setInviteBusy(false);
     }
   }
 
-  async function copyInviteCode() {
-    if (!createdInvite) return;
+  async function revokeInvite(inviteId: string) {
+    setSettingsNotice("");
     try {
-      await window.bweeep.copyText(createdInvite.code);
-      setInviteCopied(true);
-      setNotice("초대 코드를 복사했습니다.");
+      await window.bweeep.revokeInvite(inviteId);
+      if (createdInvite?.id === inviteId) setCreatedInvite(null);
+      setActionToast("초대 코드를 취소했어요");
+      await refreshInvites();
     } catch (error) {
-      setInviteCopied(false);
-      setNotice(error instanceof Error ? error.message : "초대 코드를 복사하지 못했습니다.");
+      setSettingsNotice(errorMessage(error, "초대 코드를 취소하지 못했습니다."));
     }
   }
 
-  async function copyInviteLink() {
+  async function copyInvite(kind: "code" | "link") {
     if (!createdInvite) return;
     try {
-      await window.bweeep.copyText("bwe-e-ep://invite/" + createdInvite.code);
-      setInviteLinkCopied(true);
-      setNotice("초대 링크를 복사했습니다.");
+      await window.bweeep.copyText(kind === "code" ? createdInvite.code : "bwe-e-ep://invite/" + createdInvite.code);
+      if (kind === "code") setInviteCopied(true);
+      else setInviteLinkCopied(true);
     } catch (error) {
-      setInviteLinkCopied(false);
-      setNotice(error instanceof Error ? error.message : "초대 링크를 복사하지 못했습니다.");
+      setSettingsNotice(errorMessage(error, "클립보드에 복사하지 못했습니다."));
     }
   }
 
@@ -354,7 +519,7 @@ function App() {
     const next = servers.find((server) => server.id === nextId);
     if (!next) return;
     setSelectedId(nextId);
-    window.localStorage.setItem(selectedPackStorageKey, nextId);
+    writeStorage(selectedPackStorageKey, nextId);
     setConnection(next.server);
   }
 
@@ -364,42 +529,67 @@ function App() {
       setUser(null);
       setAccess(status);
       setCreatedInvite(null);
+      setInviteList(null);
       setInviteCopied(false);
       setInviteLinkCopied(false);
       setProfileOpen(false);
-      setNotice(status.reason);
+      setSettingsOpen(false);
+      setEntryError("");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setEntryError(errorMessage(error, "로그아웃하지 못했습니다."));
     }
   }
 
+  const trimmedGameName = gameNameInput.trim();
+  const gameNameValid = gameNamePattern.test(trimmedGameName);
+  const gameNameChanged = trimmedGameName !== savedGameName;
+  const gameNameHint = !trimmedGameName
+    ? "영문, 숫자, 밑줄(_)로 3~16자를 입력해 주세요."
+    : /[^A-Za-z0-9_]/.test(trimmedGameName)
+      ? "영문, 숫자, 밑줄(_)만 쓸 수 있어요. 한글과 공백은 사용할 수 없어요."
+      : trimmedGameName.length < 3
+        ? "3자 이상 입력해 주세요."
+        : "";
+
+  function requestSaveGameProfile() {
+    if (!gameNameValid || !gameNameChanged) return;
+    if (savedGameName && vanillaServer) {
+      setConfirmRequest({
+        title: "인게임 이름을 바꿀까요?",
+        body: `바닐라 서버는 이름으로 캐릭터를 구분해요. ${trimmedGameName}(으)로 접속하면 새 캐릭터로 시작하고, 지금 캐릭터(${savedGameName})의 인벤토리와 위치는 이름을 되돌려야 다시 쓸 수 있어요.`,
+        confirmLabel: "이름 바꾸기",
+        onConfirm: () => void saveGameProfile()
+      });
+      return;
+    }
+    void saveGameProfile();
+  }
+
   async function saveGameProfile() {
-    setNotice("");
+    setProfileNotice("");
     try {
-      const saved = await window.bweeep.setGameProfile(gameNameInput.trim());
+      const saved = await window.bweeep.setGameProfile(trimmedGameName);
       setUser(saved);
       setAccess((current) => current ? { ...current, user: saved } : current);
       setGameNameInput(saved.gameName ?? "");
       setActionToast("인게임 이름 변경됨 · 다음 실행부터 적용");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "인게임 이름을 저장하지 못했습니다.");
+      setProfileNotice(errorMessage(error, "인게임 이름을 저장하지 못했습니다."));
     }
   }
 
   async function choosePersonalFolders(kind: UserContentKind) {
     if (contentAction) return;
     setContentAction(kind);
-    setNotice("");
+    setProfileNotice("");
     try {
       const result = await window.bweeep.chooseUserContentFolders(instanceRoot.trim(), kind);
       setPersonalFolders(result.folders);
       if (result.selected > 0) {
         setActionToast((kind === "mods" ? "모드" : "셰이더") + " 폴더 " + result.selected + "개 추가됨 · 다음 실행부터 적용");
-      } else {
-        setNotice("폴더 선택을 취소했거나 이미 추가된 폴더입니다.");
       }
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
+      setProfileNotice(errorMessage(error, "개인 콘텐츠 폴더를 저장하지 못했습니다."));
     } finally {
       setContentAction(null);
     }
@@ -408,135 +598,185 @@ function App() {
   async function removePersonalFolder(kind: UserContentKind, folder: string) {
     if (contentAction) return;
     setContentAction(kind);
-    setNotice("");
+    setProfileNotice("");
     try {
       const folders = await window.bweeep.removeUserContentFolder(instanceRoot.trim(), kind, folder);
       setPersonalFolders(folders);
       setActionToast((kind === "mods" ? "모드" : "셰이더") + " 폴더 제거됨 · 다음 실행부터 미적용");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "개인 콘텐츠 폴더를 저장하지 못했습니다.");
+      setProfileNotice(errorMessage(error, "개인 콘텐츠 폴더를 저장하지 못했습니다."));
     } finally {
       setContentAction(null);
     }
   }
 
+  async function chooseInstanceRoot() {
+    try {
+      const picked = await window.bweeep.chooseInstanceRoot(instanceRoot);
+      if (!picked) return;
+      setInstanceRoot(picked);
+      writeStorage(instanceRootStorageKey, picked);
+      setActionToast("설치 위치 변경됨 · 다음 실행부터 적용");
+    } catch (error) {
+      setSettingsNotice(errorMessage(error, "설치 위치를 바꾸지 못했습니다."));
+    }
+  }
+
+  async function openInstanceRoot() {
+    const failure = await window.bweeep.openPath(instanceRoot).catch(() => "failed");
+    if (failure) setSettingsNotice("아직 설치된 파일이 없어요. 게임을 한 번 시작하면 폴더가 만들어져요.");
+  }
+
+  async function copyLogs() {
+    try {
+      await window.bweeep.copyText(logs.map(formatLogLine).join("\n"));
+      setActionToast("설치 기록을 복사했어요");
+    } catch (error) {
+      setSettingsNotice(errorMessage(error, "클립보드에 복사하지 못했습니다."));
+    }
+  }
+
+  function requestResetSettings() {
+    setConfirmRequest({
+      title: "런처 설정을 초기화할까요?",
+      body: "선택한 서버와 설치 위치, 설치 기록을 기본값으로 되돌려요. 이미 받은 게임 파일과 로그인 계정은 그대로 남아요.",
+      confirmLabel: "초기화",
+      onConfirm: () => void resetSettings()
+    });
+  }
+
   async function resetSettings() {
-    if (!window.confirm("서버 주소와 설치 위치, 화면 로그를 기본값으로 되돌릴까요? 모드팩 파일은 삭제하지 않습니다.")) return;
     try {
       const root = await window.bweeep.defaultInstanceRoot();
-      window.localStorage.removeItem(selectedPackStorageKey);
+      writeStorage(selectedPackStorageKey, null);
+      writeStorage(instanceRootStorageKey, null);
       const initial = servers.find((server) => server.default) ?? servers[0];
       setSelectedId(initial?.id ?? "");
       if (initial) setConnection(initial.server);
       setInstanceRoot(root);
       setLogs([]);
-      setLastInstanceDir("");
       setActionToast("런처 설정 초기화됨");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setSettingsNotice(errorMessage(error, "설정을 초기화하지 못했습니다."));
     }
+  }
+
+  function requestStopGame() {
+    setConfirmRequest({
+      title: "게임을 강제로 종료할까요?",
+      body: "마지막 자동 저장 이후의 진행은 사라질 수 있어요. 가능하면 게임 안에서 '저장하고 나가기'로 종료해 주세요.",
+      confirmLabel: "강제 종료",
+      danger: true,
+      onConfirm: () => {
+        void window.bweeep.stopGame().catch((error) => {
+          setDockError({ title: "게임을 종료하지 못했어요", message: errorMessage(error, "게임 프로세스를 종료하지 못했습니다.") });
+        });
+      }
+    });
+  }
+
+  function dismissDockError() {
+    setDockError(null);
+    setGameStatus((current) => ({ state: current.state, pid: current.pid, startedAt: current.startedAt }));
   }
 
   async function launchSelected() {
     if (!selected || !instanceRoot.trim() || !canUseLauncher || gameBusy) return;
     setSyncing(true);
     setLogs([]);
-    setNotice("");
-    setLaunchError("");
-    setLastInstanceDir("");
+    setDockError(null);
+    setJoinedServer(false);
     try {
-      const next = await window.bweeep.launchGame({ packId: selected.packId, instanceDir: instanceRoot.trim() });
-      setLastInstanceDir(next.instanceDir);
+      await window.bweeep.launchGame({ packId: selected.packId, instanceDir: instanceRoot.trim() });
       const currentStatus = await window.bweeep.gameStatus();
       setGameStatus(currentStatus);
       if (currentStatus.state === "idle" && currentStatus.exitError) {
-        const message = currentStatus.exitMessage ?? "Minecraft 실행 중 오류가 발생했습니다. 게임 로그를 확인하세요.";
-        setLaunchError(message);
-        setNotice(message);
+        setDockError({ title: "게임이 비정상 종료됐어요", message: currentStatus.exitMessage ?? "Minecraft 실행 중 오류가 발생했습니다." });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setLogs((current) => [...current, { kind: "error", message }]);
-      setLaunchError(message);
-      setNotice(message);
+      const message = errorMessage(error, "게임을 시작하지 못했습니다.");
+      setLogs((current) => [...current, { kind: "error", message, at: Date.now() }]);
+      setDockError((current) => current ?? { title: "게임을 시작하지 못했어요", message });
     } finally {
       setSyncing(false);
     }
   }
 
+  const confirmDialog = confirmRequest && <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(null)} />;
+
   if (!access) {
     return (
-      <main className="entryScreen">
-        <WindowControls />
-        <section className="entryCard isLoading">
-          <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
-          <p className="eyebrow">Bweeep launcher</p>
-          <h1>런처를 준비하고 있어요</h1>
-        </section>
-      </main>
+      <EntryLayout eyebrow="붸에엡 런처" title="런처를 준비하고 있어요">
+        <div className="entryStatus"><Spinner />잠시만 기다려 주세요</div>
+      </EntryLayout>
     );
   }
 
   if (!user) {
     return (
-      <main className="entryScreen">
-        <WindowControls />
-        <section className="entryCard">
-          <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
-          <p className="eyebrow">Bweeep launcher</p>
-          <h1>로그인하고 시작하세요</h1>
-          <p className="entryDescription">친구 전용 생존 서버는 로그인 후에 표시됩니다.</p>
-          <div className="entryChoices">
-            <button disabled={loginPending} onClick={() => void login()}>
-              <strong>{loginPending ? "Discord 로그인 진행 중" : "Discord로 로그인"}</strong>
-              <span>{loginPending ? "브라우저에서 인증을 완료해 주세요" : "Discord 프로필로 참가"}</span>
-            </button>
-          </div>
-          {loginPending && <button className="cancelLoginButton" onClick={() => void cancelLogin()}>로그인 취소</button>}
-          {notice && <p className="notice">{notice}</p>}
-        </section>
-      </main>
+      <EntryLayout eyebrow="붸에엡 런처" title="로그인하고 시작하세요">
+        <p className="entryDescription">친구 전용 서버는 Discord로 로그인한 뒤에 볼 수 있어요.</p>
+        <div className="entryActions">
+          <button className="primaryButton entryPrimary" disabled={loginPending} onClick={() => void login()}>
+            {loginPending ? <><Spinner />브라우저에서 로그인하는 중</> : "Discord로 로그인"}
+          </button>
+          {loginPending && <p className="entryHint">Discord 인증을 마치면 런처로 자동으로 돌아와요.</p>}
+          {loginPending && <button className="textButton" onClick={() => void cancelLogin()}>로그인 취소</button>}
+        </div>
+        {entryError && <p className="fieldError" role="alert">{entryError}</p>}
+      </EntryLayout>
     );
   }
 
   if (access.unavailable) {
     return (
-      <main className="entryScreen">
-        <WindowControls />
-        <section className="entryCard">
-          <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
-          <p className="eyebrow">Connection check</p>
-          <h1>권한 확인에 실패했어요</h1>
-          <p className="entryDescription">{access.reason}</p>
-          <div className="entryRecovery">
-            <button onClick={() => void refreshAccessStatus(user)}>다시 확인</button>
-            <button className="entryLogout" onClick={() => void logout()}>다른 계정으로 로그인</button>
-          </div>
-        </section>
-      </main>
+      <EntryLayout eyebrow="연결 확인" title="권한을 확인하지 못했어요">
+        <p className="entryDescription">인터넷 연결이나 서버 상태 때문일 수 있어요. 잠시 뒤 다시 확인해 주세요.</p>
+        <p className="entryDetail">{access.reason}</p>
+        <div className="entryActions">
+          <button className="primaryButton entryPrimary" disabled={accessChecking} onClick={() => void refreshAccessStatus(user)}>
+            {accessChecking ? <><Spinner />확인하는 중</> : "다시 확인"}
+          </button>
+          <button className="textButton" onClick={() => void logout()}>다시 로그인</button>
+        </div>
+      </EntryLayout>
     );
   }
 
   if (!access.allowed) {
     return (
-      <main className="entryScreen">
-        <WindowControls />
-        <section className="entryCard">
-          <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
-          <p className="eyebrow">멤버 전용</p>
-          <h1>초대 코드를 입력하세요</h1>
-          <p className="entryDescription">{access.reason}</p>
-          <div className="entryInvite">
-            <input value={inviteInput} placeholder="초대 코드" onChange={(event) => setInviteInput(event.target.value)} />
-            <button disabled={!inviteInput.trim()} onClick={() => void redeemInvite()}>참여</button>
-          </div>
-          <p className="inviteHint">친구에게 받은 BWEEP 초대 코드를 붙여 넣으세요.</p>
-          <button className="entryLogout" onClick={() => void logout()}>다른 계정으로 로그인</button>
-          {notice && <p className="notice">{notice}</p>}
-        </section>
-      </main>
+      <EntryLayout eyebrow="멤버 전용" title="초대 코드를 입력하세요">
+        <p className="entryDescription">친구에게 받은 초대 코드나 초대 링크로 참여할 수 있어요.</p>
+        <form
+          className="entryInvite"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void redeemInvite();
+          }}
+        >
+          <input
+            aria-label="초대 코드"
+            aria-invalid={Boolean(inviteError)}
+            value={inviteInput}
+            placeholder="BWEEP-XXXXXXXXXXXX-XXXXXXXXXXXX"
+            onChange={(event) => {
+              setInviteInput(event.target.value);
+              setInviteError("");
+            }}
+          />
+          <button className="primaryButton" type="submit" disabled={!inviteInput.trim() || redeeming}>
+            {redeeming ? <Spinner /> : "참여"}
+          </button>
+        </form>
+        {inviteError && <p className="fieldError" role="alert">{inviteError}</p>}
+        <div className="entryActions">
+          <button className="textButton" onClick={() => void logout()}>다른 계정으로 로그인</button>
+        </div>
+      </EntryLayout>
     );
   }
+
+  const updateBanner = launcherUpdateBanner(launcherUpdate);
 
   return (
     <main className="shell">
@@ -551,30 +791,57 @@ function App() {
           </div>
         </div>
 
-        <nav className="iconRail" aria-label="주 메뉴">
-          <button className="iconButton active">홈</button>
-          <button className="iconButton" onClick={() => setProfileOpen(true)}>계정</button>
-          <button className="iconButton" onClick={() => setSettingsOpen(true)}>설정</button>
+        <nav className="sideActions" aria-label="메뉴">
+          <button className="sideAction" onClick={() => setProfileOpen(true)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c.8-3.4 3.1-5.2 7-5.2s6.2 1.8 7 5.2" /></svg>
+            <span>계정</span>
+          </button>
+          <button className="sideAction" onClick={() => setSettingsOpen(true)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
+            <span>설정</span>
+          </button>
         </nav>
         <div className="supportPanel">
-          <div>
-            <span className="accessStamp">서버 멤버 전용</span>
-            <strong>함께하는 모드팩 서버</strong>
-            <p>초대받은 친구들과 같은 Minecraft 버전으로 바로 시작할 수 있어요.</p>
-          </div>
+          <span className="accessStamp">멤버 전용</span>
+          <strong>함께하는 서버</strong>
+          <p>초대받은 친구들과 같은 Minecraft 버전으로 바로 접속할 수 있어요.</p>
         </div>
       </aside>
 
       <section className="content">
         <header className="topbar">
-          <div className="searchStub">
-            <span className={`statusDot ${serverChecking ? "checking" : serverStatus?.online ? "online" : ""}`} />
-            <div><strong>{serverStatusMessage}</strong><small>{serverStatusDetail}</small></div>
+          <div className={`serverPill is-${serverState}`}>
+            <span className="statusDot" />
+            <div>
+              <strong>{serverStateLabel(serverState)}</strong>
+              <small>
+                {serverState === "online" && serverCheckedAt
+                  ? `${serverStatus?.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt, clockNow)} 확인`
+                  : serverState === "offline"
+                    ? "서버가 꺼져 있거나 연결할 수 없어요"
+                    : serverState === "catalogError"
+                      ? "서버 목록을 받지 못했어요"
+                      : "잠시만 기다려 주세요"}
+              </small>
+            </div>
+            {(serverState === "offline" || serverState === "catalogError") && (
+              <button
+                className="pillAction"
+                disabled={serverChecking}
+                onClick={() => serverState === "catalogError" ? void loadCatalog() : connection && void refreshServerStatus(connection)}
+              >
+                {serverChecking ? "확인 중" : "다시 확인"}
+              </button>
+            )}
           </div>
+          {updateBanner && <div className="updateBanner" role="status">{updateBanner}</div>}
           <div className="topbarActions">
             <button className="profileBox" onClick={() => setProfileOpen(true)}>
               <ProfileAvatar user={user} />
-              <div><strong>{user.globalName ?? user.username}</strong><small>Discord</small></div>
+              <div>
+                <strong>{user.globalName ?? user.username}</strong>
+                <small>{savedGameName ? `인게임 · ${savedGameName}` : "인게임 이름 미설정"}</small>
+              </div>
             </button>
             <WindowControls />
           </div>
@@ -582,152 +849,209 @@ function App() {
         <section className="hero">
           <div className="heroBackdrop" />
           <div className="heroCopy">
-            <p className="eyebrow">전용 서버</p>
-            <h2>{selected?.name ?? "서버 없음"}</h2>
-            <p>서버에 맞는 Minecraft 버전을 준비하고, 바로 같은 월드로 접속합니다.</p>
-            {!selected && <p className="notice">{notice || "서버 목록을 불러오지 못했습니다."}</p>}
-            <div className="chips">
-              <span>Minecraft {selected?.minecraftVersion ?? "-"}</span>
-              <span>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected?.loader.kind ?? "-"}</span>
-              <span>{selected?.environment === "test" ? "지정 테스터 전용" : "서버 멤버 전용"}</span>
-            </div>
+            {catalogState === "error" ? (
+              <>
+                <p className="eyebrow">서버 목록</p>
+                <h2>서버에 연결하지 못했어요</h2>
+                <p>인터넷 연결을 확인한 뒤 다시 불러와 주세요. ({catalogError})</p>
+                <button className="secondaryButton heroRetry" onClick={() => void loadCatalog()}>다시 불러오기</button>
+              </>
+            ) : catalogState === "loading" && !selected ? (
+              <>
+                <p className="eyebrow">서버 목록</p>
+                <h2>서버를 불러오는 중</h2>
+              </>
+            ) : selected && (
+              <>
+                <p className="eyebrow">{selected.environment === "test" ? "테스트 서버" : "함께하는 서버"}</p>
+                <h2>{selected.name}</h2>
+                <p>서버에 맞는 Minecraft를 알아서 준비하고, 바로 같은 월드로 접속해요.</p>
+                <div className="chips">
+                  <span>Minecraft {selected.minecraftVersion}</span>
+                  <span>{serverKindLabel(selected)}</span>
+                  <span>{selected.environment === "test" ? "지정 테스터 전용" : "멤버 전용"}</span>
+                </div>
+              </>
+            )}
           </div>
           <div className="actionDock" aria-live="polite">
             {actionToast && <div className="actionToast" role="status">{actionToast}</div>}
-            {showLaunchProgress && (
-              <div className="launchProgress" role="status">
-                <div className="launchProgressHeading">
-                  <strong>{[displayProgress?.stage, displayProgress?.message].filter(Boolean).join(" · ") || "게임 시작 준비"}</strong>
-                  <span>{progressPercent !== null ? String(progressPercent) + "%" : elapsedSeconds !== null ? String(Math.floor(elapsedSeconds / 60)) + "분 " + String(elapsedSeconds % 60).padStart(2, "0") + "초" : "진행 중"}</span>
+            {dockError && !gameBusy && !syncing && (
+              <div className="dockError" role="alert">
+                <div>
+                  <strong>{dockError.title}</strong>
+                  <p>{dockError.message}</p>
                 </div>
-                <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />
+                <div className="dockErrorActions">
+                  <button className="secondaryButton" onClick={() => void window.bweeep.openLog("game")}>로그 열기</button>
+                  <button className="iconOnly" aria-label="오류 닫기" onClick={dismissDockError}>×</button>
+                </div>
               </div>
             )}
-            <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={gameBusy} onClick={launchSelected}>
-              {gameStatus.state === "running" ? "게임 중" : showLaunchProgress ? "게임 시작 중" : "게임 시작"}
-            </button>
-            {(launchError || (gameStatus.exitError ? gameStatus.exitMessage : "")) && <p className={"launchNotice" + (gameStatus.exitError || launchError ? " isError" : "")}>{launchError || gameStatus.exitMessage}</p>}
+            {!dockError && !gameBusy && !syncing && serverState === "offline" && (
+              <p className="dockHint">서버가 응답하지 않아요. 게임은 켤 수 있지만 접속은 안 될 수 있어요.</p>
+            )}
+            {showLaunchProgress && (
+              <div className={`launchProgress${gameRunning && joinedServer ? " isPlaying" : ""}`} role="status">
+                <div className="launchProgressHeading">
+                  <strong>{progressTitle}</strong>
+                  <span>{progressPercent !== null ? `${progressPercent}%` : elapsedSeconds !== null ? formatElapsed(elapsedSeconds) : ""}</span>
+                </div>
+                {progressDetail && <small title={progressDetail}>{progressDetail}</small>}
+                {!(gameRunning && joinedServer) && <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />}
+              </div>
+            )}
+            <div className="launchRow">
+              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={showLaunchProgress} onClick={launchSelected}>
+                {gameRunning ? "게임 실행 중" : showLaunchProgress ? <><Spinner />게임 시작 중</> : "게임 시작"}
+              </button>
+              {gameRunning && gameStatus.pid && (
+                <button className="stopButton" onClick={requestStopGame}>게임 종료</button>
+              )}
+            </div>
           </div>
         </section>
         <section className="serverSummary" aria-label="서버 정보">
-          <article className="quickFact"><span className="factIcon">●</span><span>서버 상태</span><strong>{serverStatusMessage}</strong><small>{serverCheckedAt && !serverChecking && serverStatus?.online ? `${serverStatus.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt)}` : serverStatus?.online ? "실시간 확인" : ""}</small></article>
-          <article className="quickFact"><span className="factIcon">◆</span><span>게임</span><strong>{selected?.name ?? "없음"}</strong></article>
-          <article className="quickFact"><span className="factIcon">▰</span><span>Minecraft</span><strong>{selected?.minecraftVersion ?? "-"}</strong></article>
-          <article className="quickFact"><span className="factIcon">◈</span><span>클라이언트</span><strong>{selected?.loader.kind === "vanilla" ? "Vanilla" : selected ? `${selected.loader.kind} ${selected.loader.version}` : "-"}</strong><small>서버: {selected?.serverLoader ? `${selected.serverLoader.kind} ${selected.serverLoader.version}` : "정보 미등록"}</small></article>
+          <article className="quickFact">
+            <span>인게임 이름</span>
+            <strong>{savedGameName || "미설정"}</strong>
+            <button className="factLink" onClick={() => setProfileOpen(true)}>변경</button>
+          </article>
+          <article className="quickFact"><span>Minecraft</span><strong>{selected?.minecraftVersion ?? "-"}</strong></article>
+          <article className="quickFact"><span>서버</span><strong>{selected ? serverKindLabel(selected) : "-"}</strong><small>{selected ? selected.environment === "test" ? "테섭" : "본섭" : ""}</small></article>
+          <article className="quickFact"><span>클라이언트</span><strong>{selected ? loaderLabel(selected.loader.kind) : "-"}</strong><small>{selected && selected.loader.kind !== "vanilla" ? selected.loader.version : ""}</small></article>
         </section>
       </section>
 
       {settingsOpen && (
         <div className="modalBackdrop" onClick={() => setSettingsOpen(false)}>
-          <section className="settingsModal" aria-label="설정" onClick={(event) => event.stopPropagation()}>
+          <section className="modal settingsModal" role="dialog" aria-modal="true" aria-label="런처 설정" onClick={(event) => event.stopPropagation()}>
             <header className="modalHeader">
               <div>
-                <p className="eyebrow">Settings</p>
+                <p className="eyebrow">설정</p>
                 <h2>런처 설정</h2>
               </div>
               <button className="closeButton" onClick={() => setSettingsOpen(false)}>닫기</button>
             </header>
 
-            <div className="settingsGrid">
-              <article className="panel serverSelectPanel">
+            <div className="modalBody">
+              {settingsNotice && <p className="noticeBar" role="alert">{settingsNotice}</p>}
+              <article className="panel">
                 <div className="panelHeader">
                   <h3>서버 선택</h3>
-                  <span>본섭과 테섭 전환은 여기에서만 바꿉니다.</span>
+                  <span>본섭과 테섭은 여기에서 바꿔요.</span>
                 </div>
                 <div className="serverChoiceGrid">
                   {availableServers.map((server) => (
                     <button
-                      className={`serverChoice ${server.id === selected?.id ? "active" : ""}`}
+                      className={`serverChoice${server.id === selected?.id ? " active" : ""}`}
                       key={server.id}
+                      aria-pressed={server.id === selected?.id}
                       onClick={() => void selectServer(server.id)}
                       type="button"
                     >
-                      <span>{server.environment === "test" ? "테섭" : "본섭"}</span>
+                      <span className={`serverBadge${server.environment === "test" ? " isTest" : ""}`}>{server.environment === "test" ? "테섭" : "본섭"}</span>
                       <strong>{server.name}</strong>
-                      <small>Minecraft {server.minecraftVersion} · {server.loader.kind === "vanilla" ? "Vanilla" : `${server.loader.kind} ${server.loader.version}`}</small>
+                      <small>Minecraft {server.minecraftVersion} · {serverKindLabel(server)}</small>
+                      <small className="serverAddress">{server.server.host}:{server.server.port}</small>
                     </button>
                   ))}
+                  {availableServers.length === 0 && <p className="emptyText">{catalogError || "서버 목록을 불러오는 중이에요."}</p>}
                 </div>
               </article>
 
-              <article className="panel connectionPanel">
-                <div className="panelHeader">
-                  <h3>서버 연결</h3>
-                <span>선택한 프리셋의 서버로 자동 연결합니다.</span>
-              </div>
-              <p className="connectionSummary">{selected ? `${selected.server.host}:${selected.server.port}` : "서버를 선택해 주세요."}</p>
-              </article>
-
-              <article className="panel accessPanel">
-                <div className="panelHeader">
-                  <h3>접근 권한</h3>
-                  <span>{access?.reason ?? "확인 중"}</span>
-                </div>
-                <div className="inviteRow">
-                  <input value={inviteInput} placeholder="초대 코드" onChange={(event) => setInviteInput(event.target.value)} />
-                  <button disabled={!user || !inviteInput.trim()} onClick={() => void redeemInvite()}>참여</button>
-                </div>
-                {access?.allowed && (
-                  <div className="adminTools">
-                    <div className="inviteCreateRow">
-                      <label>
-                        사용 인원
-                        <select value={inviteMaxUses} onChange={(event) => setInviteMaxUses(Number(event.target.value))}>
-                          <option value={1}>1명</option>
-                          <option value={5}>5명</option>
-                          <option value={10}>10명</option>
-                          <option value={20}>20명</option>
-                        </select>
-                      </label>
-                      <button onClick={() => void createInvite()}>{inviteMaxUses}명용 초대 만들기</button>
-                    </div>
-                    {createdInvite && (
-                      <div className="createdInvite">
-                        <code>{createdInvite.code}</code>
-                        <button onClick={() => void copyInviteCode()}>{inviteCopied ? "복사됨" : "코드 복사"}</button>
-                        <button onClick={() => void copyInviteLink()}>{inviteLinkCopied ? "링크 복사됨" : "링크 복사"}</button>
-                        <small>{createdInvite.maxUses}명까지 · {new Date(createdInvite.expiresAt).toLocaleDateString("ko-KR")} 만료</small>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {notice && <p className="notice">{notice}</p>}
-              </article>
-
-              <article className="panel installPanel">
+              <article className="panel">
                 <div className="panelHeader">
                   <h3>설치 위치</h3>
-                  {lastInstanceDir && <button onClick={() => void window.bweeep.openPath(lastInstanceDir)}>폴더 열기</button>}
+                  <span>게임 파일을 받는 폴더예요.</span>
                 </div>
-                <input
-                  value={instanceRoot}
-                  onChange={(event: React.ChangeEvent<HTMLInputElement>) => setInstanceRoot(event.target.value)}
-                />
+                <div className="pathRow">
+                  <p className="pathValue" title={instanceRoot}>{instanceRoot || "-"}</p>
+                  <button className="secondaryButton" disabled={gameBusy} onClick={() => void chooseInstanceRoot()}>변경</button>
+                  <button className="secondaryButton" onClick={() => void openInstanceRoot()}>폴더 열기</button>
+                </div>
               </article>
-            </div>
 
-            <section className="panel logPanel">
-              <div className="panelHeader">
-                <h3>설치 로그</h3>
-              </div>
-              <div className="log">
-                {logs.length === 0 ? (
-                  <p className="empty">권한 확인 후 업데이트를 시작할 수 있습니다.</p>
-                ) : (
-                  logs.map((entry, index) => (
-                    <p className={`logLine ${entry.kind}`} key={`${entry.kind}-${index}`}>
-                      {entry.message}
-                    </p>
-                  ))
+              <article className="panel">
+                <div className="panelHeader">
+                  <h3>친구 초대</h3>
+                  <span>
+                    {inviteRole === "admin"
+                      ? "관리자 · 여러 명이 함께 쓰는 코드를 만들 수 있어요."
+                      : `1회용 코드 · 7일 동안 유효${inviteList?.activeLimit != null ? ` · 사용 전 코드 최대 ${inviteList.activeLimit}개` : ""}`}
+                  </span>
+                </div>
+                <div className="inviteCreateRow">
+                  {inviteRole === "admin" && (
+                    <div className="segmented" role="radiogroup" aria-label="사용 인원">
+                      {adminInviteSizes.filter((size) => size <= (inviteList?.maxUsesLimit ?? 20)).map((size) => (
+                        <button
+                          key={size}
+                          role="radio"
+                          aria-checked={inviteMaxUses === size}
+                          className={inviteMaxUses === size ? "active" : ""}
+                          onClick={() => setInviteMaxUses(size)}
+                        >
+                          {size}명
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <button className="primaryButton" disabled={inviteBusy || inviteLimitReached} onClick={() => void createInvite()}>
+                    {inviteBusy ? <Spinner /> : null}
+                    {inviteRole === "admin" ? `${inviteMaxUses}명용 초대 만들기` : "초대 코드 만들기"}
+                  </button>
+                  {inviteLimitReached && <span className="mutedText">사용 전 코드가 {inviteList?.activeLimit}개 있어요. 하나를 취소하면 새로 만들 수 있어요.</span>}
+                </div>
+                {createdInvite && (
+                  <div className="createdInvite" ref={createdInviteRef}>
+                    <code>{createdInvite.code}</code>
+                    <div className="createdInviteActions">
+                      <button className="secondaryButton" onClick={() => void copyInvite("code")}>{inviteCopied ? "복사됨" : "코드 복사"}</button>
+                      <button className="secondaryButton" onClick={() => void copyInvite("link")}>{inviteLinkCopied ? "링크 복사됨" : "링크 복사"}</button>
+                    </div>
+                    <small>{createdInvite.maxUses === 1 ? "1회용" : `${createdInvite.maxUses}명까지`} · {formatDate(createdInvite.expiresAt)} 만료 · 이 코드는 지금만 볼 수 있어요</small>
+                  </div>
                 )}
-              </div>
-            </section>
-            <footer className="settingsFooter">
-              <button className="resetButton" onClick={() => void resetSettings()}>설정 초기화</button>
-              <div className="settingsFooterInfo">
-                <span>모드팩 파일과 로그인 계정은 삭제하지 않습니다.</span>
-                {launcherVersion && <small>붸에엡 v{launcherVersion}{launcherChannel === "test" ? " · 테스트" : ""}</small>}
-              </div>
+                {inviteList && inviteList.invites.length > 0 && (
+                  <div className="inviteList">
+                    <p className="inviteListTitle">사용 전 초대 코드 {inviteList.invites.length}개</p>
+                    {inviteList.invites.map((invite) => (
+                      <div className="inviteItem" key={invite.id}>
+                        <span>
+                          {invite.maxUses === 1 ? "1회용" : `${invite.uses}/${invite.maxUses}명 사용`}
+                          {" · "}{formatDate(invite.createdAt)} 생성 · {formatDate(invite.expiresAt)} 만료
+                        </span>
+                        <button className="textButton" onClick={() => void revokeInvite(invite.id)}>취소</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+
+              <section className="panel logPanel">
+                <div className="panelHeader">
+                  <h3>설치 기록</h3>
+                  {logs.length > 0 && <button className="secondaryButton" onClick={() => void copyLogs()}>복사</button>}
+                </div>
+                <div className="log">
+                  {logs.length === 0 ? (
+                    <p className="empty">아직 기록이 없어요. 게임을 시작하면 설치와 실행 과정이 여기에 표시돼요.</p>
+                  ) : (
+                    logs.map((entry, index) => (
+                      <p className={`logLine ${entry.kind}`} key={`${entry.at}-${index}`}>
+                        <time>{formatClock(entry.at)}</time>
+                        {entry.stage && <b>{entry.stage}</b>}
+                        <span>{stripStage(entry.stage, entry.message)}</span>
+                      </p>
+                    ))
+                  )}
+                </div>
+              </section>
+            </div>
+            <footer className="modalFooter">
+              <button className="textButton" onClick={requestResetSettings}>설정 초기화</button>
+              {launcherVersion && <small className="versionText">붸에엡 v{launcherVersion}{launcherChannel === "test" ? " · 테스트 채널" : ""}</small>}
             </footer>
           </section>
         </div>
@@ -735,65 +1059,166 @@ function App() {
 
       {profileOpen && (
         <div className="modalBackdrop" onClick={() => setProfileOpen(false)}>
-          <section className="profileModal" aria-label="계정 및 서버 설정" onClick={(event) => event.stopPropagation()}>
+          <section className="modal profileModal" role="dialog" aria-modal="true" aria-label="계정" onClick={(event) => event.stopPropagation()}>
             <header className="modalHeader">
-              <div>
-                <p className="eyebrow">Discord 계정</p>
-                <h2>{user?.globalName ?? user?.username ?? "계정"}</h2>
+              <div className="profileHeading">
+                <ProfileAvatar user={user} />
+                <div>
+                  <p className="eyebrow">계정</p>
+                  <h2>{user.globalName ?? user.username}</h2>
+                  <small>Discord로 로그인됨</small>
+                </div>
               </div>
               <button className="closeButton" onClick={() => setProfileOpen(false)}>닫기</button>
             </header>
-            <section className="panel connectionPanel">
-              <div className="panelHeader">
-                <h3>인게임 프로필</h3>
-                <span>Discord 계정에 연결되어 모든 서버에서 사용됩니다.</span>
-              </div>
-              <div className="connectionFields">
-                <label>인게임 이름<input maxLength={16} value={gameNameInput} placeholder="영문·숫자·밑줄 3~16자" onChange={(event: React.ChangeEvent<HTMLInputElement>) => setGameNameInput(event.target.value)} /></label>
-              </div>
-              <button disabled={!/^[A-Za-z0-9_]{3,16}$/.test(gameNameInput.trim())} onClick={() => void saveGameProfile()}>인게임 이름 저장</button>
-            </section>
-            <section className="panel connectionPanel">
-              <div className="panelHeader">
-                <h3>내 모드와 셰이더</h3>
-                <span>선택한 폴더를 모두 저장해 서버 전환 뒤에도 적용합니다.</span>
-              </div>
-              <div className="contentFolderGroups">
-                {(["mods", "shaderpacks"] as const).map((kind) => (
-                  <div className="contentFolderGroup" key={kind}>
-                    <div className="contentFolderLabel">
-                      <strong>{kind === "mods" ? "모드 폴더" : "셰이더 폴더"}</strong>
-                      <span>{kind === "mods" ? ".jar" : ".zip"} 파일 · 여러 폴더 가능</span>
+            <div className="modalBody">
+              {profileNotice && <p className="noticeBar" role="alert">{profileNotice}</p>}
+              <section className="panel">
+                <div className="panelHeader">
+                  <h3>인게임 이름</h3>
+                  <span>모든 서버에서 이 이름으로 접속해요.</span>
+                </div>
+                <form
+                  className="nameRow"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    requestSaveGameProfile();
+                  }}
+                >
+                  <input
+                    aria-label="인게임 이름"
+                    aria-invalid={Boolean(trimmedGameName) && !gameNameValid}
+                    maxLength={16}
+                    value={gameNameInput}
+                    placeholder="영문·숫자·밑줄 3~16자"
+                    onChange={(event) => setGameNameInput(event.target.value)}
+                  />
+                  <button className="primaryButton" type="submit" disabled={!gameNameValid || !gameNameChanged}>저장</button>
+                </form>
+                {gameNameHint && gameNameChanged && <p className="fieldError">{gameNameHint}</p>}
+                {vanillaServer && savedGameName && gameNameChanged && gameNameValid && (
+                  <p className="fieldWarning">바닐라 서버에서는 이름을 바꾸면 새 캐릭터로 시작해요. 지금 캐릭터는 이름을 되돌려야 다시 쓸 수 있어요.</p>
+                )}
+              </section>
+              <section className="panel">
+                <div className="panelHeader">
+                  <h3>내 모드와 셰이더</h3>
+                  <span>게임을 시작할 때 이 폴더의 파일을 함께 넣어요.</span>
+                </div>
+                <div className="contentFolderGroups">
+                  {(["mods", "shaderpacks"] as const).map((kind) => (
+                    <div className="contentFolderGroup" key={kind}>
+                      <div className="contentFolderLabel">
+                        <strong>{kind === "mods" ? "모드 폴더" : "셰이더 폴더"}</strong>
+                        <span>{kind === "mods" ? ".jar" : ".zip"} 파일 · 여러 폴더 가능</span>
+                      </div>
+                      <div className="contentFolderList">
+                        {personalFolders[kind].length === 0 ? <p>선택한 폴더가 없어요.</p> : personalFolders[kind].map((folder) => (
+                          <div className="contentFolderItem" key={folder} title={folder}>
+                            <span>{shortenPath(folder)}</span>
+                            <button aria-label={`${kind === "mods" ? "모드" : "셰이더"} 폴더 제거`} disabled={contentAction !== null} onClick={() => void removePersonalFolder(kind, folder)}>×</button>
+                          </div>
+                        ))}
+                      </div>
+                      <button className="secondaryButton contentFolderAdd" disabled={!instanceRoot.trim() || contentAction !== null} onClick={() => void choosePersonalFolders(kind)}>
+                        {contentAction === kind ? "저장 중…" : `${kind === "mods" ? "모드" : "셰이더"} 폴더 선택`}
+                      </button>
                     </div>
-                    <div className="contentFolderList">
-                      {personalFolders[kind].length === 0 ? <p>선택한 폴더가 없습니다.</p> : personalFolders[kind].map((folder) => (
-                        <div className="contentFolderItem" key={folder} title={folder}>
-                          <span>{folder}</span>
-                          <button aria-label={`${kind === "mods" ? "모드" : "셰이더"} 폴더 제거`} disabled={contentAction !== null} onClick={() => void removePersonalFolder(kind, folder)}>×</button>
-                        </div>
-                      ))}
-                    </div>
-                    <button className="contentFolderAdd" disabled={!instanceRoot.trim() || contentAction !== null} onClick={() => void choosePersonalFolders(kind)}>
-                      {contentAction === kind ? "저장 중…" : `${kind === "mods" ? "모드" : "셰이더"} 폴더 선택`}
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <p className="notice">같은 이름의 파일도 서로 다른 선택 폴더에 있으면 함께 적용합니다. 현재 Minecraft 버전과 로더에 맞는 파일만 사용하세요.</p>
-            </section>
-            <footer className="profileFooter">
-              <button className="logoutButton" onClick={() => void logout()}>Discord 로그아웃</button>
+                  ))}
+                </div>
+                <p className="mutedText">서버와 같은 Minecraft 버전·로더용 파일만 넣어 주세요. 맞지 않는 모드는 게임이 켜지지 않는 원인이 돼요.</p>
+              </section>
+            </div>
+            <footer className="modalFooter">
+              <button className="textButton dangerText" onClick={() => void logout()}>Discord 로그아웃</button>
             </footer>
           </section>
         </div>
       )}
 
+      {confirmDialog}
     </main>
   );
 }
 
 function normalizeInviteCode(value: string): string {
-  return value.trim().toUpperCase();
+  const trimmed = value.trim();
+  const fromLink = trimmed.match(/invite\/([A-Za-z0-9-]+)/);
+  return (fromLink ? fromLink[1] : trimmed).toUpperCase();
+}
+
+function stripStage(stage: string | undefined, message: string | undefined): string {
+  if (!message) return "";
+  if (!stage || !message.startsWith(stage)) return message;
+  return message.slice(stage.length).replace(/^[\s:·-]+/, "");
+}
+
+function loaderLabel(kind: LoaderKind | ServerSoftwareKind): string {
+  const labels: Record<string, string> = {
+    vanilla: "바닐라",
+    fabric: "Fabric",
+    forge: "Forge",
+    neoforge: "NeoForge",
+    paper: "Paper",
+    folia: "Folia"
+  };
+  return labels[kind] ?? kind;
+}
+
+function isVanillaServer(server: ServerPreset): boolean {
+  return (server.serverLoader?.kind ?? server.loader.kind) === "vanilla";
+}
+
+function serverKindLabel(server: ServerPreset): string {
+  const kind = server.serverLoader?.kind ?? server.loader.kind;
+  return kind === "vanilla" ? "바닐라 서버" : `${loaderLabel(kind)} 서버`;
+}
+
+function serverStateLabel(state: string): string {
+  switch (state) {
+    case "online": return "서버 온라인";
+    case "offline": return "서버 응답 없음";
+    case "catalogError": return "서버 목록 오류";
+    case "loading": return "서버 불러오는 중";
+    default: return "서버 확인 중";
+  }
+}
+
+function launcherUpdateBanner(status: LauncherUpdateStatus | null): string {
+  if (!status) return "";
+  const version = status.update?.version ? ` v${status.update.version}` : "";
+  if (status.state === "downloading") return `런처 업데이트${version} 받는 중 ${status.percent ?? 0}%`;
+  if (status.state === "ready") return `런처 업데이트${version} 준비됨 · 게임을 끄면 설치돼요`;
+  if (status.state === "installing") return `런처 업데이트${version} 설치를 위해 곧 다시 시작해요`;
+  return "";
+}
+
+function shortenPath(value: string): string {
+  if (value.length <= 40) return value;
+  const parts = value.split(/[\\/]+/).filter(Boolean);
+  const tail = parts.slice(-2).join("\\");
+  return `${parts[0]}\\…\\${tail}`;
+}
+
+function formatElapsed(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+function formatClock(timestamp: number): string {
+  const date = new Date(timestamp);
+  return [date.getHours(), date.getMinutes(), date.getSeconds()].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("ko-KR", { month: "long", day: "numeric" });
+}
+
+function formatLogLine(entry: LogEntry): string {
+  return [formatClock(entry.at), entry.stage, stripStage(entry.stage, entry.message)].filter(Boolean).join("  ");
 }
 
 function formatRelativeTime(timestamp: number, now = Date.now()): string {

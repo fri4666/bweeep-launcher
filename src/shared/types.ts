@@ -145,9 +145,26 @@ export interface InviteResult {
 }
 
 export interface CreatedInvite {
+  id?: string;
   code: string;
   expiresAt: string;
   maxUses: number;
+}
+
+export interface InviteSummary {
+  id: string;
+  expiresAt: string;
+  maxUses: number;
+  uses: number;
+  createdAt: string;
+}
+
+/** Open codes the signed-in member created, with the limits the server enforces. */
+export interface InviteList {
+  role: "admin" | "member";
+  maxUsesLimit: number;
+  activeLimit: number | null;
+  invites: InviteSummary[];
 }
 
 export interface LaunchResult {
@@ -164,7 +181,11 @@ export interface GameStatus {
   startedAt?: number;
   exitMessage?: string;
   exitError?: boolean;
+  /** Set when Minecraft wrote a crash report the player can open. */
+  crashReport?: boolean;
 }
+
+export type LogTarget = "game" | "launcher";
 
 export interface LauncherUpdate {
   version: string;

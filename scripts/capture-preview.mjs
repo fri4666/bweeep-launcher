@@ -27,6 +27,9 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   window.__zeroFileSync = false;
   window.__copiedText = null;
   window.__serverStatusCalls = 0;
+  window.__stopRequests = 0;
+  let inviteRedeemed = false;
+  let invites = [];
   const result = {
     manifest: {
       schemaVersion: 1,
@@ -87,8 +90,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     },
     accessStatus: async () => ({
       loggedIn: previewSignedIn,
-      allowed: previewSignedIn && !previewAccessUnavailable && !previewAccessDenied,
-      isAdmin: false,
+      allowed: previewSignedIn && !previewAccessUnavailable && (!previewAccessDenied || inviteRedeemed),
+      isAdmin: true,
       testAllowed: true,
       unavailable: previewAccessUnavailable,
       reason: previewAccessUnavailable ? "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요." : previewAccessDenied ? "초대 코드가 필요합니다." : previewSignedIn ? "초대 확인 완료" : "로그인이 필요합니다.",
@@ -99,13 +102,23 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     logout: async () => ({ loggedIn: false, allowed: false, isAdmin: false, reason: "로그아웃했습니다." }),
     redeemInvite: async (code) => {
       if (code !== "BWEEP-123456789ABC-123456789ABC") throw new Error(`초대 코드가 정규화되지 않았습니다: ${code}`);
+      inviteRedeemed = true;
       return {
         ok: true,
         message: "완료",
         status: { loggedIn: true, allowed: true, isAdmin: false, reason: "허용됨" }
       };
     },
-    createInvite: async (maxUses) => ({ code: "BWEEP-123456789ABC-123456789ABC", expiresAt: "2026-12-31", maxUses }),
+    createInvite: async (maxUses) => {
+      const invite = { id: `00000000-0000-0000-0000-${String(invites.length + 1).padStart(12, "0")}`, code: "BWEEP-123456789ABC-123456789ABC", expiresAt: "2026-12-31T00:00:00Z", maxUses };
+      invites = [{ id: invite.id, expiresAt: invite.expiresAt, maxUses, uses: 0, createdAt: "2026-09-28T00:00:00Z" }, ...invites];
+      return invite;
+    },
+    listInvites: async () => ({ role: "admin", maxUsesLimit: 20, activeLimit: null, invites }),
+    revokeInvite: async (inviteId) => { invites = invites.filter((invite) => invite.id !== inviteId); },
+    chooseInstanceRoot: async () => "D:\\Bweeep",
+    openLog: async () => undefined,
+    stopGame: async () => { window.__stopRequests += 1; },
     serverConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
     saveServerConnection: async (connection) => connection,
     resetServerConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
@@ -173,7 +186,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
 }, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
-const expectedEntrySelector = accessUnavailable ? ".entryRecovery > button:first-child" : accessDenied ? ".entryInvite" : signedIn ? ".launchButton" : ".entryChoices button:first-child";
+const expectedEntrySelector = accessUnavailable ? ".entryActions .primaryButton" : accessDenied ? ".entryInvite" : signedIn ? ".launchButton" : ".entryPrimary";
 await page.locator(expectedEntrySelector).waitFor({ state: "visible", timeout: 10000 });
 const interactionChecks = [];
 
@@ -195,12 +208,12 @@ async function verifyHover(selector, name) {
 }
 
 if (!catalogUnavailable) {
-  await verifyHover(accessUnavailable ? ".entryRecovery > button:first-child" : accessDenied ? ".entryLogout" : signedIn ? ".launchButton" : ".entryChoices button:first-child", accessUnavailable ? "recovery" : accessDenied ? "invite-screen" : signedIn ? "launch" : "login");
+  await verifyHover(accessUnavailable ? ".entryActions .primaryButton" : accessDenied ? ".entryActions .textButton" : signedIn ? ".launchButton" : ".entryPrimary", accessUnavailable ? "recovery" : accessDenied ? "invite-screen" : signedIn ? "launch" : "login");
 }
 await page.screenshot({ path: accessDenied ? "previews/bweeep-launcher-invite-entry.png" : signedIn ? "previews/bweeep-launcher-flow-ready.png" : "previews/bweeep-launcher-login-main.png" });
 if (catalogUnavailable) {
   const mainText = await page.locator("main").innerText();
-  if (!mainText.includes("서버 목록 연결 실패") || !mainText.includes("서버 없음") || mainText.includes("Create Aeronautics")) {
+  if (!mainText.includes("서버 목록 연결 실패") || !mainText.includes("서버에 연결하지 못했어요") || mainText.includes("Create Aeronautics")) {
     throw new Error("catalog failure did not fail closed with a visible reason");
   }
   if (!(await page.getByRole("button", { name: "게임 시작" }).isDisabled())) throw new Error("launch remained enabled without a catalog");
@@ -230,16 +243,17 @@ if (catalogUnavailable) {
     throw new Error("misleading empty download progress remained on the main screen");
   }
   interactionChecks.push("server-address-hidden");
-  if (!(await page.locator(".quickFact").filter({ hasText: "클라이언트" }).innerText()).includes("서버: fabric 0.18.1")) {
+  if (!(await page.locator(".quickFact").filter({ hasText: /^서버/ }).innerText()).includes("Fabric 서버")
+    || !(await page.locator(".quickFact").filter({ hasText: "클라이언트" }).innerText()).includes("NeoForge")) {
     throw new Error("server loader metadata was not displayed separately from the client loader");
   }
   interactionChecks.push("server-loader-visible");
-  const serverFact = await page.locator(".quickFact").filter({ hasText: "서버 상태" }).innerText();
+  const serverFact = await page.locator(".serverPill").innerText();
   if (!serverFact.includes("방금 전") || /\d{1,2}시\s*\d{1,2}분|\d{1,2}:\d{2}/.test(serverFact)) {
     throw new Error(`server checked time is not relative: ${serverFact}`);
   }
   interactionChecks.push("relative-server-time");
-  await page.getByRole("button", { name: "설정" }).click();
+  await page.getByRole("button", { name: "설정", exact: true }).click();
   await page.waitForTimeout(100);
   const settingsText = await page.locator(".settingsModal").innerText();
   if (!settingsText.includes("본섭") || !settingsText.includes("테섭")) {
@@ -250,6 +264,7 @@ if (catalogUnavailable) {
     throw new Error("launcher version is missing from the settings footer");
   }
   interactionChecks.push("launcher-version-in-settings");
+  await page.getByRole("radio", { name: "10명" }).click();
   await page.getByRole("button", { name: "10명용 초대 만들기" }).click();
   await page.getByText("BWEEP-123456789ABC-123456789ABC", { exact: true }).waitFor();
   const copyButtonBox = await page.getByRole("button", { name: "코드 복사" }).boundingBox();
@@ -270,13 +285,20 @@ if (catalogUnavailable) {
   const copiedText = await page.evaluate(() => window.__copiedText);
   if (copiedText !== "BWEEP-123456789ABC-123456789ABC") throw new Error(`wrong invite code copied: ${copiedText}`);
   interactionChecks.push("invite-code-copy");
+  await page.locator(".inviteItem").getByRole("button", { name: "취소" }).click();
+  await page.locator(".inviteItem").waitFor({ state: "detached" });
+  interactionChecks.push("invite-revoke");
+  await page.keyboard.press("Escape");
+  if (await page.locator(".settingsModal").count()) throw new Error("Escape did not close the settings modal");
+  await page.getByRole("button", { name: "설정", exact: true }).click();
+  interactionChecks.push("escape-closes-modal");
   await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
   await page.locator(".settingsModal .closeButton").click();
   await page.locator(".profileBox").click();
   await page.getByRole("button", { name: "모드 폴더 선택" }).waitFor();
   if (await page.locator(".contentFolderItem").count() !== 2) throw new Error("saved personal content folders are missing");
   await page.locator(".profileModal input[maxlength='16']").fill("seos_py_new");
-  await page.getByRole("button", { name: "인게임 이름 저장" }).click();
+  await page.getByRole("button", { name: "저장", exact: true }).click();
   await page.getByText("인게임 이름 변경됨 · 다음 실행부터 적용", { exact: true }).waitFor();
   await page.getByRole("button", { name: "모드 폴더 선택" }).click();
   await page.getByText("모드 폴더 1개 추가됨 · 다음 실행부터 적용", { exact: true }).waitFor();
@@ -294,12 +316,16 @@ if (catalogUnavailable) {
   if (await page.locator(".updatePanel, .progressTrack, .launchProgressHistory").count()) throw new Error("obsolete progress panel or stale stage history returned during launch");
   if (await page.locator(".launchProgressHeading strong").evaluate((element) => getComputedStyle(element).whiteSpace) !== "nowrap") throw new Error("active progress message is not constrained to one line");
   await page.screenshot({ path: "previews/bweeep-launcher-flow-downloading.png" });
-  await page.getByRole("button", { name: "게임 중" }).waitFor();
-  if (!(await page.getByRole("button", { name: "게임 중" }).isDisabled())) throw new Error("launch button was not locked while running");
-  if (!(await page.locator(".launchProgress").innerText()).includes("서버 참가 확인 전")) {
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
+  if (!(await page.getByRole("button", { name: "게임 실행 중" }).isDisabled())) throw new Error("launch button was not locked while running");
+  if (!(await page.locator(".launchProgress").innerText()).includes("게임 실행 중")) {
     throw new Error("running Minecraft process was not shown with an honest connection state");
   }
   await page.screenshot({ path: "previews/bweeep-launcher-game-running.png" });
+  await page.getByRole("button", { name: "게임 종료" }).click();
+  await page.getByRole("button", { name: "강제 종료" }).click();
+  if (await page.evaluate(() => window.__stopRequests) !== 1) throw new Error("stop game did not reach the main process");
+  interactionChecks.push("stop-game-confirmed");
   await page.evaluate(() => window.__exitGame());
   await page.getByRole("button", { name: "게임 시작" }).waitFor();
   if (await page.locator(".launchProgress").count()) throw new Error("progress remained after game exit");
@@ -312,18 +338,18 @@ if (catalogUnavailable) {
   if (!emptyProgress.includes("모드팩 파일") || emptyProgress.includes("0%") || emptyProgress.includes("0개 파일 중 0개 처리")) {
     throw new Error(`empty manifest showed fake progress: ${emptyProgress}`);
   }
-  await page.getByRole("button", { name: "게임 중" }).waitFor();
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
   await page.evaluate(() => { window.__zeroFileSync = false; window.__exitGame(); });
   await page.getByRole("button", { name: "게임 시작" }).waitFor();
   interactionChecks.push("truthful-empty-progress");
   await page.getByRole("button", { name: "게임 시작" }).click();
-  await page.getByRole("button", { name: "게임 중" }).waitFor();
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
   await page.evaluate(() => window.__rejectGame());
   await page.getByText("선택 서버가 연결을 거절했습니다.").waitFor();
   if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after a rejected connection");
   interactionChecks.push("connection-rejection-visible");
   await page.getByRole("button", { name: "게임 시작" }).click();
-  await page.getByRole("button", { name: "게임 중" }).waitFor();
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
   await page.evaluate(() => window.__failGame());
   await page.getByText("Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)").waitFor();
   if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after a crash");
@@ -336,7 +362,7 @@ if (catalogUnavailable) {
   interactionChecks.push("game-lifecycle-lock");
 } else {
   await page.getByRole("button", { name: "Discord로 로그인" }).click();
-  await page.getByRole("button", { name: "Discord 로그인 진행 중" }).waitFor();
+  await page.getByRole("button", { name: "브라우저에서 로그인하는 중" }).waitFor();
   if (await page.getByRole("button", { name: /Microsoft/ }).count()) {
     throw new Error("Microsoft login remained visible");
   }
