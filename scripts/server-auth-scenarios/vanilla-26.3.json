@@ -1,0 +1,15 @@
+{
+  "name": "vanilla-26.3",
+  "port": 25591,
+  "clients": 2,
+  "intruder": true,
+  "manifest": "resources/manifests/vanilla-survival.json",
+  "clientJava": "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+  "clientMemoryMb": 2200,
+  "server": {
+    "source": "/home/dev/servers/vanilla-26.3-test",
+    "exclude": ["/world*", "/logs", "/backups", "/crash-reports", "/*.json"],
+    "command": ["/home/dev/servers/vanilla-26.3-test/runtime/bin/java", "-Xms512M", "-Xmx1536M", "-jar", "server.jar", "nogui"],
+    "memoryMb": 1600
+  }
+}
