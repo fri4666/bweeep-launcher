@@ -12,7 +12,7 @@ import { authlibInjectorJvmArgs, ensureAuthlibInjector } from "./authlib-injecto
 import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { fingerprint } from "./hash.js";
 import { authLogPath, gameErrorDetails, gameLogPath, writeAuthLog, writeGameLog } from "./logs.js";
-import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
+import { getLauncherUpdateStatus, installPendingLauncherUpdate, setLauncherUpdateAudience, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
@@ -366,14 +366,18 @@ app.whenReady().then(async () => {
   ipcMain.handle("account:logout", async () => {
     await auth.signOut();
     sessionUser = null;
+    setLauncherUpdateAudience(false);
     return { loggedIn: false, allowed: false, isAdmin: false, reason: "런처 계정에서 로그아웃했습니다." };
   });
   ipcMain.handle("access:status", async () => {
     try {
       const status = await auth.getAccessStatus(sessionUser);
       if (!status.loggedIn) sessionUser = null;
+      // Testers and admins get beta launcher builds.
+      setLauncherUpdateAudience(status.loggedIn && status.allowed && status.testAllowed === true);
       return status;
     } catch (error) {
+      // An unreachable server says nothing new about who is signed in, so the update channel stays as it is.
       if (!sessionUser) throw error;
       return {
         loggedIn: true,
