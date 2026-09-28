@@ -13,6 +13,8 @@ import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseIn
 import { fingerprint } from "./hash.js";
 import { authLogPath, gameErrorDetails, gameLogPath, writeAuthLog, writeGameLog } from "./logs.js";
 import { getLauncherUpdateStatus, installPendingLauncherUpdate, setLauncherUpdateAudience, startLauncherUpdates } from "./launcher-update.js";
+import { loadPatchNotes } from "./patch-notes.js";
+import { isReleasePageUrl } from "./release-notes.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
@@ -38,6 +40,13 @@ let gameRunId = 0;
 let stopRequestedRunId = 0;
 // The most useful file to open after a failed or crashed run.
 let lastGameLogFile: string | null = null;
+// Testers and admins get beta launcher builds and see beta patch notes.
+let testerAudience = false;
+
+function setTesterAudience(tester: boolean): void {
+  testerAudience = tester;
+  setLauncherUpdateAudience(tester);
+}
 
 function broadcast(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, payload);
@@ -366,15 +375,14 @@ app.whenReady().then(async () => {
   ipcMain.handle("account:logout", async () => {
     await auth.signOut();
     sessionUser = null;
-    setLauncherUpdateAudience(false);
+    setTesterAudience(false);
     return { loggedIn: false, allowed: false, isAdmin: false, reason: "런처 계정에서 로그아웃했습니다." };
   });
   ipcMain.handle("access:status", async () => {
     try {
       const status = await auth.getAccessStatus(sessionUser);
       if (!status.loggedIn) sessionUser = null;
-      // Testers and admins get beta launcher builds.
-      setLauncherUpdateAudience(status.loggedIn && status.allowed && status.testAllowed === true);
+      setTesterAudience(status.loggedIn && status.allowed && status.testAllowed === true);
       return status;
     } catch (error) {
       // An unreachable server says nothing new about who is signed in, so the update channel stays as it is.
@@ -485,6 +493,11 @@ app.whenReady().then(async () => {
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
   ipcMain.handle("launcher:whatsNew", () => pendingWhatsNew());
   ipcMain.handle("launcher:whatsNewSeen", (_event, version: unknown) => markWhatsNewSeen(String(version)));
+  ipcMain.handle("launcher:patchNotes", () => loadPatchNotes(testerAudience));
+  ipcMain.handle("launcher:openReleasePage", (_event, url: unknown) => {
+    if (!isReleasePageUrl(url)) throw new Error("열 수 없는 주소입니다.");
+    return shell.openExternal(url);
+  });
   // Fixed address: the test build's non-tester screen points to the stable installer.
   ipcMain.handle("launcher:openStableDownload", () => shell.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest"));
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());

@@ -9,9 +9,10 @@ const accessDenied = process.env.BWEEP_PREVIEW_ACCESS_DENIED === "true";
 const catalogUnavailable = process.env.BWEEP_PREVIEW_CATALOG_UNAVAILABLE === "true";
 const testChannelDenied = process.env.BWEEP_PREVIEW_TEST_CHANNEL_DENIED === "true";
 const whatsNewMode = process.env.BWEEP_PREVIEW_WHATS_NEW === "true";
+const patchNotesOffline = process.env.BWEEP_PREVIEW_PATCH_NOTES_OFFLINE === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline }) => {
   const listeners = [];
   const gameStatusListeners = [];
   let gameStatus = { state: "idle" };
@@ -218,14 +219,56 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     gameStatus: async () => gameStatus,
     whatsNew: async () => previewWhatsNew && !window.__whatsNewSeen ? {
       version: "0.1.35",
-      notes: [
-        "스킨 탭이 생겼어요. 스킨을 3D로 돌려 보고 바로 적용할 수 있어요.",
-        "다른 멤버가 지금 쓰거나 예전에 쓴 이름은 쓸 수 없어요. 캐릭터와 OP가 이름을 따라 넘어가지 않아요.",
-        "게임은 고른 서버에만 접속돼요."
+      summary: "스킨 탭이 생기고, 이름과 접속 서버를 더 단단히 지켜요.",
+      sections: [
+        { kind: "new", title: "새 기능", items: ["스킨 탭이 생겼어요. 스킨을 3D로 돌려 보고 바로 적용할 수 있어요."] },
+        { kind: "changed", title: "바뀐 점", items: [
+          "다른 멤버가 지금 쓰거나 예전에 쓴 이름은 쓸 수 없어요. 캐릭터와 OP가 이름을 따라 넘어가지 않아요.",
+          "게임은 고른 서버에만 접속돼요."
+        ] }
       ]
     } : null,
     markWhatsNewSeen: async (version) => { window.__whatsNewSeen = version; },
     openStableDownload: async () => { window.__stableDownloadOpened = true; },
+    patchNotes: async () => {
+      const current = {
+        version: "0.1.30",
+        summary: "패치노트 탭이 생겼고, 테스터는 새 버전을 먼저 받아요.",
+        sections: [
+          { kind: "new", title: "새 기능", items: ["왼쪽 메뉴의 패치노트에서 버전마다 바뀐 점을 볼 수 있어요.", "테스터는 일반 런처에서 테스트 버전을 먼저 받아요."] },
+          { kind: "fixed", title: "고친 문제", items: ["필요 없어진 붸에엡 전용 모드를 알아서 정리해요."] },
+          { kind: "known", title: "알려진 문제", items: ["따로 설치한 '붸에엡 테스트' 런처는 이제 업데이트되지 않아요."] }
+        ],
+        prerelease: false,
+        publishedAt: previewPatchNotesOffline ? null : "2026-09-28T12:31:39Z",
+        url: "https://github.com/fri4666/bweeep-launcher/releases/tag/v0.1.30"
+      };
+      if (previewPatchNotesOffline) return { currentVersion: "0.1.30", source: "bundled", notes: [current] };
+      return {
+        currentVersion: "0.1.30",
+        source: "live",
+        notes: [
+          {
+            version: "0.1.31-beta.1",
+            summary: "다음 버전을 테스터가 먼저 확인해요.",
+            sections: [{ kind: "changed", title: "바뀐 점", items: ["서버 목록을 더 빨리 불러와요."] }],
+            prerelease: true,
+            publishedAt: "2026-09-29T09:00:00Z",
+            url: "https://github.com/fri4666/bweeep-launcher/releases/tag/v0.1.31-beta.1"
+          },
+          current,
+          {
+            version: "0.1.29",
+            summary: null,
+            sections: [{ kind: "other", title: null, items: ["스킨 탭이 생겼어요.", "게임은 고른 서버에만 접속돼요."] }],
+            prerelease: false,
+            publishedAt: "2026-09-20T18:24:04Z",
+            url: "https://github.com/fri4666/bweeep-launcher/releases/tag/v0.1.29"
+          }
+        ]
+      };
+    },
+    openReleasePage: async (url) => { window.__openedReleasePage = url; },
     launchGame: async (request) => {
       window.__lastLaunchRequest = request;
       const startedAt = Date.now();
@@ -280,7 +323,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 if (testChannelDenied) {
@@ -298,12 +341,25 @@ if (whatsNewMode) {
   await dialog.waitFor({ timeout: 10000 });
   const text = await dialog.innerText();
   if (!text.includes("v0.1.35") || !text.includes("예전에 쓴 이름은 쓸 수 없어요")) throw new Error(`what's new dialog is missing the notes: ${text}`);
+  if (!text.includes("이름과 접속 서버를 더 단단히 지켜요") || !text.includes("새 기능") || !text.includes("바뀐 점")) throw new Error(`what's new dialog is missing the summary or groups: ${text}`);
   await page.screenshot({ path: "previews/bweeep-launcher-whats-new.png" });
   await dialog.getByRole("button", { name: "확인" }).click();
   await page.waitForFunction(() => window.__whatsNewSeen === "0.1.35");
   if (await page.getByRole("dialog", { name: "업데이트 소식" }).count()) throw new Error("what's new dialog did not close");
   await page.locator(".launchButton").waitFor();
   console.log(JSON.stringify({ interactionChecks: ["whats-new-once-after-update"], errors }));
+  await browser.close();
+  process.exit(errors.length ? 1 : 0);
+}
+if (patchNotesOffline) {
+  await page.locator(".launchButton").waitFor();
+  await page.getByRole("button", { name: "패치노트", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "패치노트" });
+  await panel.getByText("이 버전의 패치노트만 보여 줘요", { exact: false }).waitFor({ timeout: 10000 });
+  if (await panel.locator(".patchVersion").count() !== 1) throw new Error("offline patch notes should show only this build's notes");
+  if (!(await panel.locator(".patchDetail").innerText()).includes("지금 버전")) throw new Error("the bundled notes are not marked as the current version");
+  await page.screenshot({ path: "previews/bweeep-launcher-patch-notes-offline.png" });
+  console.log(JSON.stringify({ interactionChecks: ["patch-notes-offline-fallback"], errors }));
   await browser.close();
   process.exit(errors.length ? 1 : 0);
 }
@@ -465,6 +521,30 @@ if (catalogUnavailable) {
   await page.locator(".modItem").filter({ hasText: "Sodium" }).getByRole("button", { name: "삭제" }).waitFor();
   interactionChecks.push("personal-mod-search-install");
   await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "패치노트", exact: true }).click();
+  const patchNotes = page.getByRole("dialog", { name: "패치노트" });
+  await patchNotes.locator(".patchVersion").first().waitFor();
+  const versions = await patchNotes.locator(".patchVersion strong").allInnerTexts();
+  if (versions.join(",") !== "v0.1.31-beta.1,v0.1.30,v0.1.29") throw new Error(`patch notes are not newest first: ${versions}`);
+  if (!(await patchNotes.locator(".patchVersion").nth(0).innerText()).includes("테스트")) throw new Error("a beta is not marked as a test build");
+  if (!(await patchNotes.locator(".patchVersion").nth(1).innerText()).includes("지금 버전")) throw new Error("the running version is not marked");
+  await patchNotes.locator(".patchVersion").nth(1).click();
+  const detail = await patchNotes.locator(".patchDetail").innerText();
+  for (const expected of ["v0.1.30", "패치노트 탭이 생겼고", "새 기능", "고친 문제", "알려진 문제", "2026년 9월 28일"]) {
+    if (!detail.includes(expected)) throw new Error(`patch note detail is missing ${expected}: ${detail}`);
+  }
+  if (await patchNotes.locator(".releaseSection h4").count() !== 3) throw new Error("patch note groups are not shown as headings");
+  await page.screenshot({ path: "previews/bweeep-launcher-patch-notes.png" });
+  await patchNotes.getByRole("button", { name: "자세히 보기" }).click();
+  await page.waitForFunction(() => window.__openedReleasePage === "https://github.com/fri4666/bweeep-launcher/releases/tag/v0.1.30");
+  await patchNotes.locator(".patchVersion").nth(2).click();
+  if (await patchNotes.locator(".releaseSection h4").count() !== 0 || await patchNotes.locator(".patchDetail li").count() !== 2) {
+    throw new Error("a plain list without headings is not shown as one list");
+  }
+  interactionChecks.push("patch-notes-newest-first");
+  await page.keyboard.press("Escape");
+  if (await page.getByRole("dialog", { name: "패치노트" }).count()) throw new Error("Escape did not close the patch notes");
   await page.locator(".profileBox").click();
   await page.getByRole("button", { name: "모드 폴더 선택" }).waitFor();
   if (await page.locator(".contentFolderItem").count() !== 2) throw new Error("saved personal content folders are missing");

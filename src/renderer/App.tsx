@@ -21,6 +21,7 @@ import type {
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
 import { ModsPanel } from "./ModsPanel.js";
+import { PatchNotesPanel, ReleaseNoteSections } from "./PatchNotesPanel.js";
 import { SkinPanel } from "./SkinPanel.js";
 
 const selectedPackStorageKey = "bweeep.selected-pack-id";
@@ -152,9 +153,8 @@ function WhatsNewDialog({ whatsNew, onClose }: { whatsNew: WhatsNew; onClose: ()
       <section className="confirmDialog whatsNewDialog" role="dialog" aria-modal="true" aria-label="업데이트 소식" onClick={(event) => event.stopPropagation()}>
         <p className="eyebrow">업데이트 완료 · v{whatsNew.version}</p>
         <h2>이번 버전에서 바뀐 점</h2>
-        <ul className="whatsNewList">
-          {whatsNew.notes.map((note) => <li key={note}>{note}</li>)}
-        </ul>
+        {whatsNew.summary && <p className="whatsNewSummary">{whatsNew.summary}</p>}
+        <ReleaseNoteSections sections={whatsNew.sections} />
         <div className="confirmActions">
           <button ref={confirmRef} className="primaryButton" onClick={onClose}>확인</button>
         </div>
@@ -197,6 +197,7 @@ function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [skinOpen, setSkinOpen] = useState(false);
   const [modsOpen, setModsOpen] = useState(false);
+  const [patchNotesOpen, setPatchNotesOpen] = useState(false);
   const [members, setMembers] = useState<MemberSummary[]>([]);
   const [testerBusyId, setTesterBusyId] = useState<string | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
@@ -338,10 +339,11 @@ function App() {
       else if (profileOpen) setProfileOpen(false);
       else if (skinOpen) setSkinOpen(false);
       else if (modsOpen) setModsOpen(false);
+      else if (patchNotesOpen) setPatchNotesOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmRequest, settingsOpen, profileOpen, skinOpen, modsOpen]);
+  }, [confirmRequest, settingsOpen, profileOpen, skinOpen, modsOpen, patchNotesOpen]);
 
   const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
     setServerChecking(true);
@@ -884,6 +886,10 @@ function App() {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M4 7.5l8 4.5 8-4.5M12 12v9" /></svg>
             <span>편의 모드</span>
           </button>
+          <button className="sideAction" onClick={() => setPatchNotesOpen(true)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" /><path d="M14 3v4h4M9 12h6M9 16h6" /></svg>
+            <span>패치노트</span>
+          </button>
           <button className="sideAction" onClick={() => setSettingsOpen(true)}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
             <span>설정</span>
@@ -1124,7 +1130,7 @@ function App() {
                 <article className="panel">
                   <div className="panelHeader">
                     <h3>테스터</h3>
-                    <span>테스트 런처는 여기서 지정한 사람만 쓸 수 있고, 새 버전을 먼저 받아요.</span>
+                    <span>테스터는 테섭에 들어갈 수 있고, 런처 새 버전을 먼저 받아요.</span>
                   </div>
                   <div className="memberList">
                     {members.length === 0 && <p className="emptyText">멤버 목록을 불러오는 중이에요.</p>}
@@ -1170,7 +1176,7 @@ function App() {
             </div>
             <footer className="modalFooter">
               <button className="textButton" onClick={requestResetSettings}>설정 초기화</button>
-              {launcherVersion && <small className="versionText">붸에엡 v{launcherVersion}{launcherChannel === "test" ? " · 테스트 채널" : ""}</small>}
+              {launcherVersion && <small className="versionText">붸에엡 v{launcherVersion}{launcherChannel === "test" ? " · 테스트 채널" : launcherVersion.includes("-") ? " · 테스트 버전" : ""}</small>}
             </footer>
           </section>
         </div>
@@ -1266,6 +1272,8 @@ function App() {
           onClose={() => setSkinOpen(false)}
         />
       )}
+
+      {patchNotesOpen && <PatchNotesPanel onClose={() => setPatchNotesOpen(false)} />}
 
       {whatsNew && !confirmRequest && <WhatsNewDialog whatsNew={whatsNew} onClose={closeWhatsNew} />}
       {confirmDialog}

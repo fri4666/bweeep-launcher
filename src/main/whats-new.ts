@@ -2,6 +2,7 @@ import { app } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { WhatsNew } from "../shared/types.js";
+import { parseReleaseNotes, shortenReleaseNotes } from "./release-notes.js";
 
 // Shows the release notes once after each update. The notes are the same
 // build/release-notes.txt the release workflow requires for every version,
@@ -10,16 +11,13 @@ import type { WhatsNew } from "../shared/types.js";
 const STATE_FILE = "whats-new.json";
 const MAX_NOTES = 6;
 
-/** Release version without a test build suffix: 0.1.35-test.2 shows the 0.1.35 notes. */
+/** Release version without a prerelease suffix: 0.1.36-beta.2 shows the 0.1.36 notes. */
 function releaseVersion(): string {
   return app.getVersion().split("-")[0];
 }
 
-export function parseReleaseNotes(text: string, version: string): string[] | null {
-  const lines = text.replace(/^﻿/, "").split(/\r?\n/).map((line) => line.trim());
-  if (lines[0] !== `v${version}`) return null;
-  const notes = lines.slice(1).filter((line) => line.startsWith("- ")).map((line) => line.slice(2).trim()).filter(Boolean);
-  return notes.length > 0 ? notes.slice(0, MAX_NOTES) : null;
+export async function readBundledReleaseNotes(): Promise<string> {
+  return fsp.readFile(path.join(app.getAppPath(), "build", "release-notes.txt"), "utf8").catch(() => "");
 }
 
 export async function pendingWhatsNew(): Promise<WhatsNew | null> {
@@ -37,9 +35,8 @@ export async function pendingWhatsNew(): Promise<WhatsNew | null> {
       return null;
     }
   }
-  const text = await fsp.readFile(path.join(app.getAppPath(), "build", "release-notes.txt"), "utf8").catch(() => "");
-  const notes = parseReleaseNotes(text, version);
-  return notes ? { version, notes } : null;
+  const notes = parseReleaseNotes(await readBundledReleaseNotes(), version);
+  return notes ? shortenReleaseNotes(notes, MAX_NOTES) : null;
 }
 
 export async function markWhatsNewSeen(version: string): Promise<void> {
