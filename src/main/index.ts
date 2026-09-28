@@ -1,6 +1,5 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
 import { spawn } from "node:child_process";
-import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toServerPreset } from "./catalog.js";
@@ -9,14 +8,13 @@ import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
 import { installAndLaunch } from "./minecraft-runtime.js";
 import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "./deep-link.js";
-import { authFingerprint, authLogPath, writeAuthLog } from "./auth-log.js";
-import { gameErrorDetails, gameLogPath, writeGameLog } from "./game-log.js";
-import { downloadLauncherUpdate, getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
+import { fingerprint } from "./hash.js";
+import { authLogPath, gameErrorDetails, gameLogPath, writeAuthLog, writeGameLog } from "./logs.js";
+import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
-import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, userContentPaths } from "./user-content.js";
+import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherUpdateStatus, LauncherUser, LogTarget, SyncProgress, UserContentKind } from "../shared/types.js";
-import type { ModpackManifest } from "../shared/types.js";
+import type { GameStatus, LauncherUser, LogTarget, SyncProgress, UserContentKind } from "../shared/types.js";
 import { bundledFeatureMods } from "./client-feature-mods.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,18 +31,43 @@ let gameRunId = 0;
 let stopRequestedRunId = 0;
 // The most useful file to open after a failed or crashed run.
 let lastGameLogFile: string | null = null;
-const testLauncherSetupUrl = "https://github.com/fri4666/bweeep-launcher/releases/download/v0.1.25-test.1/Bweeep-Test-Setup-0.1.25.exe";
+
+function broadcast(channel: string, payload: unknown): void {
+  for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, payload);
+}
+
+function focusMainWindow(): void {
+  const window = BrowserWindow.getAllWindows()[0];
+  if (window?.isMinimized()) window.restore();
+  window?.focus();
+}
 
 function setGameStatus(status: GameStatus): void {
   gameStatus = status;
-  for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send("game:status", status);
-  }
+  broadcast("game:status", status);
   if (status.state === "idle") installPendingLauncherUpdate();
 }
 
+// A function call keeps TypeScript from narrowing gameStatus across awaits,
+// where the exit callback may already have changed it.
 function gameIsStarting(): boolean {
   return gameStatus.state === "starting";
+}
+
+function requireInstanceRoot(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
+  return value;
+}
+
+function requireContentKind(value: unknown): UserContentKind {
+  if (value !== "mods" && value !== "shaderpacks") throw new Error("콘텐츠 종류가 올바르지 않습니다.");
+  return value;
+}
+
+async function pickFolders(event: IpcMainInvokeEvent, options: OpenDialogOptions): Promise<string[] | null> {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+  return picked.canceled ? null : picked.filePaths;
 }
 
 // Windows has no default app for .log files, so openPath shows the
@@ -61,12 +84,6 @@ async function openLogFile(file: string): Promise<boolean> {
       resolve(true);
     });
   });
-}
-
-function publishLauncherUpdate(status: LauncherUpdateStatus): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send("launcher:updateStatus", status);
-  }
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -88,11 +105,9 @@ function collectDeepLink(argv: readonly string[]): string | undefined {
   return argv.find((arg) => arg.startsWith(`${launcherProtocolScheme()}://`));
 }
 
-function queueDeepLink(url: string, source: "argv" | "second-instance" | "open-url"): void {
+function queueDeepLink(url: string, source: "argv" | "second-instance"): void {
   if (isLauncherActivationLink(url, launcherProtocolScheme())) {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window?.isMinimized()) window.restore();
-    window?.focus();
+    focusMainWindow();
     return;
   }
   if (url.startsWith(`${launcherProtocolScheme()}://invite/`)) {
@@ -102,7 +117,7 @@ function queueDeepLink(url: string, source: "argv" | "second-instance" | "open-u
       notifyAuthError(error);
     }
   } else {
-    const callbackId = authFingerprint(url);
+    const callbackId = fingerprint(url);
     if (queuedAuthCallbacks.has(callbackId)) {
       void writeAuthLog("callback.duplicate.ignored", { callbackId, source });
       return;
@@ -110,6 +125,8 @@ function queueDeepLink(url: string, source: "argv" | "second-instance" | "open-u
     queuedAuthCallbacks.add(callbackId);
     pendingAuthUrls.push(url);
     const parsedUrl = new URL(url);
+    const flowId = parsedUrl.searchParams.get("sb_flow_id");
+    const state = parsedUrl.searchParams.get("state");
     void writeAuthLog("callback.queued", {
       callbackId,
       source,
@@ -118,8 +135,8 @@ function queueDeepLink(url: string, source: "argv" | "second-instance" | "open-u
       callbackHost: parsedUrl.hostname,
       callbackPath: parsedUrl.pathname,
       parameterNames: [...parsedUrl.searchParams.keys()].sort(),
-      flowId: parsedUrl.searchParams.get("sb_flow_id") ? authFingerprint(parsedUrl.searchParams.get("sb_flow_id")!) : null,
-      stateId: parsedUrl.searchParams.get("state") ? authFingerprint(parsedUrl.searchParams.get("state")!) : null
+      flowId: flowId ? fingerprint(flowId) : null,
+      stateId: state ? fingerprint(state) : null
     });
   }
   if (app.isReady()) schedulePendingDeepLinks();
@@ -139,21 +156,19 @@ async function processPendingDeepLinks(): Promise<void> {
   while (pendingAuthUrls.length > 0) {
     const url = pendingAuthUrls.shift();
     if (!url) continue;
-    const callbackId = authFingerprint(url);
+    const callbackId = fingerprint(url);
     try {
       const callback = parseAuthCallback(url, launcherProtocolScheme());
-      const flowId = callback.flowId ? authFingerprint(callback.flowId) : null;
+      const flowId = callback.flowId ? fingerprint(callback.flowId) : null;
       sessionUser = await auth.completeCallback(url);
       if (flowId) completedAuthFlows.add(flowId);
       await writeAuthLog("callback.session.delivered", {
         callbackId,
         flowId,
         provider: "discord",
-        userId: authFingerprint(sessionUser.id)
+        userId: fingerprint(sessionUser.id)
       });
-      for (const window of BrowserWindow.getAllWindows()) {
-        window.webContents.send("auth:session", sessionUser);
-      }
+      broadcast("auth:session", sessionUser);
     } catch (error) {
       await auth.cancelPendingLogin(error instanceof AuthCallbackError ? error.category : "exchange_error");
       if (error instanceof LoginCancelledError) {
@@ -161,7 +176,7 @@ async function processPendingDeepLinks(): Promise<void> {
         continue;
       }
       if (error instanceof AuthCallbackError && error.flowId) {
-        const flowId = authFingerprint(error.flowId);
+        const flowId = fingerprint(error.flowId);
         if (completedAuthFlows.has(flowId)) {
           await writeAuthLog("callback.stale_error.ignored", { callbackId, flowId, category: error.category });
           continue;
@@ -179,18 +194,12 @@ async function processPendingDeepLinks(): Promise<void> {
   if (!inviteReceiverReady) return;
   while (pendingInviteCodes.length > 0) {
     const code = pendingInviteCodes.shift();
-    if (!code) continue;
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send("invite:received", code);
-    }
+    if (code) broadcast("invite:received", code);
   }
 }
 
 function notifyAuthError(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send("auth:error", message);
-  }
+  broadcast("auth:error", error instanceof Error ? error.message : String(error));
 }
 
 void writeAuthLog("app.auth.initialized", { packaged: app.isPackaged, logPath: authLogPath() });
@@ -201,16 +210,7 @@ if (initialDeepLink) queueDeepLink(initialDeepLink, "argv");
 app.on("second-instance", (_event, argv) => {
   const url = collectDeepLink(argv);
   if (url) queueDeepLink(url, "second-instance");
-  const window = BrowserWindow.getAllWindows()[0];
-  if (window) {
-    if (window.isMinimized()) window.restore();
-    window.focus();
-  }
-});
-
-app.on("open-url", (event, url) => {
-  event.preventDefault();
-  queueDeepLink(url, "open-url");
+  focusMainWindow();
 });
 
 async function createWindow(): Promise<BrowserWindow> {
@@ -258,53 +258,26 @@ app.whenReady().then(async () => {
     });
   });
   ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
-  ipcMain.handle("paths:defaultInstanceRoot", () =>
-    defaultInstanceRoot()
-  );
-  ipcMain.handle("content:folders", async (_event, instanceRoot: unknown) => {
-    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    return getUserContentFolders(instanceRoot);
+  ipcMain.handle("paths:defaultInstanceRoot", () => defaultInstanceRoot());
+  ipcMain.handle("content:folders", (_event, instanceRoot: unknown) => getUserContentFolders(requireInstanceRoot(instanceRoot)));
+  ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: unknown) => {
+    const root = requireInstanceRoot(instanceRoot);
+    const contentKind = requireContentKind(kind);
+    const before = await getUserContentFolders(root);
+    const picked = await pickFolders(event, {
+      title: contentKind === "mods" ? "내 모드 폴더 선택" : "내 셰이더 폴더 선택",
+      buttonLabel: "선택한 폴더 추가",
+      properties: ["openDirectory", "multiSelections"]
+    });
+    if (!picked) return { folders: before, selected: 0 };
+    const folders = await addUserContentFolders(root, contentKind, picked);
+    return { folders, selected: folders[contentKind].length - before[contentKind].length };
   });
-  ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: UserContentKind) => {
-    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    if (kind !== "mods" && kind !== "shaderpacks") throw new Error("콘텐츠 종류가 올바르지 않습니다.");
-    const options = { title: kind === "mods" ? "내 모드 폴더 선택" : "내 셰이더 폴더 선택", buttonLabel: "선택한 폴더 추가", properties: ["openDirectory", "multiSelections"] as Array<"openDirectory" | "multiSelections"> };
-    const owner = BrowserWindow.fromWebContents(event.sender);
-    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
-    if (picked.canceled) return { folders: await getUserContentFolders(instanceRoot), selected: 0 };
-    const before = await getUserContentFolders(instanceRoot);
-    const folders = await addUserContentFolders(instanceRoot, kind, picked.filePaths);
-    return { folders, selected: folders[kind].length - before[kind].length };
+  ipcMain.handle("content:removeFolder", (_event, instanceRoot: unknown, kind: unknown, folder: unknown) => {
+    if (typeof folder !== "string") throw new Error("콘텐츠 폴더 정보가 올바르지 않습니다.");
+    return removeUserContentFolder(requireInstanceRoot(instanceRoot), requireContentKind(kind), folder);
   });
-  ipcMain.handle("content:removeFolder", async (_event, instanceRoot: unknown, kind: UserContentKind, folder: unknown) => {
-    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    if ((kind !== "mods" && kind !== "shaderpacks") || typeof folder !== "string") throw new Error("콘텐츠 폴더 정보가 올바르지 않습니다.");
-    return removeUserContentFolder(instanceRoot, kind, folder);
-  });
-  ipcMain.handle("paths:userContent", async (_event, request: { instanceRoot?: unknown; minecraftVersion?: unknown; loaderKind?: unknown }) => {
-    const { instanceRoot, minecraftVersion, loaderKind } = request ?? {};
-    if (typeof instanceRoot !== "string" || !instanceRoot.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
-    if (typeof minecraftVersion !== "string" || !/^[A-Za-z0-9._-]+$/.test(minecraftVersion)) throw new Error("Minecraft 버전 정보가 올바르지 않습니다.");
-    if (!["vanilla", "fabric", "neoforge", "forge"].includes(String(loaderKind))) throw new Error("클라이언트 로더 정보가 올바르지 않습니다.");
-    const paths = userContentPaths(instanceRoot, loaderKind as ModpackManifest["loader"]["kind"], minecraftVersion);
-    await Promise.all([fsp.mkdir(paths.userModsDir, { recursive: true }), fsp.mkdir(paths.shaderpacksDir, { recursive: true })]);
-    return paths;
-  });
-  ipcMain.handle("shell:openPath", async (_event, target: string) => {
-    return shell.openPath(target);
-  });
-  ipcMain.handle("shell:openExternal", async (_event, target: string) => {
-    const url = new URL(target);
-    if (url.protocol !== "https:") throw new Error("HTTPS 다운로드 주소만 열 수 있습니다.");
-    await shell.openExternal(url.toString());
-  });
-  ipcMain.handle("test-launcher:open", async () => {
-    try {
-      await shell.openExternal("bwe-e-ep-test://open");
-    } catch {
-      await shell.openExternal(testLauncherSetupUrl);
-    }
-  });
+  ipcMain.handle("shell:openPath", (_event, target: string) => shell.openPath(target));
   ipcMain.handle("launcher:channel", () => getLauncherChannel());
   ipcMain.handle("launcher:version", () => app.getVersion());
   ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
@@ -342,15 +315,13 @@ app.whenReady().then(async () => {
     return auth.revokeInvite(sessionUser, inviteId);
   });
   ipcMain.handle("paths:chooseInstanceRoot", async (event, current: unknown) => {
-    const owner = BrowserWindow.fromWebContents(event.sender);
-    const options = {
+    const picked = await pickFolders(event, {
       title: "게임 설치 위치 선택",
       buttonLabel: "이 폴더에 설치",
       defaultPath: typeof current === "string" && current.trim() ? current : undefined,
-      properties: ["openDirectory", "createDirectory"] as Array<"openDirectory" | "createDirectory">
-    };
-    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
-    return picked.canceled ? null : picked.filePaths[0] ?? null;
+      properties: ["openDirectory", "createDirectory"]
+    });
+    return picked?.[0] ?? null;
   });
   ipcMain.handle("logs:open", async (_event, target: LogTarget) => {
     if (target === "game" && lastGameLogFile && await openLogFile(lastGameLogFile)) return;
@@ -368,7 +339,6 @@ app.whenReady().then(async () => {
     return firstInvite;
   });
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
-  ipcMain.handle("launcher:downloadUpdate", () => downloadLauncherUpdate());
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:status", () => gameStatus);
@@ -406,16 +376,15 @@ app.whenReady().then(async () => {
       const manifest = await auth.getManifest(sessionUser, request.packId);
       assertManifest(manifest);
       if (manifest.id !== request.packId) throw new Error("선택한 서버와 받은 모드팩 정보가 일치하지 않습니다.");
-      const configuredManifest = manifest;
-      const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), configuredManifest);
-      await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: configuredManifest.files.length });
-      const synced = await syncModpack({ instanceDir: request.instanceDir, manifest: configuredManifest }, progress);
-      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, configuredManifest);
+      const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), manifest);
+      await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: manifest.files.length });
+      const synced = await syncModpack({ instanceDir: request.instanceDir, manifest }, progress);
+      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, manifest);
       progress({ kind: "info", stage: "개인 파일", message: `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리` });
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
-      await writeGameLog("launch.minecraft.installing", { minecraft: configuredManifest.minecraftVersion, loader: configuredManifest.loader.version });
-      const getLaunchAuthorization = configuredManifest.loader.kind === "vanilla"
+      await writeGameLog("launch.minecraft.installing", { minecraft: manifest.minecraftVersion, loader: manifest.loader.version });
+      const getLaunchAuthorization = manifest.loader.kind === "vanilla"
         ? async () => ({
             identity: createOfflineLaunchIdentity(launchUser.id, launchUser.gameName, launchUser.globalName, launchUser.username),
             ticket: ""
@@ -427,9 +396,12 @@ app.whenReady().then(async () => {
             return authorization;
           };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
-      const launched = await installAndLaunch(configuredManifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
+      const launched = await installAndLaunch(manifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
         if (exit.crashReportLocation) lastGameLogFile = path.resolve(synced.instanceDir, exit.crashReportLocation);
         const stoppedByPlayer = stopRequestedRunId === runId;
+        progress(stoppedByPlayer
+          ? { kind: "info", stage: "게임 종료", message: "플레이어가 게임을 종료했습니다" }
+          : { kind: exit.abnormal ? "error" : "info", stage: "게임 종료", message: exit.message });
         if (gameRunId === runId) {
           setGameStatus(exit.abnormal && !stoppedByPlayer
             ? { state: "idle", exitMessage: exit.message, exitError: true, crashReport: Boolean(exit.crashReportLocation) }
@@ -466,19 +438,7 @@ app.whenReady().then(async () => {
       // The renderer will show its normal signed-out state when a persisted session cannot be restored.
     }
     await createWindow();
-    startLauncherUpdates(publishLauncherUpdate, () => gameStatus.state === "idle");
+    startLauncherUpdates((status) => broadcast("launcher:updateStatus", status), () => gameStatus.state === "idle");
     schedulePendingDeepLinks();
   })();
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      void createWindow();
-    }
-  });
-});
-
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
 });

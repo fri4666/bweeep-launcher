@@ -4,7 +4,8 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import type { AccessStatus, CreatedInvite, InviteList, LauncherUser, LoginCancellationResult, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
 import { parseAuthCallback } from "./deep-link.js";
-import { authFingerprint, writeAuthLog } from "./auth-log.js";
+import { fingerprint } from "./hash.js";
+import { writeAuthLog } from "./logs.js";
 import { createOfflineLaunchIdentity, type LaunchIdentity } from "./launch-identity.js";
 import { launcherProtocolScheme } from "./launcher-channel.js";
 
@@ -56,7 +57,7 @@ interface FunctionGameTicket {
   expiresAt: string;
 }
 
-export interface GameLaunchAuthorization {
+interface GameLaunchAuthorization {
   identity: LaunchIdentity;
   ticket: string;
 }
@@ -120,15 +121,15 @@ export class SupabaseAuth {
 
     await writeAuthLog("login.start.ready", {
       provider: "discord",
-      flowId: data.flowId ? authFingerprint(data.flowId) : null,
-      authorizationUrl: authFingerprint(data.url),
+      flowId: data.flowId ? fingerprint(data.flowId) : null,
+      authorizationUrl: fingerprint(data.url),
       authorizationContext: summarizeAuthorizationUrl(data.url)
     });
     this.activeLoginFlowId = data.flowId ?? null;
 
     try {
       await shell.openExternal(data.url);
-      await writeAuthLog("login.browser.opened", { provider: "discord", authorizationUrl: authFingerprint(data.url) });
+      await writeAuthLog("login.browser.opened", { provider: "discord", authorizationUrl: fingerprint(data.url) });
       return { configured: true, pending: true, message: "브라우저에서 Discord 로그인을 완료해 주세요." };
     } catch (error) {
       this.loginInFlight = false;
@@ -141,15 +142,15 @@ export class SupabaseAuth {
     let ownsActiveFlow = false;
     try {
       const client = await this.requireClient();
-      const callbackId = authFingerprint(rawUrl);
+      const callbackId = fingerprint(rawUrl);
       await writeAuthLog("callback.exchange.started", { callbackId });
       const { code, flowId } = parseAuthCallback(rawUrl, launcherProtocolScheme());
       if (flowId && this.cancelledLoginFlowIds.has(flowId)) {
         throw new LoginCancelledError();
       }
       ownsActiveFlow = this.loginInFlight && (!this.activeLoginFlowId || this.activeLoginFlowId === flowId);
-      const codeId = authFingerprint(code);
-      const safeFlowId = flowId ? authFingerprint(flowId) : null;
+      const codeId = fingerprint(code);
+      const safeFlowId = flowId ? fingerprint(flowId) : null;
       await writeAuthLog("callback.exchange.requested", { callbackId, codeId, flowId: safeFlowId });
       const { data, error } = await client.auth.exchangeCodeForSession(code, flowId ? { flowId } : undefined);
       if (error || !data.user) {
@@ -166,7 +167,7 @@ export class SupabaseAuth {
         codeId,
         flowId: safeFlowId,
         provider: data.user.app_metadata?.provider ?? "unknown",
-        userId: authFingerprint(data.user.id)
+        userId: fingerprint(data.user.id)
       });
       if (data.user.app_metadata?.provider !== "discord") {
         await client.auth.signOut({ scope: "local" });
@@ -175,7 +176,7 @@ export class SupabaseAuth {
       return toLauncherUser(data.user);
     } catch (error) {
       await writeAuthLog("callback.processing.failed", {
-        callbackId: authFingerprint(rawUrl),
+        callbackId: fingerprint(rawUrl),
         name: error instanceof Error ? error.name : "UnknownError",
         message: error instanceof Error ? error.message : String(error)
       });
@@ -364,19 +365,20 @@ export class SupabaseAuth {
     return client;
   }
 
+  // launcher-access verifies the token itself, so the client only supplies the
+  // current one and refreshes once when the function rejects it.
   private async invokeFunction<T>(body: Record<string, unknown>, fallbackMessage: string): Promise<T> {
     const client = await this.requireClient();
     const config = await readConfig();
     if (!config.url || !config.publishableKey) throw new Error("Supabase 설정이 필요합니다.");
     const functionConfig = { url: config.url, publishableKey: config.publishableKey };
 
-    let accessToken = await this.requireVerifiedAccessToken(client);
-    let response = await postLauncherAccess<T>(functionConfig, accessToken, body);
+    let response = await postLauncherAccess<T>(functionConfig, await currentAccessToken(client), body);
     if (response.status === 401) {
       const { data: refreshed, error: refreshError } = await client.auth.refreshSession();
-      if (!refreshError && refreshed.session?.access_token) {
-        accessToken = await this.requireVerifiedAccessToken(client);
-        response = await postLauncherAccess<T>(functionConfig, accessToken, body);
+      const refreshedToken = refreshed.session?.access_token;
+      if (!refreshError && refreshedToken) {
+        response = await postLauncherAccess<T>(functionConfig, refreshedToken, body);
       }
     }
 
@@ -388,20 +390,13 @@ export class SupabaseAuth {
     }
     return response.payload as T;
   }
+}
 
-  private async requireVerifiedAccessToken(client: SupabaseClient): Promise<string> {
-    const { data: sessionData, error: sessionError } = await client.auth.getSession();
-    const accessToken = sessionData.session?.access_token;
-    if (sessionError || !accessToken) {
-      throw new InvalidLauncherSessionError();
-    }
-
-    const { data: userData, error: userError } = await client.auth.getUser(accessToken);
-    if (userError || !userData.user) {
-      throw new InvalidLauncherSessionError();
-    }
-    return accessToken;
-  }
+async function currentAccessToken(client: SupabaseClient): Promise<string> {
+  const { data, error } = await client.auth.getSession();
+  const accessToken = data.session?.access_token;
+  if (error || !accessToken) throw new InvalidLauncherSessionError();
+  return accessToken;
 }
 
 function summarizeAuthorizationUrl(rawUrl: string): Record<string, unknown> {
@@ -413,7 +408,7 @@ function summarizeAuthorizationUrl(rawUrl: string): Record<string, unknown> {
     parameterNames: [...url.searchParams.keys()].sort(),
     redirectTo,
     redirectToMatchesLauncher: redirectTo === defaultRedirectUri,
-    stateId: url.searchParams.get("state") ? authFingerprint(url.searchParams.get("state")!) : null
+    stateId: url.searchParams.get("state") ? fingerprint(url.searchParams.get("state")!) : null
   };
 }
 
@@ -519,7 +514,18 @@ class EncryptedSessionStorage {
   }
 }
 
-async function readConfig(): Promise<SupabaseConfig> {
+let configLoad: Promise<SupabaseConfig> | null = null;
+
+// The config only changes between launches, so read it once per process.
+function readConfig(): Promise<SupabaseConfig> {
+  configLoad ??= loadConfig().catch((error: unknown) => {
+    configLoad = null;
+    throw error;
+  });
+  return configLoad;
+}
+
+async function loadConfig(): Promise<SupabaseConfig> {
   if (process.env.BWEEEP_SUPABASE_URL && process.env.BWEEEP_SUPABASE_PUBLISHABLE_KEY) {
     return {
       url: process.env.BWEEEP_SUPABASE_URL,

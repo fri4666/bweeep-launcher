@@ -2,7 +2,7 @@ import { app } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 
-export type LauncherChannel = "production" | "test";
+type LauncherChannel ="production" | "test";
 
 export function getLauncherChannel(): LauncherChannel {
   try {

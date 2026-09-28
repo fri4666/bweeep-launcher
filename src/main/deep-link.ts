@@ -1,4 +1,6 @@
-export interface AuthCallback {
+import { fingerprint } from "./hash.js";
+
+interface AuthCallback {
   code: string;
   flowId: string | null;
 }
@@ -46,7 +48,7 @@ export function parseAuthCallback(rawUrl: string, scheme = "bwe-e-ep"): AuthCall
       providerError: authError,
       providerErrorCode: url.searchParams.get("error_code"),
       providerDescriptionFingerprint: fingerprint(description),
-      stateFingerprint: fingerprint(url.searchParams.get("state"))
+      stateFingerprint: optionalFingerprint(url.searchParams.get("state"))
     };
     if (/code.+expired|code.+not valid/i.test(description)) {
       throw new AuthCallbackError(
@@ -63,7 +65,7 @@ export function parseAuthCallback(rawUrl: string, scheme = "bwe-e-ep"): AuthCall
   if (!code) {
     throw new AuthCallbackError("로그인 인증 코드를 받지 못했습니다.", flowId, "invalid_callback", {
       ...emptyDiagnostics(),
-      stateFingerprint: fingerprint(url.searchParams.get("state"))
+      stateFingerprint: optionalFingerprint(url.searchParams.get("state"))
     });
   }
   return { code, flowId };
@@ -78,11 +80,8 @@ function emptyDiagnostics(): AuthCallbackError["diagnostics"] {
   };
 }
 
-function fingerprint(value: string | null): string | null {
-  if (!value) return null;
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) hash = (hash * 31 + value.charCodeAt(index)) | 0;
-  return `len:${value.length}:h:${(hash >>> 0).toString(16)}`;
+function optionalFingerprint(value: string | null): string | null {
+  return value ? fingerprint(value) : null;
 }
 
 export function parseInviteLink(rawUrl: string, scheme = "bwe-e-ep"): string {

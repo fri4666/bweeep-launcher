@@ -20,14 +20,14 @@ import {
   resolveNeoForgedInstallerFile
 } from "@xmcl/installer";
 import type { ModpackManifest, SyncProgress } from "../shared/types.js";
-import { ensureBundledClientMods, type BundledClientMod } from "./companion-mod.js";
+import { ensureBundledClientMods, verifyRemoteConnectionLock, type BundledClientMod } from "./client-feature-mods.js";
 import type { LaunchIdentity } from "./launch-identity.js";
 import { describeGameExit, type GameExitResult } from "./game-exit.js";
 import { createGameOutputObserver } from "./game-telemetry.js";
-import { verifyRemoteConnectionLock } from "./connection-lock.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
 
 type ProgressSink = (event: SyncProgress) => void;
+type InstallRuntime = ReturnType<typeof createDefaultNodeInstallRuntime>;
 
 export async function installAndLaunch(
   manifest: ModpackManifest,
@@ -85,7 +85,6 @@ export async function installAndLaunch(
   const quickPlayPath = path.join(instanceDir, "quickPlay", "bweeep.json");
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
-  report({ kind: "info", stage: "접속 인증", message: "서버 접속 인증표 준비 중" });
   const { identity, ticket: gameTicket } = await runStage(report, "접속 인증", getLaunchAuthorization);
   report({ kind: "info", stage: "게임 실행", message: "Minecraft 실행 명령을 준비하는 중" });
   const gameProcess = await launch({
@@ -112,27 +111,22 @@ export async function installAndLaunch(
   watcher.once("minecraft-window-ready", () => {
     report({ kind: "info", stage: "게임 초기화", message: "게임 화면 준비 중" });
   });
+  // The caller reports the exit: only it knows whether the player asked to stop.
   watcher.once("minecraft-exit", ({ code, signal, crashReport, crashReportLocation }) => {
-    const exit = describeGameExit({ code, signal, crashReport, crashReportLocation });
-    report({
-      kind: exit.abnormal ? "error" : "info",
-      stage: "게임 종료",
-      message: exit.message
-    });
-    onExit(exit);
+    onExit(describeGameExit({ code, signal, crashReport, crashReportLocation }));
   });
   watcher.once("error", (error) => {
     const message = `Minecraft 프로세스를 시작하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
     report({ kind: "error", stage: "게임 실행", message });
     onExit({ abnormal: true, message, code: null, signal: null, crashReportLocation: null });
   });
-  return { pid: gameProcess.pid ?? 0, version: version || baseVersion };
+  return { pid: gameProcess.pid ?? 0, version };
 }
 
 async function installFabric(
   minecraft: MinecraftFolder,
   manifest: ModpackManifest,
-  runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
+  runtime: InstallRuntime,
   progress: ProgressSink
 ): Promise<string> {
   progress({ kind: "info", stage: "Fabric", message: `Fabric ${manifest.loader.version} 설치 파일을 준비하는 중` });
@@ -152,7 +146,7 @@ async function installFabric(
 async function installLaunchLibraries(
   minecraft: MinecraftFolder,
   versionId: string,
-  runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
+  runtime: InstallRuntime,
   progress: ProgressSink
 ): Promise<void> {
   const resolved = await Version.parse(minecraft, versionId);
@@ -182,7 +176,7 @@ async function runStage<T>(progress: ProgressSink, stage: string, action: () => 
 async function resolveRuntime(
   instanceDir: string,
   requiredJava: ModpackManifest["java"],
-  runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
+  runtime: InstallRuntime,
   progress: ProgressSink
 ): Promise<string> {
   const bundled = process.platform === "win32"
@@ -219,7 +213,7 @@ async function resolveRuntime(
 async function installMinecraftBase(
   minecraft: MinecraftFolder,
   minecraftVersion: string,
-  runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
+  runtime: InstallRuntime,
   progress: ProgressSink
 ): Promise<string> {
   progress({ kind: "info", stage: "게임 정보", message: `Minecraft ${minecraftVersion} 버전 정보를 확인하는 중` });
@@ -248,7 +242,7 @@ async function installForgeFamily(
   minecraft: MinecraftFolder,
   manifest: ModpackManifest,
   javaPath: string,
-  runtime: ReturnType<typeof createDefaultNodeInstallRuntime>,
+  runtime: InstallRuntime,
   progress: ProgressSink
 ): Promise<string> {
   const project = manifest.loader.kind === "forge" ? "forge" : "neoforge";
@@ -289,21 +283,23 @@ async function resolveForgeInstallerFile(minecraft: MinecraftFolder, version: st
   };
 }
 
-// Installer task ids and paths go to the launch log only; the UI gets a short sentence.
+// Stage start/finish and download counts already come from runStage and the
+// download callback, so only installer events that tell the player something
+// new are forwarded. Task ids go to the launch log, not the UI text.
 function publishInstallerEvent(progress: ProgressSink, stage: string, event: unknown): void {
   const record = event && typeof event === "object" ? event as Record<string, unknown> : {};
+  const message = installEventMessage(record);
+  if (!message) return;
   const task = record.task && typeof record.task === "object" ? record.task as Record<string, unknown> : {};
-  const taskId = typeof task.id === "string" ? task.id : undefined;
-  progress({ kind: "info", stage, message: installEventMessage(record), filePath: taskId });
+  progress({ kind: "info", stage, message, filePath: typeof task.id === "string" ? task.id : undefined });
 }
 
-export function installEventMessage(event: Record<string, unknown>): string {
+function installEventMessage(event: Record<string, unknown>): string | null {
   switch (event.type) {
-    case "task-start": return "설치 파일 확인 중";
-    case "task-end": return event.error ? "설치 작업 실패" : "설치 파일 확인 완료";
+    case "task-end": return event.error ? "설치 작업 실패" : null;
     case "file-retry": return `다운로드 재시도 중${typeof event.attempt === "number" ? ` (${event.attempt}회째)` : ""}`;
     case "java-strategy-start": return "Java 설치 방법 확인 중";
     case "java-strategy-failed": return "다른 Java 설치 방법으로 전환 중";
-    default: return "설치 작업 처리 중";
+    default: return null;
   }
 }

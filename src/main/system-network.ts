@@ -1,10 +1,10 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { InstallFile } from "@xmcl/installer";
+import { hashFile } from "./hash.js";
 
 let directSessionReady: Promise<Electron.Session> | null = null;
 
@@ -42,13 +42,7 @@ export async function downloadInstallFilesWithSystemNetwork(
 }
 
 async function downloadInstallFile(file: InstallFile): Promise<void> {
-  const urls = file.urls.filter((url) => {
-    try {
-      return requireHttpsUrl(url).protocol === "https:";
-    } catch {
-      return false;
-    }
-  });
+  const urls = file.urls.filter((url) => URL.canParse(url) && new URL(url).protocol === "https:");
   if (urls.length === 0) throw new Error(`안전한 다운로드 주소가 없습니다: ${path.basename(file.path)}`);
 
   const temporary = `${file.path}.bweeep-part`;
@@ -79,14 +73,7 @@ async function verifyInstallFile(filePath: string, file: InstallFile): Promise<v
     throw new Error("다운로드 크기가 일치하지 않습니다.");
   }
   if (!file.checksum) return;
-  const hash = crypto.createHash(file.checksum.algorithm);
-  await new Promise<void>((resolve, reject) => {
-    fs.createReadStream(filePath)
-      .on("data", (chunk) => hash.update(chunk))
-      .on("end", resolve)
-      .on("error", reject);
-  });
-  if (hash.digest("hex").toLowerCase() !== file.checksum.value.toLowerCase()) {
+  if (await hashFile(filePath, file.checksum.algorithm) !== file.checksum.value.toLowerCase()) {
     throw new Error("다운로드 해시가 일치하지 않습니다.");
   }
 }
@@ -110,7 +97,8 @@ async function getDirectSession(): Promise<Electron.Session> {
 }
 
 async function writeNetworkAttempt(event: string, target: URL, error?: unknown): Promise<void> {
-  const { writeGameLog } = await import("./game-log.js");
+  // Imported lazily: logs.ts needs Electron, and the Node verify scripts load this module.
+  const { writeGameLog } = await import("./logs.js");
   const diagnostics = await diagnoseSystemRoute(target);
   await writeGameLog(event, {
     host: target.hostname,

@@ -8,14 +8,14 @@ const USER_SHADERS_FILE = ".bweeep-user-shaders.json";
 const USER_FOLDERS_FILE = "folders.json";
 const GAME_OPTION_FILE = /^options(?:[a-z0-9_-]+)?\.txt$/i;
 
-export interface UserContentPaths {
+interface UserContentPaths {
   userModsDir: string;
   shaderpacksDir: string;
 }
 
 /** Keeps user-owned client content outside of server-managed manifest files. */
 export async function prepareUserContent(instanceRoot: string, instanceDir: string, manifest: ModpackManifest): Promise<UserContentStatus> {
-  const root = path.resolve(instanceRoot, ".bweeep-user-content");
+  const root = userContentRoot(instanceRoot);
   const { userModsDir, shaderpacksDir } = userContentPaths(instanceRoot, manifest.loader.kind, manifest.minecraftVersion);
   const sharedOptionsPath = path.join(root, "settings", "options.txt");
   const modsDir = path.join(instanceDir, "mods");
@@ -64,11 +64,11 @@ export async function captureSharedOptions(instanceRoot: string, instanceDir: st
   }
 }
 
-export function userContentRoot(instanceRoot: string): string {
+function userContentRoot(instanceRoot: string): string {
   return path.resolve(instanceRoot, ".bweeep-user-content");
 }
 
-export function userContentPaths(instanceRoot: string, loaderKind: ModpackManifest["loader"]["kind"], minecraftVersion: string): UserContentPaths {
+function userContentPaths(instanceRoot: string, loaderKind: ModpackManifest["loader"]["kind"], minecraftVersion: string): UserContentPaths {
   const root = userContentRoot(instanceRoot);
   const compatibilityId = `${loaderKind}-${minecraftVersion}`;
   return {

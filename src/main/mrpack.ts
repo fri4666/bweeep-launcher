@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 import * as yauzl from "yauzl";
 import type { LoaderKind, MrpackSource, PackFile, SyncProgress } from "../shared/types.js";
 import { fetchWithSystemNetwork } from "./system-network.js";
+import { hashFile } from "./hash.js";
 
 type ProgressSink = (event: SyncProgress) => void;
 
@@ -21,7 +22,7 @@ interface MrpackIndex {
   }>;
 }
 
-export interface PreparedMrpack {
+interface PreparedMrpack {
   files: PackFile[];
   applyOverrides(instanceDir: string, progress: ProgressSink): Promise<void>;
 }
@@ -170,10 +171,8 @@ function isServerList(value: string): boolean {
   return /^servers\.dat(?:_old)?$/i.test(value);
 }
 
-function sha512(bytes: Buffer): string { return crypto.createHash("sha512").update(bytes).digest("hex"); }
-
 async function matchesSha512(filePath: string, expected: string): Promise<boolean> {
-  try { return sha512(await fsp.readFile(filePath)) === expected; } catch { return false; }
+  try { return await hashFile(filePath, "sha512") === expected.toLowerCase(); } catch { return false; }
 }
 
 async function exists(filePath: string): Promise<boolean> {
