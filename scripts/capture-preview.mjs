@@ -147,7 +147,9 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       state.current = null;
       return state;
     },
-    searchMods: async () => ({ hits: modHits, total: modHits.length }),
+    searchMods: async (_target, query) => /pack|팩/i.test(query)
+      ? { hits: [], total: 0, modpacks: ["Fabulously Optimized"] }
+      : { hits: modHits, total: modHits.length, modpacks: [] },
     personalMods: async () => personalMods,
     installMod: async (_target, projectId) => {
       const hit = modHits.find((item) => item.projectId === projectId);
@@ -420,6 +422,13 @@ if (catalogUnavailable) {
   await page.getByText("Sodium을(를) 설치했어요. 다음 게임 시작부터 적용돼요.").waitFor();
   if (!(await page.locator(".modItem").filter({ hasText: "Sodium" }).innerText()).includes("설치됨")) throw new Error("installed mod is not marked");
   await page.screenshot({ path: "previews/bweeep-launcher-mods.png" });
+  await page.getByLabel("모드 검색").fill("fabulously optimized modpack");
+  await page.getByText("Fabulously Optimized은(는) 모드팩이라 통째로 받을 수 없어요.", { exact: false }).waitFor();
+  if (await page.locator(".modList .modItem").count() !== 0) throw new Error("modpack search still offers something to install");
+  await page.screenshot({ path: "previews/bweeep-launcher-mods-modpack.png" });
+  await page.getByLabel("모드 검색").fill("");
+  await page.locator(".modItem").first().waitFor();
+  interactionChecks.push("modpack-download-refused");
   await page.getByRole("tab", { name: /설치됨/ }).click();
   await page.locator(".modItem").filter({ hasText: "Sodium" }).getByRole("button", { name: "삭제" }).waitFor();
   interactionChecks.push("personal-mod-search-install");

@@ -27,6 +27,7 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<ModrinthHit[]>([]);
   const [total, setTotal] = useState(0);
+  const [modpacks, setModpacks] = useState<string[]>([]);
   const [installed, setInstalled] = useState<PersonalMod[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
       if (seq !== searchSeq.current) return;
       setHits((previous) => offset === 0 ? result.hits : [...previous, ...result.hits]);
       setTotal(result.total);
+      if (offset === 0) setModpacks(result.modpacks);
     } catch (error) {
       if (seq === searchSeq.current) setNotice({ text: message(error, "Modrinth 검색에 실패했어요."), error: true });
     } finally {
@@ -114,6 +116,11 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
               </div>
               {tab === "search" ? (
                 <div className="modList">
+                  {modpacks.length > 0 && (
+                    <p className="noticeBar isInfo" role="status">
+                      {modpacks.join(", ")}은(는) 모드팩이라 통째로 받을 수 없어요. 서버 팩은 서버가 정하고, 여기서는 편의 모드만 하나씩 설치할 수 있어요.
+                    </p>
+                  )}
                   {hits.map((hit) => {
                     const status = installedIds.has(hit.projectId) ? "installed" : hit.status;
                     return (

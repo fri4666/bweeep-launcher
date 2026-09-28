@@ -252,6 +252,8 @@ export interface ModrinthHit {
 export interface ModSearchResult {
   hits: ModrinthHit[];
   total: number;
+  /** Whole modpacks that match the search. They are named so the panel can say they cannot be downloaded. */
+  modpacks: string[];
 }
 
 export interface PersonalMod {

@@ -49,6 +49,9 @@ export function setModrinthUserAgent(version: string): void {
 
 export async function searchMods(target: ModTarget, query: string, offset: number): Promise<ModSearchResult> {
   requireModdable(target);
+  // A pasted modpack link is refused without searching.
+  const modpackLink = /modrinth\.com\/modpack\/([^/?#\s]+)/i.exec(query);
+  if (modpackLink) return { hits: [], total: 0, modpacks: [decodeURIComponent(modpackLink[1])] };
   const facets = [
     ["project_type:mod"],
     [`categories:${target.loader}`],
@@ -63,7 +66,10 @@ export async function searchMods(target: ModTarget, query: string, offset: numbe
     limit: "20",
     offset: String(Math.max(0, Math.min(offset, 1000)))
   });
-  const data = await api<{ hits: Array<Record<string, unknown>>; total_hits: number }>(`/search?${params}`);
+  const [data, modpacks] = await Promise.all([
+    api<{ hits: Array<Record<string, unknown>>; total_hits: number }>(`/search?${params}`),
+    offset === 0 ? matchingModpacks(query) : Promise.resolve([])
+  ]);
   const [installed, inPack] = await Promise.all([readRecord(target), packProjectIds(target)]);
   const blocked = new Set(target.blockedModrinthProjects);
   const hits: ModrinthHit[] = data.hits.map((hit) => {
@@ -81,7 +87,36 @@ export async function searchMods(target: ModTarget, query: string, offset: numbe
         : "available"
     };
   });
-  return { hits, total: data.total_hits };
+  return { hits, total: data.total_hits, modpacks };
+}
+
+/**
+ * Modpacks whose name matches the search, so a player looking for one learns
+ * it cannot be downloaded instead of seeing an empty list. Whole packs replace
+ * the server's pack and could not join the server, so they are never installed.
+ */
+async function matchingModpacks(query: string): Promise<string[]> {
+  const name = query.replace(/모드\s*팩|\bmod\s*packs?\b/gi, " ").trim().slice(0, 100);
+  const wanted = searchKey(name);
+  if (wanted.length < 2) return [];
+  const params = new URLSearchParams({ query: name, facets: JSON.stringify([["project_type:modpack"]]), limit: "5" });
+  try {
+    const data = await api<{ hits: Array<Record<string, unknown>> }>(`/search?${params}`);
+    return data.hits
+      .map((hit) => String(hit.title ?? ""))
+      .filter((title) => {
+        const key = searchKey(title);
+        // Only packs whose whole name was typed, so "sodium" does not flag "Sodium Plus".
+        return key.length >= 2 && wanted.includes(key);
+      })
+      .slice(0, 2);
+  } catch {
+    return [];
+  }
+}
+
+function searchKey(text: string): string {
+  return text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
 export async function listPersonalMods(target: ModTarget, checkUpdates: boolean): Promise<PersonalMod[]> {
@@ -120,6 +155,7 @@ export async function installMod(target: ModTarget, projectId: string): Promise<
     }
     if (depth > MAX_DEPENDENCY_DEPTH) throw new Error("필요한 모드가 너무 많이 이어져 있어 설치를 멈췄어요.");
     const project = await api<ModrinthProject>(`/project/${id}`);
+    if (project.project_type === "modpack") throw new Error(`${project.title}은(는) 모드팩이라 통째로 받을 수 없어요. 편의 모드만 하나씩 설치할 수 있어요.`);
     if (project.project_type !== "mod") throw new Error(`${project.title}은(는) 모드가 아니에요.`);
     if (project.server_side === "required") {
       throw new Error(`${project.title}은(는) 서버에도 설치해야 해서 개인 모드로 쓸 수 없어요.`);
