@@ -7,7 +7,7 @@ import {
   isDisplaySessionToken,
   normalizeDisplayName
 } from "./display-name.ts";
-import { createGameTicket, isGameName, isGameTicket } from "./game-ticket.ts";
+import { createGameTicket, isGameName, isGameTicket, ticketNameProblem } from "./game-ticket.ts";
 import { decideInvite, invitePolicy, isInviteOpen, type InviteRole } from "./invite-policy.ts";
 import { launchGameName } from "./launch-name.ts";
 import { decodeBase64, isSkinModel, MAX_SKIN_BYTES, type SkinModel, validateSkinPng } from "./skin-image.ts";
@@ -458,16 +458,36 @@ async function handleRequest(request: Request): Promise<Response> {
     }
 
     if (body.action === "gameTicket") {
-      const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(userId);
+      const [{ data: userData, error: userError }, { data: profile, error: profileError }] = await Promise.all([
+        supabaseAdmin.auth.admin.getUserById(userId),
+        supabaseAdmin.from("launcher_profiles").select("game_name").eq("user_id", userId).maybeSingle()
+      ]);
       const discordIdentity = userData.user?.identities?.find((identity) => identity.provider === "discord");
       const discordId = discordIdentity?.id;
-      if (userError || !discordId || !/^\d{15,22}$/.test(discordId)) {
+      if (userError || !userData.user || !discordId || !/^\d{15,22}$/.test(discordId)) {
         return json({ message: "Discord 계정 연결을 확인하지 못했습니다." }, 403);
       }
+      if (profileError) {
+        console.error("game ticket profile lookup failed", profileError);
+        return json({ message: "게임 프로필을 확인하지 못했습니다." }, 500);
+      }
+      const expectedName = await launchGameName(userData.user, profile?.game_name ?? null);
+      const { data: nameAvailable, error: nameError } = await supabaseAdmin.rpc("launcher_game_name_available", {
+        p_user_id: userId,
+        p_game_name: expectedName
+      });
+      if (nameError) {
+        console.error("game ticket name check failed", nameError);
+        return json({ message: "인게임 이름을 확인하지 못했습니다." }, 500);
+      }
+      const nameProblem = ticketNameProblem(body.gameName, expectedName, nameAvailable === true);
+      if (nameProblem) return json(nameProblem, 409);
 
       const ticket = createGameTicket();
       const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
       await supabaseAdmin.from("launcher_game_tickets").delete().lt("expires_at", new Date().toISOString());
+      // One live ticket per member: a new launch retires the previous one.
+      await supabaseAdmin.from("launcher_game_tickets").delete().eq("user_id", userId);
       const { error: insertError } = await supabaseAdmin.from("launcher_game_tickets").insert({
         ticket_hash: await sha256(ticket),
         user_id: userId,

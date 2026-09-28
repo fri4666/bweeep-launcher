@@ -82,8 +82,20 @@ export function parseRoute(method: string, pathname: string): Route {
   if (method === "GET" && profile) return { kind: "profile", id: profile[1] };
   if (method === "POST" && path === "api/profiles/minecraft") return { kind: "profilesByName" };
   const byName = /^api\/users\/profiles\/minecraft\/([^/]+)$/.exec(path);
-  if (method === "GET" && byName) return { kind: "profileByName", name: decodeURIComponent(byName[1]) };
+  if (method === "GET" && byName) {
+    const name = decodeSegment(byName[1]);
+    // A malformed escape cannot be anyone's name: answer "no such profile", not a server error.
+    return name === null ? { kind: "notFound" } : { kind: "profileByName", name };
+  }
   return { kind: "notFound" };
+}
+
+function decodeSegment(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
 }
 
 export function apiMetadata(publicKeyPem: string, publicUrl: string) {
