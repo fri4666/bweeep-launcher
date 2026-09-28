@@ -49,7 +49,7 @@ export class HashCache {
   /** Records a file the launcher just wrote and verified. */
   async remember(relativePath: string, target: string, algorithm: Algorithm, hash: string): Promise<void> {
     const stat = await fsp.stat(target);
-    this.stamps.set(relativePath, { size: stat.size, mtimeMs: wholeMs(stat.mtimeMs), algorithm, hash: hash.toLowerCase() });
+    this.stamps.set(relativePath, { size: stat.size, mtimeMs: stat.mtimeMs, algorithm, hash: hash.toLowerCase() });
     this.dirty = true;
   }
 
@@ -80,18 +80,21 @@ export class HashCache {
     }
     if (!stat.isFile() || stat.size !== expectedSize) return null;
     const cached = this.stamps.get(relativePath);
-    const mtimeMs = wholeMs(stat.mtimeMs);
-    if (cached && cached.size === stat.size && cached.mtimeMs === mtimeMs && cached.algorithm === algorithm) return cached.hash;
+    if (cached && cached.size === stat.size && sameTime(cached.mtimeMs, stat.mtimeMs) && cached.algorithm === algorithm) return cached.hash;
     const hash = await hashFile(target, algorithm);
-    this.stamps.set(relativePath, { size: stat.size, mtimeMs, algorithm, hash });
+    this.stamps.set(relativePath, { size: stat.size, mtimeMs: stat.mtimeMs, algorithm, hash });
     this.dirty = true;
     return hash;
   }
 }
 
-/** File systems keep times at different precisions; whole milliseconds compare the same everywhere. */
-function wholeMs(value: number): number {
-  return Math.trunc(value);
+/**
+ * File systems keep times at different precisions, and a time written back
+ * through a Date can come out a hair below the whole millisecond (…999.9999).
+ * Anything within a millisecond is the same time.
+ */
+function sameTime(left: number, right: number): boolean {
+  return Math.abs(left - right) < 1;
 }
 
 function isStamp(value: unknown): value is Stamp {
