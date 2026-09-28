@@ -1,4 +1,4 @@
-import { getBearerToken } from "./authorization.ts";
+import { getBearerToken, getSessionId } from "./authorization.ts";
 import { previousGameNames } from "./profile-history.ts";
 
 Deno.test("reads a standard Authorization Bearer header", () => {
@@ -19,6 +19,21 @@ Deno.test("rejects missing and non-Bearer authorization headers", () => {
 
   if (getBearerToken(missing) !== null || getBearerToken(basic) !== null) {
     throw new Error("Only Bearer authorization headers must be accepted.");
+  }
+});
+
+Deno.test("reads the auth session id from token claims", () => {
+  const sessionId = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  if (getSessionId({ sub: "user", session_id: sessionId }) !== sessionId) {
+    throw new Error("A valid session_id claim was not read.");
+  }
+  if (
+    getSessionId(undefined) !== null
+    || getSessionId({ sub: "user" }) !== null
+    || getSessionId({ session_id: "not-a-uuid" }) !== null
+    || getSessionId({ session_id: 42 }) !== null
+  ) {
+    throw new Error("Missing or malformed session_id claims must be rejected.");
   }
 });
 
