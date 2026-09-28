@@ -1,15 +1,11 @@
 {
   "version": "5",
   "specifiers": {
-    "jsr:@std/crypto@1": "1.1.0",
     "jsr:@supabase/functions-js@2": "2.117.1",
     "npm:@supabase/supabase-js@2": "2.117.1",
     "npm:openai@^4.52.5": "4.104.0"
   },
   "jsr": {
-    "@std/crypto@1.1.0": {
-      "integrity": "b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8"
-    },
     "@supabase/functions-js@2.117.1": {
       "integrity": "48a2feec0c1217ac1762b73b91b75c3c9439625ca56d4a20257aa2abe5259c77",
       "dependencies": [
@@ -274,7 +270,6 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@std/crypto@1",
       "jsr:@supabase/functions-js@2",
       "npm:@supabase/supabase-js@2"
     ]
