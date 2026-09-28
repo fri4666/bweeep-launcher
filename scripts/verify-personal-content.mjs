@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { bundledFeatureMods, verifyRemoteConnectionLock } from "../dist/src/main/client-feature-mods.js";
+import { connectionGuardEnabled, connectionGuardJvmArgs } from "../dist/src/main/connection-guard.js";
+import { writeModJar } from "./lib/test-jars.mjs";
 import { assertManifest } from "../dist/src/main/manifest-validation.js";
 import { syncModpack } from "../dist/src/main/sync.js";
 import { captureSharedOptions, prepareUserContent } from "../dist/src/main/user-content.js";
@@ -28,13 +30,15 @@ try {
   await fs.mkdir(path.join(instance, "mods"), { recursive: true });
   await Promise.all([
     fs.writeFile(path.join(personalMods, "required.jar"), "personal-conflict"),
-    fs.writeFile(path.join(personalMods, "shader-helper.jar"), "personal-ok"),
+    writeModJar(path.join(personalMods, "shader-helper.jar"), "neoforge", "shader_helper"),
     fs.writeFile(path.join(instance, "mods", "required.jar"), "server-owned")
   ]);
 
   const result = await prepareUserContent(root, instance, manifest);
-  assert.equal(await fs.readFile(path.join(instance, "mods", "required.jar"), "utf8"), "personal-conflict");
-  assert.equal(await fs.readFile(path.join(instance, "mods", "shader-helper.jar"), "utf8"), "personal-ok");
+  // A personal jar never overwrites the server's own file of the same name.
+  assert.equal(await fs.readFile(path.join(instance, "mods", "required.jar"), "utf8"), "server-owned");
+  assert.equal(result.skippedMods.find((mod) => mod.name === "required.jar")?.reason, "서버 팩에 같은 이름의 파일이 있어요");
+  assert.deepEqual(await fs.readFile(path.join(instance, "mods", "shader-helper.jar")), await fs.readFile(path.join(personalMods, "shader-helper.jar")));
   await Promise.all([
     fs.writeFile(path.join(instance, "options.txt"), "sensitivity:0.42\nkey_key.jump:key.keyboard.space"),
     fs.writeFile(path.join(instance, "optionsof.txt"), "ofFastRender:true")
@@ -56,11 +60,22 @@ try {
     loader: { kind: "forge", version: "47.3.0" },
     clientFeatures: { connectionLock: false }
   }).length, 0);
-  assert.throws(() => bundledFeatureMods("/resources", {
+  // Versions without a lock mod are covered by the connection guard agent instead of refusing to launch.
+  assert.equal(bundledFeatureMods("/resources", {
     ...manifest,
     loader: { kind: "forge", version: "47.3.0" },
     clientFeatures: { connectionLock: true }
-  }));
+  }).length, 0);
+  // Servers on the Bweeep Yggdrasil API need none of the version-specific mods.
+  assert.equal(bundledFeatureMods("/resources", { ...manifest, gameAuth: "yggdrasil", clientFeatures: { connectionLock: true } }).length, 0);
+  assert.equal(connectionGuardEnabled(manifest), true);
+  assert.equal(connectionGuardEnabled({ ...manifest, clientFeatures: { connectionLock: false } }), false);
+  assert.deepEqual(connectionGuardJvmArgs("/agent.jar", manifest), ["-javaagent:/agent.jar", "-Dbweeep.targetServer=example.test:25565"]);
+  const guardJar = await fs.readFile(new URL("../resources/java-agent/bweeep-guard-1.0.0.jar", import.meta.url));
+  assert.equal(
+    crypto.createHash("sha256").update(guardJar).digest("hex"),
+    "0a4ac28a5353ddcff5e4b23b21ccadc69ff2dff3da6fc55dde1e317732c115bb"
+  );
   const lockContents = Buffer.from("test remote bridge");
   const lockHash = crypto.createHash("sha256").update(lockContents).digest("hex");
   const remoteLockManifest = {
@@ -124,24 +139,24 @@ try {
     crypto.createHash("sha256").update(fabricApiJar).digest("hex"),
     "86f16178a3cecc887a85a4cfe9a79d92fa7341d8f39b5951a4d6ad800ab657a6"
   );
-  assert.throws(() => bundledFeatureMods("/resources", {
+  assert.equal(bundledFeatureMods("/resources", {
     ...manifest,
     minecraftVersion: "26.3",
     loader: { kind: "fabric", version: "0.19.4" },
     clientFeatures: { connectionLock: true }
-  }));
+  }).length, 0);
   assert.equal(bundledFeatureMods("/resources", {
     ...manifest,
     minecraftVersion: "26.3",
     loader: { kind: "vanilla", version: "none" },
     clientFeatures: { connectionLock: false }
   }).length, 0);
-  assert.throws(() => bundledFeatureMods("/resources", {
+  assert.equal(bundledFeatureMods("/resources", {
     ...manifest,
     minecraftVersion: "26.3",
     loader: { kind: "vanilla", version: "none" },
     clientFeatures: { connectionLock: true }
-  }));
+  }).length, 0);
   const versionRoot = path.join(root, "server-version");
   const instanceRoot = path.join(versionRoot, "instances");
   const higherPackFile = path.join(versionRoot, "pack-high.jar");

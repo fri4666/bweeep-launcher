@@ -3,8 +3,10 @@
 // through the Bweeep Yggdrasil API (authlib-injector) and shows their skins.
 // Run it before switching a server (new version, loader or modpack) to
 // gameAuth "yggdrasil". Everything runs on this machine: the local Supabase
-// stack from scripts/local-supabase.sh, a copy of the server under /tmp and
-// real game clients on virtual displays. Production servers are only read.
+// stack from scripts/local-supabase.sh, a copy of the server under
+// ~/.cache/bweeep-server-auth and real game clients on virtual displays.
+// Production servers are only read. /tmp is not used: on WSL it lives in RAM,
+// and the game copies there once starved the production server of memory.
 //
 //   npm run build
 //   bash scripts/local-supabase.sh start
@@ -16,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
@@ -39,7 +42,7 @@ if (process.env.BWEEP_AUTH_CHECK_CLIENT) {
 const scenarioPath = process.argv[2];
 if (!scenarioPath) throw new Error("usage: node scripts/verify-server-auth.mjs <scenario.json>");
 const scenario = JSON.parse(await fsp.readFile(scenarioPath, "utf8"));
-const WORK = path.join("/tmp/bweeep-server-auth", scenario.name);
+const WORK = path.join(process.env.BWEEP_AUTH_WORK ?? path.join(os.homedir(), ".cache", "bweeep-server-auth"), scenario.name);
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok });
@@ -155,13 +158,126 @@ async function main() {
     rcon.close();
   }
 
+  // --- the connection guard agent loads on this version and reports the connection
+  for (const player of players) {
+    const clientLog = readIfExists(path.join(player.clientRoot, "client.log"));
+    check(`${player.name}: connection guard reports the join`, clientLog.includes("STAGE 선택 서버 입장"), clientLog.includes("다른 서버 차단") ? "blocked" : "");
+  }
+  // Clients are closed from here on; the remaining checks need the memory.
+  for (const player of players) await stopClient(player);
+
+  // --- the guard keeps the game on the selected server
+  if (scenario.guardProbe !== false) {
+    const before = logText().length;
+    const probe = { name: "GuardProbe", display: ":178", clientRoot: path.join(WORK, "client-guard-probe"), offline: true, guardTarget: "127.0.0.3:25565" };
+    await startClient(probe, { apiRoot, metadata, server });
+    const blocked = await waitFor(() => readIfExists(path.join(probe.clientRoot, "client.log")).includes("STAGE 다른 서버 차단"), 420_000);
+    await sleep(5000);
+    check("a game whose selected server is elsewhere cannot join this one", blocked && !logText().slice(before).includes("GuardProbe"),
+      readIfExists(path.join(probe.clientRoot, "client.log")).split("\n").filter((line) => /STAGE|ERROR/.test(line)).slice(-3).join(" | "));
+    await stopClient(probe);
+  }
+
+  // --- names and UUIDs stay with their member (no OP or character takeover)
+  const [owner, other] = players.length > 1 ? players : [players[0], await createPlayer(local, { name: "AuthCheckOther", body: [40, 40, 200], model: "default" })];
+  const takeCurrent = await callFunction(local, other, { action: "setGameProfile", gameName: owner.name });
+  check("another member's current name is refused", takeCurrent.status === 409, `${takeCurrent.status} ${takeCurrent.body?.message ?? ""}`);
+
   // --- renaming keeps the UUID; the Minecraft name follows the launcher profile
-  const renamed = players[0];
+  const renamed = owner;
+  const oldName = renamed.name;
   const newName = `${renamed.name.slice(0, 11)}Renm`;
-  await admin.from("launcher_profiles").upsert({ user_id: renamed.userId, game_name: newName }, { onConflict: "user_id" });
+  const renameResult = await callFunction(local, renamed, { action: "setGameProfile", gameName: newName });
+  check("a member can rename to a free name", renameResult.status === 200, `${renameResult.status}`);
   const again = await callFunction(local, renamed, { action: "gameAuth" });
   check("renaming keeps the account UUID", again.body?.profile?.id === renamed.game.profile.id && again.body?.profile?.name === newName,
     `${again.body?.profile?.name} ${again.body?.profile?.id}`);
+  const takeOld = await callFunction(local, other, { action: "setGameProfile", gameName: oldName });
+  check("another member's earlier name is refused", takeOld.status === 409, `${takeOld.status}`);
+  const newcomer = await createPlayer(local, { name: oldName, body: [0, 0, 0], model: "default" });
+  const newcomerAuth = await callFunction(local, newcomer, { action: "gameAuth" });
+  check("a new member whose Discord name matches an earlier name gets no account", newcomerAuth.status === 409, `${newcomerAuth.status}`);
+  const ownerStill = await callFunction(local, renamed, { action: "setGameProfile", gameName: oldName });
+  check("a member may go back to their own earlier name", ownerStill.status === 200, `${ownerStill.status}`);
+  await callFunction(local, renamed, { action: "setGameProfile", gameName: newName });
+
+  // Reserved UUIDs from a server's usercache: nobody gets an unowned one, only the owner gets theirs.
+  const unowned = `Rsv${randomBytes(3).toString("hex")}`;
+  const owned = `Own${randomBytes(3).toString("hex")}`;
+  const ownedPlayer = await createPlayer(local, { name: owned, body: [0, 0, 0], model: "default" });
+  const offlineUuid = async (name) => (await admin.rpc("launcher_offline_uuid", { p_name: name })).data;
+  const reservations = await admin.from("launcher_minecraft_uuid_reservations").insert([
+    { minecraft_uuid: await offlineUuid(unowned), game_name: unowned, user_id: null, source: "verify-server-auth" },
+    { minecraft_uuid: await offlineUuid(owned), game_name: owned, user_id: ownedPlayer.userId, source: "verify-server-auth" }
+  ]);
+  check("reservations can be recorded", !reservations.error, reservations.error?.message ?? "");
+  const unownedPlayer = await createPlayer(local, { name: unowned, body: [0, 0, 0], model: "default" });
+  const unownedAuth = await callFunction(local, unownedPlayer, { action: "gameAuth" });
+  check("a name reserved for nobody is refused", unownedAuth.status === 409, `${unownedAuth.status}`);
+  const ownedAuth = await callFunction(local, ownedPlayer, { action: "gameAuth" });
+  check("the owner of a reserved UUID receives exactly it", ownedAuth.body?.profile?.id === String(await offlineUuid(owned)).replaceAll("-", ""),
+    `${ownedAuth.status} ${ownedAuth.body?.profile?.id}`);
+  await admin.from("launcher_minecraft_uuid_reservations").delete().eq("source", "verify-server-auth");
+
+  // --- game tokens: only the newest works, and the launcher revokes it on game exit
+  const joinWith = (token, profileId, serverId) => fetch(`${apiRoot}/sessionserver/session/minecraft/join`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ accessToken: token, selectedProfile: profileId, serverId })
+  });
+  const first = await callFunction(local, other, { action: "gameAuth" });
+  const second = await callFunction(local, other, { action: "gameAuth" });
+  const oldTokenJoin = await joinWith(first.body.accessToken, first.body.profile.id, "token-old");
+  const newTokenJoin = await joinWith(second.body.accessToken, second.body.profile.id, "token-new");
+  check("a newer game token retires the older one", oldTokenJoin.status === 403 && newTokenJoin.status === 204, `${oldTokenJoin.status}/${newTokenJoin.status}`);
+  const expiresInHours = (Date.parse(second.body.expiresAt) - Date.now()) / 3_600_000;
+  check("game tokens last at most 12 hours", expiresInHours > 11 && expiresInHours <= 12, expiresInHours.toFixed(2));
+
+  // --- a server on /yggdrasil/testers only lets testers in
+  const hasJoined = (root, name, serverId) => fetch(`${root}/sessionserver/session/minecraft/hasJoined?username=${name}&serverId=${serverId}`);
+  const memberRoot = await hasJoined(apiRoot, second.body.profile.name, "token-new");
+  const testerRootBefore = await hasJoined(`${apiRoot}/testers`, second.body.profile.name, "token-new");
+  await admin.from("launcher_environment_access").insert({ user_id: other.userId, environment: "test", granted_by: other.userId });
+  const testerRootAfter = await hasJoined(`${apiRoot}/testers`, second.body.profile.name, "token-new");
+  check("a tester-only server refuses members who are not testers", memberRoot.status === 200 && testerRootBefore.status === 204 && testerRootAfter.status === 200,
+    `${memberRoot.status}/${testerRootBefore.status}/${testerRootAfter.status}`);
+
+  const revoke = await callFunction(local, other, { action: "revokeGameAuth" });
+  const revokedJoin = await joinWith(second.body.accessToken, second.body.profile.id, "token-revoked");
+  check("a revoked game token is refused", revoke.status === 200 && revokedJoin.status === 403, `${revoke.status}/${revokedJoin.status}`);
+
+  // --- launchers older than 0.1.35 are told to update once a server uses this API
+  const release = await admin.from("launcher_releases").insert({
+    pack_id: "auth-check-pack", version: "1", active: true, created_by: other.userId,
+    manifest: { ...JSON.parse(await fsp.readFile(path.resolve(REPO, scenario.manifest), "utf8")), id: "auth-check-pack", gameAuth: "yggdrasil" }
+  }).select("id").single();
+  const oldLauncher = await callFunction(local, other, { action: "catalog" });
+  const newLauncher = await callFunction(local, other, { action: "catalog" }, { "x-bweeep-launcher-version": "0.1.35" });
+  check("launchers older than 0.1.35 are asked to update", oldLauncher.status === 426 && newLauncher.status === 200, `${oldLauncher.status}/${newLauncher.status}`);
+  if (release.data) await admin.from("launcher_releases").delete().eq("id", release.data.id);
+
+  // --- skins: only pictures are stored, changes are rate limited, old files are removed
+  const withText = insertPngChunk(makeSkin([1, 2, 3]), "tEXt", Buffer.from("Comment\0payload"));
+  const textSkin = await callFunction(local, other, { action: "setSkin", png: withText.toString("base64"), model: "default" });
+  check("a skin with extra data is refused", textSkin.status === 400, `${textSkin.status} ${textSkin.body?.message ?? ""}`);
+  const firstSkin = await callFunction(local, other, { action: "setSkin", png: makeSkin([9, 9, 9]).toString("base64"), model: "default" });
+  const tooSoon = await callFunction(local, other, { action: "setSkin", png: makeSkin([8, 8, 8]).toString("base64"), model: "default" });
+  check("skin changes are rate limited", tooSoon.status === 429, `${firstSkin.status}/${tooSoon.status}`);
+  await sleep(5500);
+  const replaced = await callFunction(local, other, { action: "setSkin", png: makeSkin([7, 7, 7]).toString("base64"), model: "default" });
+  const oldFile = await fetch(`${local.url}/storage/v1/object/public/launcher-skins/${firstSkin.body?.skin?.hash}.png`);
+  check("a replaced skin file is deleted", replaced.status === 200 && !oldFile.ok, `${replaced.status}/${oldFile.status}`);
+
+  // --- removing a member ends their tokens and tester access
+  const beforeRemoval = await callFunction(local, other, { action: "gameAuth" });
+  await admin.from("launcher_members").delete().eq("user_id", other.userId);
+  const [{ count: tokensLeft }, { count: accessLeft }] = await Promise.all([
+    admin.from("launcher_game_auth_tokens").select("user_id", { count: "exact", head: true }).eq("user_id", other.userId),
+    admin.from("launcher_environment_access").select("user_id", { count: "exact", head: true }).eq("user_id", other.userId)
+  ]);
+  const removedLookup = await fetch(`${apiRoot}/api/users/profiles/minecraft/${beforeRemoval.body?.profile?.name}`);
+  check("removing a member clears their tokens, tester access and profile", tokensLeft === 0 && accessLeft === 0 && removedLookup.status === 204,
+    `${tokensLeft}/${accessLeft}/${removedLookup.status}`);
 
   // --- a launcher sign-out stops new joins right away
   const signOut = await fetch(`${local.url}/auth/v1/logout?scope=global`, {
@@ -177,7 +293,6 @@ async function main() {
 
   // --- an offline client using a member's name cannot join
   if (scenario.intruder) {
-    for (const player of players) await key(player, "Escape");
     const before = logText().length;
     const intruder = { name: players[1]?.name ?? players[0].name, display: ":179", clientRoot: path.join(WORK, "client-intruder"), offline: true };
     await startClient(intruder, { apiRoot, metadata, server });
@@ -219,10 +334,10 @@ async function createPlayer(local, colour) {
   return player;
 }
 
-async function callFunction(local, player, body) {
+async function callFunction(local, player, body, extraHeaders = {}) {
   const response = await fetch(`${local.url}/functions/v1/launcher-access`, {
     method: "POST",
-    headers: { "content-type": "application/json", apikey: local.anonKey, authorization: `Bearer ${player.accessToken}` },
+    headers: { "content-type": "application/json", apikey: local.anonKey, authorization: `Bearer ${player.accessToken}`, ...extraHeaders },
     body: JSON.stringify(body)
   });
   return { status: response.status, body: await response.json().catch(() => null) };
@@ -282,6 +397,8 @@ async function startClient(player, { apiRoot, metadata, server }) {
     instanceRoot,
     identity: player.offline ? null : { id: player.game.profile.id, name: player.game.profile.name, accessToken: player.game.accessToken },
     offlineName: player.name,
+    guardTarget: player.guardTarget ?? null,
+    heapMb: scenario.clientHeapMb ?? 1536,
     apiRoot,
     metadata
   };
@@ -300,11 +417,30 @@ app.whenReady().then(() => import(${JSON.stringify(import.meta.url)})).catch((er
   app.exit(1);
 });
 `);
-  spawnLogged(path.join(REPO, "node_modules", ".bin", "electron"), [
+  player.process = spawnLogged(path.join(REPO, "node_modules", ".bin", "electron"), [
     "--no-sandbox", `--user-data-dir=${path.join(player.clientRoot, "electron-data")}`, appDir
   ], {
     env: { ...process.env, DISPLAY: player.display, BWEEP_AUTH_CHECK_CLIENT: configPath }
   }, path.join(player.clientRoot, "client.log"));
+}
+
+/** Stops a client and its game; the Electron process leads their process group. */
+async function stopClient(player) {
+  if (!player.process?.pid) return;
+  try { process.kill(-player.process.pid, "SIGTERM"); } catch { /* already gone */ }
+  await sleep(3000);
+  try { process.kill(-player.process.pid, "SIGKILL"); } catch { /* already gone */ }
+}
+
+/** Inserts a chunk right after IHDR, with a valid CRC. */
+function insertPngChunk(png, type, data) {
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write(type, 4, "ascii");
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(zlib.crc32(chunk.subarray(4, 8 + data.length)), 8 + data.length);
+  const afterHeader = 8 + 12 + 13;
+  return Buffer.concat([png.subarray(0, afterHeader), chunk, png.subarray(afterHeader)]);
 }
 
 async function runClient(config) {
@@ -313,6 +449,7 @@ async function runClient(config) {
   const { bundledFeatureMods } = await import(path.join(REPO, "dist/src/main/client-feature-mods.js"));
   const { createOfflineLaunchIdentity } = await import(path.join(REPO, "dist/src/main/launch-identity.js"));
   const { ensureAuthlibInjector, authlibInjectorJvmArgs, parseYggdrasilMetadata } = await import(path.join(REPO, "dist/src/main/authlib-injector.js"));
+  const { connectionGuardEnabled, connectionGuardJvmArgs, ensureConnectionGuard } = await import(path.join(REPO, "dist/src/main/connection-guard.js"));
   const manifest = { ...config.manifest, ...config.manifestOverrides };
   const mods = bundledFeatureMods(path.join(REPO, "resources", "client-mods"), manifest);
   let stage = "";
@@ -338,8 +475,19 @@ async function runClient(config) {
     const launch = { apiRoot: config.apiRoot, metadata: parseYggdrasilMetadata(config.metadata) };
     return { identity: config.identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
   };
+  // The same guard the launcher adds. A probe client may name a different
+  // selected server, to check that this one is then out of reach.
+  const guardManifest = config.guardTarget
+    ? { ...manifest, server: { host: config.guardTarget.split(":")[0], port: Number(config.guardTarget.split(":")[1]) } }
+    : manifest;
+  const guardArgs = connectionGuardEnabled(manifest)
+    ? connectionGuardJvmArgs(await ensureConnectionGuard(path.join(REPO, "resources", "java-agent"), synced.instanceDir), guardManifest)
+    : [];
+  // The launcher's 2-6 GB heap is for players; a test client gets a small one.
+  // These come after the launcher's own -Xms/-Xmx, so the JVM uses them.
+  const heapArgs = [`-Xms512M`, `-Xmx${config.heapMb ?? 1536}M`];
   const exit = await new Promise((resolve) => {
-    installAndLaunch(manifest, synced.instanceDir, authorize, mods, progress, resolve)
+    installAndLaunch(manifest, synced.instanceDir, authorize, mods, progress, resolve, [...guardArgs, ...heapArgs])
       .then((launched) => {
         console.log(`LAUNCHED ${JSON.stringify(launched)}`);
         // Let the kernel pick test clients before any production process under memory pressure.
@@ -370,9 +518,13 @@ async function cleanup() {
   await fsp.rm(path.join(WORK, "server", "world-auth-check"), { recursive: true, force: true }).catch(() => {});
 }
 
+/** Refuses to start a test process unless memory is left over for the servers already running. */
 function requireMemory(megabytes, what) {
+  const reserve = 1536;
   const available = Number(/MemAvailable:\s+(\d+)/.exec(fs.readFileSync("/proc/meminfo", "utf8"))?.[1] ?? 0) / 1024;
-  if (available < megabytes) throw new Error(`not enough free memory for the ${what}: ${Math.round(available)} MB available, ${megabytes} MB needed`);
+  if (available < megabytes + reserve) {
+    throw new Error(`not enough free memory for the ${what}: ${Math.round(available)} MB available, ${megabytes} MB needed plus ${reserve} MB kept free`);
+  }
 }
 
 async function setProperties(file, values) {

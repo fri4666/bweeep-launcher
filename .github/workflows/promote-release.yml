@@ -41,8 +41,13 @@ jobs:
           if [ "$draft" != "true" ]; then
             echo "$tag 는 이미 게시되어 있습니다."; exit 0
           fi
-          if ! gh release view "$tag-test.1" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "$tag-test.1 테스트 릴리스가 없습니다. 테스트판을 먼저 확인해 주세요."; exit 1
+          if ! gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' | grep -q "^$tag-test\."; then
+            echo "$tag 테스트 릴리스가 없습니다. 테스트판을 먼저 확인해 주세요."; exit 1
+          fi
+          # 정식 런처는 게시된 최신 버전으로 업데이트하므로, 낮은 버전을 게시하면 모두의 런처가 내려갑니다.
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null | sed 's/^v//' || true)
+          if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -1)" != "$version" -o "$latest" = "$version" ]; then
+            echo "$tag 는 지금 정식판 v$latest 보다 높지 않아 게시하지 않습니다."; exit 1
           fi
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
           echo "$tag 를 정식 배포했습니다."

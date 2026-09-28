@@ -1,7 +1,8 @@
 {
   "name": "forge-1.20.1",
   "port": 25595,
-  "clients": 2,
+  "clients": 1,
+  "clientHeapMb": 2048,
   "manifest": "scripts/server-auth-scenarios/manifests/forge-1.20.1.json",
   "clientJava": "/usr/lib/jvm/java-17-openjdk-amd64/bin/java",
   "clientMemoryMb": 2500,

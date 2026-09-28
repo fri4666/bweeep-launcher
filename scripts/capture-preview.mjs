@@ -8,9 +8,10 @@ const accessUnavailable = process.env.BWEEP_PREVIEW_ACCESS_UNAVAILABLE === "true
 const accessDenied = process.env.BWEEP_PREVIEW_ACCESS_DENIED === "true";
 const catalogUnavailable = process.env.BWEEP_PREVIEW_CATALOG_UNAVAILABLE === "true";
 const testChannelDenied = process.env.BWEEP_PREVIEW_TEST_CHANNEL_DENIED === "true";
+const whatsNewMode = process.env.BWEEP_PREVIEW_WHATS_NEW === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew }) => {
   const listeners = [];
   const gameStatusListeners = [];
   let gameStatus = { state: "idle" };
@@ -20,6 +21,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   };
   window.__exitGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
   window.__failGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)", exitError: true });
+  window.__failWithPersonalMods = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (코드 1)", exitError: true, retryWithoutPersonalMods: "create-aeronautics" });
   window.__rejectGame = () => {
     listeners.forEach((listener) => listener({ kind: "error", stage: "서버 접속 실패", message: "선택 서버가 연결을 거절했습니다." }));
     emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
@@ -206,12 +208,26 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     chooseInstanceRoot: async () => "D:\\Bweeep",
     openLog: async () => undefined,
     stopGame: async () => { window.__stopRequests += 1; },
-    setGameProfile: async (gameName) => ({ id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, gameName }),
+    setGameProfile: async (gameName) => {
+      if (gameName === "noah_sky1012") throw new Error(`Error invoking remote method 'account:setGameProfile': Error: '${gameName}'은(는) 다른 멤버가 쓰고 있거나 예전에 쓴 이름이라 쓸 수 없습니다.`);
+      return { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, gameName };
+    },
     checkLauncherUpdate: async () => ({ state: "current" }),
     launcherChannel: async () => previewTestChannelDenied ? "test" : "production",
     launcherVersion: async () => "0.1.30",
     gameStatus: async () => gameStatus,
-    launchGame: async () => {
+    whatsNew: async () => previewWhatsNew && !window.__whatsNewSeen ? {
+      version: "0.1.35",
+      notes: [
+        "스킨 탭이 생겼어요. 스킨을 3D로 돌려 보고 바로 적용할 수 있어요.",
+        "다른 멤버가 지금 쓰거나 예전에 쓴 이름은 쓸 수 없어요. 캐릭터와 OP가 이름을 따라 넘어가지 않아요.",
+        "게임은 고른 서버에만 접속돼요."
+      ]
+    } : null,
+    markWhatsNewSeen: async (version) => { window.__whatsNewSeen = version; },
+    openStableDownload: async () => { window.__stableDownloadOpened = true; },
+    launchGame: async (request) => {
+      window.__lastLaunchRequest = request;
       const startedAt = Date.now();
       emitGameStatus({ state: "starting", startedAt });
       if (window.__exitBeforeLaunchResolves) {
@@ -264,14 +280,30 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 if (testChannelDenied) {
   await page.getByText("지정된 테스터만 쓸 수 있어요").waitFor({ timeout: 10000 });
   if (await page.locator(".launchButton").count()) throw new Error("the test build opened for a member who is not a tester");
   await page.screenshot({ path: "previews/bweeep-launcher-test-channel-denied.png" });
-  console.log(JSON.stringify({ interactionChecks: ["test-channel-testers-only"], errors }));
+  await page.getByRole("button", { name: "일반 런처 받기" }).click();
+  await page.waitForFunction(() => window.__stableDownloadOpened === true);
+  console.log(JSON.stringify({ interactionChecks: ["test-channel-testers-only", "stable-installer-link"], errors }));
+  await browser.close();
+  process.exit(errors.length ? 1 : 0);
+}
+if (whatsNewMode) {
+  const dialog = page.getByRole("dialog", { name: "업데이트 소식" });
+  await dialog.waitFor({ timeout: 10000 });
+  const text = await dialog.innerText();
+  if (!text.includes("v0.1.35") || !text.includes("예전에 쓴 이름은 쓸 수 없어요")) throw new Error(`what's new dialog is missing the notes: ${text}`);
+  await page.screenshot({ path: "previews/bweeep-launcher-whats-new.png" });
+  await dialog.getByRole("button", { name: "확인" }).click();
+  await page.waitForFunction(() => window.__whatsNewSeen === "0.1.35");
+  if (await page.getByRole("dialog", { name: "업데이트 소식" }).count()) throw new Error("what's new dialog did not close");
+  await page.locator(".launchButton").waitFor();
+  console.log(JSON.stringify({ interactionChecks: ["whats-new-once-after-update"], errors }));
   await browser.close();
   process.exit(errors.length ? 1 : 0);
 }
@@ -436,6 +468,10 @@ if (catalogUnavailable) {
   await page.locator(".profileBox").click();
   await page.getByRole("button", { name: "모드 폴더 선택" }).waitFor();
   if (await page.locator(".contentFolderItem").count() !== 2) throw new Error("saved personal content folders are missing");
+  await page.locator(".profileModal input[maxlength='16']").fill("noah_sky1012");
+  await page.getByRole("button", { name: "저장", exact: true }).click();
+  await page.getByText("다른 멤버가 쓰고 있거나 예전에 쓴 이름이라 쓸 수 없습니다", { exact: false }).waitFor();
+  interactionChecks.push("taken-name-refused");
   await page.locator(".profileModal input[maxlength='16']").fill("seos_py_new");
   await page.getByRole("button", { name: "저장", exact: true }).click();
   await page.getByText("인게임 이름 변경됨 · 다음 실행부터 적용", { exact: true }).waitFor();
@@ -499,6 +535,17 @@ if (catalogUnavailable) {
   await page.screenshot({ path: "previews/bweeep-launcher-game-exit.png" });
   interactionChecks.push("game-exit-visible");
   interactionChecks.push("game-lifecycle-lock");
+  await page.evaluate(() => { window.__exitBeforeLaunchResolves = false; });
+  await page.getByRole("button", { name: "게임 시작" }).click();
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
+  await page.evaluate(() => window.__failWithPersonalMods());
+  await page.getByText("개인 모드 때문일 수 있어요.", { exact: false }).waitFor();
+  await page.screenshot({ path: "previews/bweeep-launcher-retry-without-mods.png" });
+  await page.getByRole("button", { name: "개인 모드 빼고 시작" }).click();
+  await page.waitForFunction(() => window.__lastLaunchRequest?.withoutPersonalMods === true);
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
+  await page.evaluate(() => window.__exitGame());
+  interactionChecks.push("retry-without-personal-mods");
 } else {
   await page.getByRole("button", { name: "Discord로 로그인" }).click();
   await page.getByRole("button", { name: "브라우저에서 로그인하는 중" }).waitFor();

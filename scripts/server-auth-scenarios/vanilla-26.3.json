@@ -1,7 +1,8 @@
 {
   "name": "vanilla-26.3",
   "port": 25591,
-  "clients": 2,
+  "clients": 1,
+  "clientHeapMb": 1536,
   "intruder": true,
   "manifest": "resources/manifests/vanilla-survival.json",
   "clientJava": "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
