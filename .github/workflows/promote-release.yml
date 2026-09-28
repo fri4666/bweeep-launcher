@@ -1,0 +1,48 @@
+name: 정식 배포
+
+# 테스터가 테스트판을 확인한 뒤 수동으로 실행합니다. 병합할 때 만들어 둔
+# 정식판 초안을 게시하면, 정식 런처가 자동 업데이트로 받아 갑니다.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "게시할 버전 (예: 0.1.35). 비우면 main의 package.json 버전"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: launcher-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 소스 내려받기
+        uses: actions/checkout@v4
+
+      - name: 초안 게시
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-$(node -p 'require("./package.json").version')}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "버전 형식이 올바르지 않습니다: $version"; exit 1
+          fi
+          tag="v$version"
+          draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo missing)
+          if [ "$draft" = "missing" ]; then
+            echo "$tag 릴리스가 없습니다. 버전을 올린 PR이 main에 병합됐는지 확인해 주세요."; exit 1
+          fi
+          if [ "$draft" != "true" ]; then
+            echo "$tag 는 이미 게시되어 있습니다."; exit 0
+          fi
+          if ! gh release view "$tag-test.1" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "$tag-test.1 테스트 릴리스가 없습니다. 테스트판을 먼저 확인해 주세요."; exit 1
+          fi
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "$tag 를 정식 배포했습니다."

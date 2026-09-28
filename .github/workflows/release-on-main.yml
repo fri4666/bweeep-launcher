@@ -82,15 +82,20 @@ jobs:
             "release-installer-test/Bweeep-Test-Setup-$version.exe.blockmap",
             "release-installer-test/test.yml"
           )
+          $notes = "지정 테스터용 테스트 런처입니다. 확인이 끝나면 같은 변경을 정식판으로 배포합니다.`n`n" + (Get-Content build/release-notes.txt -Raw -Encoding utf8)
+          $notesFile = Join-Path $env:RUNNER_TEMP "test-release-notes.txt"
+          Set-Content -Path $notesFile -Value $notes -Encoding utf8
           gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag $assets --clobber --repo $env:GITHUB_REPOSITORY
-            gh release edit $tag --repo $env:GITHUB_REPOSITORY --prerelease --title "붸에엡 테스트 v$version" --notes "지정 테스터용 테스트 런처입니다. 설치 뒤에는 테스트 채널 업데이트를 자동으로 내려받고 재시작합니다. Minecraft 서버 설정은 변경하지 않습니다."
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --prerelease --title "붸에엡 테스트 v$version" --notes-file $notesFile
           } else {
-            gh release create $tag $assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --title "붸에엡 테스트 v$version" --notes "지정 테스터용 테스트 런처입니다. 설치 뒤에는 테스트 채널 업데이트를 자동으로 내려받고 재시작합니다. Minecraft 서버 설정은 변경하지 않습니다."
+            gh release create $tag $assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --title "붸에엡 테스트 v$version" --notes-file $notesFile
           }
 
-      - name: GitHub 정식 릴리스 게시
+      # 정식판은 초안으로만 올립니다. 초안은 자동 업데이트에 보이지 않으므로,
+      # 테스터가 테스트판을 확인한 뒤 "정식 배포" 워크플로로 게시합니다.
+      - name: GitHub 정식 릴리스 초안 올리기
         if: steps.version.outputs.exists != 'True'
         shell: pwsh
         env:
@@ -104,5 +109,6 @@ jobs:
             "release-installer/latest.yml" `
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
+            --draft `
             --title "붸에엡 v$version" `
             --notes-file build/release-notes.txt
