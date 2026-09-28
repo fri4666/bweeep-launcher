@@ -13,6 +13,7 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json && vite build",
     "package:win": "npm run build && electron-builder --win nsis --x64",
+    "package:win:beta": "npm run build && electron-builder --win nsis --x64 --config build/electron-builder.beta.js",
     "package:win:test": "npm run build && electron-builder --win nsis --x64 --config build/electron-builder.test.js",
     "package:win:arm64": "npm run build && electron-builder --win nsis --arm64 --config.directories.output=release-installer-arm64",
     "package:win:all": "npm run package:win && npm run package:win:arm64",
