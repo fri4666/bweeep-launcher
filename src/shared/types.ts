@@ -52,6 +52,14 @@ export interface ModpackManifest {
     host: string;
     port: number;
   };
+  /**
+   * How the server verifies players. "yggdrasil" means the server runs
+   * authlib-injector against the Bweeep Yggdrasil API with online-mode=true;
+   * that works for any version and loader and carries skins. Default: offline.
+   */
+  gameAuth?: "offline" | "yggdrasil";
+  /** Modrinth project ids players may not add as personal mods on this server. */
+  blockedModrinthProjects?: string[];
   /** A pinned Modrinth .mrpack whose indexed files and overrides are installed safely. */
   mrpack?: MrpackSource;
   files: PackFile[];
@@ -70,6 +78,8 @@ export interface ServerPreset {
   loader: { kind: LoaderKind; version: string };
   serverLoader?: { kind: ServerSoftwareKind; version: string };
   environment: "production" | "test";
+  gameAuth: "offline" | "yggdrasil";
+  blockedModrinthProjects: string[];
 }
 
 export interface ServerStatus {
@@ -183,9 +193,17 @@ export interface GameStatus {
   exitError?: boolean;
   /** Set when Minecraft wrote a crash report the player can open. */
   crashReport?: boolean;
+  /** Pack id of a crashed run that had personal mods, so it can be retried without them. */
+  retryWithoutPersonalMods?: string;
 }
 
 export type LogTarget = "game" | "launcher";
+
+/** Release notes shown once on the first start after an update. */
+export interface WhatsNew {
+  version: string;
+  notes: string[];
+}
 
 export interface LauncherUpdate {
   version: string;
@@ -206,9 +224,87 @@ export interface UserContentStatus {
   copiedMods: number;
   copiedShaders: number;
   removedManagedMods: number;
+  /** Personal jars left out of this launch and why. */
+  skippedMods: Array<{ name: string; reason: string }>;
 }
 
 export type UserContentKind = "mods" | "shaderpacks";
+
+/** A member as the admin tester list shows it. Admins are always testers. */
+export interface MemberSummary {
+  userId: string;
+  name: string;
+  gameName: string | null;
+  role: "admin" | "member";
+  tester: boolean;
+}
+
+/** The server whose loader and Minecraft version personal mods must match. */
+export interface ModTarget {
+  instanceRoot: string;
+  packId: string;
+  loader: LoaderKind;
+  minecraftVersion: string;
+  blockedModrinthProjects: string[];
+}
+
+export interface ModrinthHit {
+  projectId: string;
+  slug: string;
+  title: string;
+  description: string;
+  iconUrl: string | null;
+  downloads: number;
+  /** inPack: the server pack already ships it; blocked: the server does not allow it. */
+  status: "available" | "installed" | "inPack" | "blocked";
+}
+
+export interface ModSearchResult {
+  hits: ModrinthHit[];
+  total: number;
+  /** Whole modpacks that match the search. They are named so the panel can say they cannot be downloaded. */
+  modpacks: string[];
+}
+
+export interface PersonalMod {
+  projectId: string;
+  title: string;
+  versionNumber: string;
+  fileName: string;
+  /** False when it was added only because another personal mod needs it. */
+  explicit: boolean;
+  /** Newer version for this server's loader and Minecraft version, if any. */
+  update?: string;
+}
+
+/** "default" is the classic 4px arm (Steve); "slim" the 3px arm (Alex). */
+export type SkinModel = "default" | "slim";
+
+/** The skin the server hands to Minecraft; hash names the stored PNG. */
+export interface LauncherSkin {
+  hash: string;
+  model: SkinModel;
+}
+
+/** A skin kept on this PC so the player can switch back to it later. */
+export interface SkinLibraryEntry {
+  id: string;
+  name: string;
+  model: SkinModel;
+  /** data:image/png;base64 URL for the preview. */
+  dataUrl: string;
+  addedAt: string;
+}
+
+export interface SkinState {
+  /** The applied skin, or null when Minecraft picks its default skin. */
+  current: { id: string; model: SkinModel; dataUrl: string } | null;
+  library: SkinLibraryEntry[];
+  /** Steve and Alex from an installed game, when one is installed. */
+  defaults: Array<{ name: string; model: SkinModel; dataUrl: string }>;
+  /** Why the applied skin could not be read from the server, if it could not. */
+  serverError?: string;
+}
 
 /** User-selected folders stay outside instances and are applied at launch. */
 export interface UserContentFolders {

@@ -2,6 +2,7 @@ import fsp from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { ModpackManifest, UserContentFolders, UserContentKind, UserContentStatus } from "../shared/types.js";
+import { readModMetadata, runsOn, type ModMetadata } from "./mod-metadata.js";
 
 const USER_MODS_FILE = ".bweeep-user-mods.json";
 const USER_SHADERS_FILE = ".bweeep-user-shaders.json";
@@ -13,8 +14,22 @@ interface UserContentPaths {
   shaderpacksDir: string;
 }
 
+export interface PersonalModCheck {
+  /** Launch with the server pack only, e.g. after personal mods crashed the game. */
+  withoutPersonalMods?: boolean;
+  /** Jar files among the candidates that the server blocks; best effort. */
+  findBlocked?: (jars: string[]) => Promise<Set<string>>;
+  /** Launcher-owned jars that join the pack later in the launch. */
+  launcherJars?: string[];
+}
+
 /** Keeps user-owned client content outside of server-managed manifest files. */
-export async function prepareUserContent(instanceRoot: string, instanceDir: string, manifest: ModpackManifest): Promise<UserContentStatus> {
+export async function prepareUserContent(
+  instanceRoot: string,
+  instanceDir: string,
+  manifest: ModpackManifest,
+  check: PersonalModCheck = {}
+): Promise<UserContentStatus> {
   const root = userContentRoot(instanceRoot);
   const { userModsDir, shaderpacksDir } = userContentPaths(instanceRoot, manifest.loader.kind, manifest.minecraftVersion);
   const sharedOptionsPath = path.join(root, "settings", "options.txt");
@@ -27,16 +42,20 @@ export async function prepareUserContent(instanceRoot: string, instanceDir: stri
   await restoreGameOptions(path.join(root, "settings"), instanceDir);
 
   const selectedFolders = await getUserContentFolders(instanceRoot);
-  const desiredMods = await collectContentFiles([userModsDir, ...selectedFolders.mods], ".jar");
+  const candidates = await collectContentFiles([userModsDir, ...selectedFolders.mods], ".jar");
   const previousMods = await readStringArray(path.join(instanceDir, ".bweeep", USER_MODS_FILE));
-  const desiredNames = new Set(desiredMods.map((file) => file.targetName));
+  const candidateNames = new Set(candidates.map((file) => file.targetName));
   let removedManagedMods = 0;
+  // Last launch's personal jars are taken out first, so what remains is the
+  // server pack and the launcher's own mods.
   for (const previous of previousMods) {
-    if (!desiredNames.has(previous)) {
-      await fsp.rm(path.join(modsDir, previous), { force: true });
-      removedManagedMods += 1;
-    }
+    await fsp.rm(path.join(modsDir, previous), { force: true });
+    if (!candidateNames.has(previous)) removedManagedMods += 1;
   }
+  const { accepted: desiredMods, skipped: skippedMods } = check.withoutPersonalMods
+    ? { accepted: [], skipped: [] }
+    : await checkPersonalMods(candidates, modsDir, manifest, check);
+  const desiredNames = new Set(desiredMods.map((file) => file.targetName));
   for (const file of desiredMods) {
     await fsp.copyFile(file.source, path.join(modsDir, file.targetName));
   }
@@ -53,7 +72,73 @@ export async function prepareUserContent(instanceRoot: string, instanceDir: stri
     await fsp.copyFile(file.source, path.join(instanceShaders, file.targetName));
   }
   await fsp.writeFile(path.join(instanceDir, ".bweeep", USER_SHADERS_FILE), JSON.stringify([...desiredShaderNames].sort(), null, 2), "utf8");
-  return { userModsDir, shaderpacksDir, sharedOptionsPath, copiedMods: desiredMods.length, copiedShaders: desiredShaders.length, removedManagedMods };
+  return { userModsDir, shaderpacksDir, sharedOptionsPath, copiedMods: desiredMods.length, copiedShaders: desiredShaders.length, removedManagedMods, skippedMods };
+}
+
+type ContentFile = { source: string; targetName: string };
+
+/**
+ * Personal jars that would stop the game from starting are left out: a jar
+ * for another loader, a mod the server pack already ships (two copies of one
+ * mod id crash every loader), a second copy among the personal jars, or a
+ * mod the server blocks. Mods are recognised by the ids in their own
+ * metadata, so this needs no knowledge of the Minecraft version.
+ */
+async function checkPersonalMods(
+  candidates: ContentFile[],
+  modsDir: string,
+  manifest: ModpackManifest,
+  { findBlocked, launcherJars = [] }: PersonalModCheck
+): Promise<{ accepted: ContentFile[]; skipped: Array<{ name: string; reason: string }> }> {
+  const skipped: Array<{ name: string; reason: string }> = [];
+  if (candidates.length === 0) return { accepted: [], skipped };
+  if (manifest.loader.kind === "vanilla") {
+    return { accepted: [], skipped: candidates.map((file) => ({ name: file.targetName, reason: "바닐라 서버라 모드를 넣을 수 없어요" })) };
+  }
+
+  const packIds = new Set<string>();
+  const packJars = (await fsp.readdir(modsDir).catch(() => [] as string[])).filter((name) => name.toLowerCase().endsWith(".jar"));
+  for (const jar of [...packJars.map((name) => path.join(modsDir, name)), ...launcherJars]) {
+    const metadata = await cachedMetadata(jar);
+    metadata?.ids.forEach((id) => packIds.add(id));
+  }
+
+  const blocked = findBlocked ? await findBlocked(candidates.map((file) => file.source)).catch(() => new Set<string>()) : new Set<string>();
+  const packNames = new Set(packJars.map((name) => name.toLowerCase()));
+  const accepted: ContentFile[] = [];
+  const personalIds = new Set<string>();
+  for (const file of candidates) {
+    const metadata = await cachedMetadata(file.source);
+    // Copying it would overwrite the server's own file.
+    const reason = packNames.has(file.targetName.toLowerCase()) ? "서버 팩에 같은 이름의 파일이 있어요"
+      : !metadata ? "모드 파일을 읽지 못했어요"
+      : !runsOn(metadata, manifest.loader.kind) ? `${loaderLabel(manifest.loader.kind)}용 모드가 아니에요`
+      : blocked.has(file.source) ? "이 서버에서 쓰지 않기로 한 모드예요"
+      : [...metadata.ids].some((id) => packIds.has(id)) ? "서버 팩에 이미 있는 모드예요"
+      : [...metadata.ids].some((id) => personalIds.has(id)) ? "같은 모드가 개인 모드에 두 번 들어 있어요"
+      : null;
+    if (reason) {
+      skipped.push({ name: file.targetName, reason });
+      continue;
+    }
+    metadata!.ids.forEach((id) => personalIds.add(id));
+    accepted.push(file);
+  }
+  return { accepted, skipped };
+}
+
+const metadataCache = new Map<string, ModMetadata | null>();
+
+async function cachedMetadata(file: string): Promise<ModMetadata | null> {
+  const stat = await fsp.stat(file).catch(() => null);
+  if (!stat) return null;
+  const key = `${file}\0${stat.size}\0${stat.mtimeMs}`;
+  if (!metadataCache.has(key)) metadataCache.set(key, await readModMetadata(file).catch(() => null));
+  return metadataCache.get(key) ?? null;
+}
+
+function loaderLabel(loader: ModpackManifest["loader"]["kind"]): string {
+  return { fabric: "Fabric", forge: "Forge", neoforge: "NeoForge", vanilla: "바닐라" }[loader];
 }
 
 export async function captureSharedOptions(instanceRoot: string, instanceDir: string): Promise<void> {
@@ -66,6 +151,16 @@ export async function captureSharedOptions(instanceRoot: string, instanceDir: st
 
 function userContentRoot(instanceRoot: string): string {
   return path.resolve(instanceRoot, ".bweeep-user-content");
+}
+
+/** Personal mods for one loader and version, which is where Modrinth installs go. */
+export function personalModsDir(instanceRoot: string, loaderKind: ModpackManifest["loader"]["kind"], minecraftVersion: string): string {
+  return userContentPaths(instanceRoot, loaderKind, minecraftVersion).userModsDir;
+}
+
+/** Names of the personal jars the last launch copied into an instance's mods folder. */
+export async function copiedPersonalMods(instanceDir: string): Promise<string[]> {
+  return readStringArray(path.join(instanceDir, ".bweeep", USER_MODS_FILE));
 }
 
 function userContentPaths(instanceRoot: string, loaderKind: ModpackManifest["loader"]["kind"], minecraftVersion: string): UserContentPaths {

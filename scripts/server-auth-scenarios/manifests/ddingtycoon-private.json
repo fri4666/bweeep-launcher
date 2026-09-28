@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "ddingtycoon-private",
+  "name": "띵타이쿤",
+  "version": "1.0.8",
+  "minecraftVersion": "1.21.4",
+  "java": { "majorVersion": 21, "component": "java-runtime-delta" },
+  "loader": { "kind": "fabric", "version": "0.18.1" },
+  "serverLoader": { "kind": "fabric", "version": "0.18.1" },
+  "server": { "host": "server.fri4666.com", "port": 25565 },
+  "mrpack": {
+    "url": "https://cdn.modrinth.com/data/FVosHuCX/versions/YJ8JjokA/1.0.8.mrpack",
+    "size": 2369752,
+    "sha512": "b74fb7d5816a42a5317b791f744abe2cc84258aaafc71e094596bf78cdc5dc032f27c908f9789f5a14bfee22faaed9b5b2e015b950b9d2a9a892ae76dc4cbcad"
+  },
+  "files": []
+}

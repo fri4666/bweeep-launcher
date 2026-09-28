@@ -2,7 +2,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { app, safeStorage, shell } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { AccessStatus, CreatedInvite, InviteList, LauncherUser, LoginCancellationResult, LoginResult, InviteResult, ModpackManifest } from "../shared/types.js";
+import type { AccessStatus, CreatedInvite, InviteList, LauncherSkin, LauncherUser, MemberSummary, LoginCancellationResult, LoginResult, InviteResult, ModpackManifest, SkinModel } from "../shared/types.js";
+import { parseYggdrasilMetadata, yggdrasilApiRoot, type YggdrasilLaunch } from "./authlib-injector.js";
 import { parseAuthCallback } from "./deep-link.js";
 import { fingerprint } from "./hash.js";
 import { writeAuthLog } from "./logs.js";
@@ -60,6 +61,16 @@ interface FunctionGameTicket {
 interface GameLaunchAuthorization {
   identity: LaunchIdentity;
   ticket: string;
+}
+
+interface FunctionGameAuth {
+  accessToken: string;
+  expiresAt: string;
+  profile: { id: string; name: string };
+}
+
+interface FunctionSkin {
+  skin: LauncherSkin | null;
 }
 
 const defaultRedirectUri = `${launcherProtocolScheme()}://auth/callback`;
@@ -337,6 +348,67 @@ export class SupabaseAuth {
     return { identity, ticket: data.ticket };
   }
 
+  /** Server-issued identity for servers that verify players through the Bweeep Yggdrasil API. */
+  async createYggdrasilLaunch(user: LauncherUser | null): Promise<{ identity: LaunchIdentity; launch: YggdrasilLaunch }> {
+    if (!user) throw new Error("런처 로그인이 필요합니다.");
+    const data = await this.invokeFunction<FunctionGameAuth>({ action: "gameAuth" }, "게임 접속 토큰을 받지 못했습니다.");
+    if (!/^[A-Za-z0-9_-]{43}$/.test(data.accessToken ?? "") || !/^[0-9a-f]{32}$/.test(data.profile?.id ?? "") || !data.profile.name) {
+      throw new Error("게임 접속 토큰 형식이 올바르지 않습니다.");
+    }
+    const config = await readConfig();
+    if (!config.url) throw new Error("Supabase 설정이 필요합니다.");
+    const apiRoot = yggdrasilApiRoot(config.url);
+    const response = await fetch(apiRoot);
+    if (!response.ok) throw new Error(`로그인 서버 정보를 받지 못했습니다. (서버 응답 ${response.status})`);
+    return {
+      identity: { id: data.profile.id, name: data.profile.name, accessToken: data.accessToken },
+      launch: { apiRoot, metadata: parseYggdrasilMetadata(await response.text()) }
+    };
+  }
+
+  /** Retires the game token once the game exits, so a copied token stops working. */
+  async revokeGameAuth(user: LauncherUser | null): Promise<void> {
+    if (!user) return;
+    await this.invokeFunction<{ ok: boolean }>({ action: "revokeGameAuth" }, "게임 접속 토큰을 폐기하지 못했습니다.");
+  }
+
+  async listMembers(user: LauncherUser | null): Promise<MemberSummary[]> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    const data = await this.invokeFunction<{ members: MemberSummary[] }>({ action: "listMembers" }, "멤버 목록을 불러오지 못했습니다.");
+    return Array.isArray(data.members) ? data.members : [];
+  }
+
+  async setTester(user: LauncherUser | null, userId: string, tester: boolean): Promise<MemberSummary[]> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    const data = await this.invokeFunction<{ members: MemberSummary[] }>({ action: "setTester", userId, tester }, "테스터 지정을 저장하지 못했습니다.");
+    return Array.isArray(data.members) ? data.members : [];
+  }
+
+  async getSkin(user: LauncherUser | null): Promise<LauncherSkin | null> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    return (await this.invokeFunction<FunctionSkin>({ action: "skin" }, "스킨 정보를 불러오지 못했습니다.")).skin;
+  }
+
+  async setSkin(user: LauncherUser | null, png: Buffer, model: SkinModel): Promise<LauncherSkin | null> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    return (await this.invokeFunction<FunctionSkin>(
+      { action: "setSkin", png: png.toString("base64"), model },
+      "스킨을 저장하지 못했습니다."
+    )).skin;
+  }
+
+  async clearSkin(user: LauncherUser | null): Promise<void> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    await this.invokeFunction<FunctionSkin>({ action: "clearSkin" }, "스킨을 기본으로 되돌리지 못했습니다.");
+  }
+
+  /** Public address of a stored skin; Minecraft loads the same file. */
+  async skinUrl(hash: string): Promise<string> {
+    const config = await readConfig();
+    if (!config.url) throw new Error("Supabase 설정이 필요합니다.");
+    return `${config.url.replace(/\/+$/, "")}/storage/v1/object/public/launcher-skins/${hash}.png`;
+  }
+
   private async getClient(): Promise<SupabaseClient | null> {
     if (this.client) return this.client;
 
@@ -426,7 +498,9 @@ async function postLauncherAccess<T>(config: Required<Pick<SupabaseConfig, "url"
       headers: {
         apikey: config.publishableKey,
         Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        // Lets the server tell launchers too old for a server to update first.
+        "x-bweeep-launcher-version": app.getVersion()
       },
       body: JSON.stringify(body)
     });

@@ -426,3 +426,10 @@ entrypoint = "./functions/launcher-access/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/launcher-access/*.html" ]
+
+[functions.yggdrasil]
+enabled = true
+# Minecraft and authlib-injector call this API without a Supabase token.
+verify_jwt = false
+import_map = "./functions/yggdrasil/deno.json"
+entrypoint = "./functions/yggdrasil/index.ts"

@@ -37,6 +37,9 @@ export function startLauncherUpdates(
   const testChannel = getLauncherChannel() === "test";
   autoUpdater.channel = testChannel ? "test" : "latest";
   autoUpdater.allowPrerelease = testChannel;
+  // Setting a channel turns downgrades on in electron-updater; a mistaken
+  // release must never move everyone to an older launcher.
+  autoUpdater.allowDowngrade = false;
   autoUpdater.on("checking-for-update", () => setStatus({ state: "checking" }));
   autoUpdater.on("update-not-available", () => setStatus({ state: "current" }));
   autoUpdater.on("update-available", (info) => {
@@ -54,6 +57,10 @@ export function startLauncherUpdates(
     });
   });
   autoUpdater.on("update-downloaded", (event) => {
+    if (!isNewerLauncherVersion(event.version, app.getVersion())) {
+      setStatus({ state: "current" });
+      return;
+    }
     setStatus({ state: "ready", update: toLauncherUpdate(event) });
     installPendingLauncherUpdate();
   });

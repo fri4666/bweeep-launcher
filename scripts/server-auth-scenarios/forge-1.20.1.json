@@ -1,0 +1,15 @@
+{
+  "name": "forge-1.20.1",
+  "port": 25595,
+  "clients": 1,
+  "clientHeapMb": 1536,
+  "manifest": "scripts/server-auth-scenarios/manifests/forge-1.20.1.json",
+  "clientJava": "/usr/lib/jvm/java-17-openjdk-amd64/bin/java",
+  "clientMemoryMb": 2000,
+  "server": {
+    "source": "/home/dev/servers/society-sunlit-valley-4.1.5",
+    "exclude": ["/world*", "/logs", "/backups", "/crash-reports", "/*.json", "/*.log", "/mods", "/config", "/defaultconfigs", "/configureddefaults", "/kubejs", "/journeymap", "/local", "/modernfix", "/easy_npc", "/patchouli_books", "/quests_structures", "/moonlight-global-datapacks"],
+    "command": ["/usr/lib/jvm/java-17-openjdk-amd64/bin/java", "-Xms512M", "-Xmx1536M", "@libraries/net/minecraftforge/forge/1.20.1-47.4.0/unix_args.txt", "nogui"],
+    "memoryMb": 1600
+  }
+}

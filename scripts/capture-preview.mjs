@@ -7,9 +7,11 @@ const signedIn = process.env.BWEEP_PREVIEW_SIGNED_IN !== "false";
 const accessUnavailable = process.env.BWEEP_PREVIEW_ACCESS_UNAVAILABLE === "true";
 const accessDenied = process.env.BWEEP_PREVIEW_ACCESS_DENIED === "true";
 const catalogUnavailable = process.env.BWEEP_PREVIEW_CATALOG_UNAVAILABLE === "true";
+const testChannelDenied = process.env.BWEEP_PREVIEW_TEST_CHANNEL_DENIED === "true";
+const whatsNewMode = process.env.BWEEP_PREVIEW_WHATS_NEW === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew }) => {
   const listeners = [];
   const gameStatusListeners = [];
   let gameStatus = { state: "idle" };
@@ -19,6 +21,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   };
   window.__exitGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
   window.__failGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)", exitError: true });
+  window.__failWithPersonalMods = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (코드 1)", exitError: true, retryWithoutPersonalMods: "create-aeronautics" });
   window.__rejectGame = () => {
     listeners.forEach((listener) => listener({ kind: "error", stage: "서버 접속 실패", message: "선택 서버가 연결을 거절했습니다." }));
     emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
@@ -30,6 +33,41 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   window.__stopRequests = 0;
   let inviteRedeemed = false;
   let invites = [];
+  // Flat-colour 64x64 skins drawn on demand, so previews need no image files.
+  const skinDataUrl = (body, head = "#e8c050") => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    const context = canvas.getContext("2d");
+    context.fillStyle = head; context.fillRect(0, 0, 32, 16);
+    context.fillStyle = body; context.fillRect(0, 16, 56, 16); context.fillRect(16, 48, 32, 16);
+    return canvas.toDataURL("image/png");
+  };
+  let skinState = null;
+  const skins = () => {
+    skinState ??= {
+      current: { id: "a".repeat(64), model: "slim", dataUrl: skinDataUrl("#c43c3c") },
+      library: [
+        { id: "a".repeat(64), name: "빨간 모험가", model: "slim", dataUrl: skinDataUrl("#c43c3c"), addedAt: "2026-09-28T00:00:00Z" },
+        { id: "b".repeat(64), name: "보라 기사", model: "default", dataUrl: skinDataUrl("#8c3cc8"), addedAt: "2026-09-27T00:00:00Z" }
+      ],
+      defaults: [
+        { name: "Steve", model: "default", dataUrl: skinDataUrl("#3c9ca0", "#b07850") },
+        { name: "Alex", model: "slim", dataUrl: skinDataUrl("#50a050", "#e0a070") }
+      ]
+    };
+    return skinState;
+  };
+  let members = [
+    { userId: "00000000-0000-0000-0000-000000000001", name: "붸에엡", gameName: "seos_py", role: "admin", tester: true },
+    { userId: "00000000-0000-0000-0000-000000000002", name: "나원", gameName: null, role: "member", tester: false }
+  ];
+  let personalMods = [];
+  const modHits = [
+    { projectId: "AANobbMI", slug: "sodium", title: "Sodium", description: "렌더링을 크게 빠르게 해 주는 최적화 모드", iconUrl: null, downloads: 71000000, status: "available" },
+    { projectId: "P7dR8mSH", slug: "fabric-api", title: "Fabric API", description: "Fabric 모드용 공통 라이브러리", iconUrl: null, downloads: 110000000, status: "inPack" },
+    { projectId: "zbhsCnsA", slug: "xaeros-minimap", title: "Xaero's Minimap", description: "화면 구석에 미니맵을 보여 줘요", iconUrl: null, downloads: 30000000, status: "blocked" }
+  ];
   const result = {
     manifest: {
       schemaVersion: 1,
@@ -59,7 +97,9 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
           server: { host: "server.fri4666.com", port: 25565 },
           minecraftVersion: "1.21.1",
           loader: { kind: "neoforge", version: "21.1.228" },
-          serverLoader: { kind: "fabric", version: "0.18.1" }
+          serverLoader: { kind: "fabric", version: "0.18.1" },
+          gameAuth: "yggdrasil",
+          blockedModrinthProjects: ["zbhsCnsA"]
         },
         {
           id: "vanilla-survival-test",
@@ -69,9 +109,59 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
           environment: "test",
           server: { host: "server.fri4666.com", port: 25566 },
           minecraftVersion: "26.3",
-          loader: { kind: "fabric", version: "0.19.5" }
+          loader: { kind: "fabric", version: "0.19.5" },
+          gameAuth: "offline",
+          blockedModrinthProjects: []
         }
       ];
+    },
+    listMembers: async () => members,
+    setTester: async (userId, tester) => {
+      members = members.map((member) => member.userId === userId ? { ...member, tester } : member);
+      return members;
+    },
+    skinState: async () => skins(),
+    addSkin: async () => {
+      const state = skins();
+      state.library = [{ id: "c".repeat(64), name: "새로 넣은 스킨", model: "default", dataUrl: skinDataUrl("#3c78c8"), addedAt: "2026-09-28T01:00:00Z" }, ...state.library];
+      return state;
+    },
+    applySkin: async (_root, id, model) => {
+      const state = skins();
+      const entry = state.library.find((item) => item.id === id);
+      state.current = { id, model, dataUrl: entry.dataUrl };
+      return state;
+    },
+    applyDefaultSkin: async (_root, name) => {
+      const state = skins();
+      const skin = state.defaults.find((item) => item.name === name);
+      state.current = { id: "d".repeat(64), model: skin.model, dataUrl: skin.dataUrl };
+      return state;
+    },
+    setSkinModel: async () => skins(),
+    removeSkin: async (_root, id) => {
+      const state = skins();
+      state.library = state.library.filter((item) => item.id !== id);
+      return state;
+    },
+    resetSkin: async () => {
+      const state = skins();
+      state.current = null;
+      return state;
+    },
+    searchMods: async (_target, query) => /pack|팩/i.test(query)
+      ? { hits: [], total: 0, modpacks: ["Fabulously Optimized"] }
+      : { hits: modHits, total: modHits.length, modpacks: [] },
+    personalMods: async () => personalMods,
+    installMod: async (_target, projectId) => {
+      const hit = modHits.find((item) => item.projectId === projectId);
+      personalMods = [...personalMods, { projectId, title: hit.title, versionNumber: "0.6.13", fileName: `${hit.slug}.jar`, explicit: true }];
+      return personalMods;
+    },
+    updateMod: async () => personalMods,
+    removeMod: async (_target, projectId) => {
+      personalMods = personalMods.filter((mod) => mod.projectId !== projectId);
+      return personalMods;
     },
     defaultInstanceRoot: async () => "C:\\Bweeep\\instances",
     userContentFolders: async () => ({ mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] }),
@@ -90,8 +180,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     accessStatus: async () => ({
       loggedIn: previewSignedIn,
       allowed: previewSignedIn && !previewAccessUnavailable && (!previewAccessDenied || inviteRedeemed),
-      isAdmin: true,
-      testAllowed: true,
+      isAdmin: !previewTestChannelDenied,
+      testAllowed: !previewTestChannelDenied,
       unavailable: previewAccessUnavailable,
       reason: previewAccessUnavailable ? "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요." : previewAccessDenied ? "초대 코드가 필요합니다." : previewSignedIn ? "초대 확인 완료" : "로그인이 필요합니다.",
       user: previewSignedIn ? { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null } : undefined
@@ -118,12 +208,26 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     chooseInstanceRoot: async () => "D:\\Bweeep",
     openLog: async () => undefined,
     stopGame: async () => { window.__stopRequests += 1; },
-    setGameProfile: async (gameName) => ({ id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, gameName }),
+    setGameProfile: async (gameName) => {
+      if (gameName === "noah_sky1012") throw new Error(`Error invoking remote method 'account:setGameProfile': Error: '${gameName}'은(는) 다른 멤버가 쓰고 있거나 예전에 쓴 이름이라 쓸 수 없습니다.`);
+      return { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, gameName };
+    },
     checkLauncherUpdate: async () => ({ state: "current" }),
-    launcherChannel: async () => "production",
+    launcherChannel: async () => previewTestChannelDenied ? "test" : "production",
     launcherVersion: async () => "0.1.30",
     gameStatus: async () => gameStatus,
-    launchGame: async () => {
+    whatsNew: async () => previewWhatsNew && !window.__whatsNewSeen ? {
+      version: "0.1.35",
+      notes: [
+        "스킨 탭이 생겼어요. 스킨을 3D로 돌려 보고 바로 적용할 수 있어요.",
+        "다른 멤버가 지금 쓰거나 예전에 쓴 이름은 쓸 수 없어요. 캐릭터와 OP가 이름을 따라 넘어가지 않아요.",
+        "게임은 고른 서버에만 접속돼요."
+      ]
+    } : null,
+    markWhatsNewSeen: async (version) => { window.__whatsNewSeen = version; },
+    openStableDownload: async () => { window.__stableDownloadOpened = true; },
+    launchGame: async (request) => {
+      window.__lastLaunchRequest = request;
       const startedAt = Date.now();
       emitGameStatus({ state: "starting", startedAt });
       if (window.__exitBeforeLaunchResolves) {
@@ -176,9 +280,33 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
+if (testChannelDenied) {
+  await page.getByText("지정된 테스터만 쓸 수 있어요").waitFor({ timeout: 10000 });
+  if (await page.locator(".launchButton").count()) throw new Error("the test build opened for a member who is not a tester");
+  await page.screenshot({ path: "previews/bweeep-launcher-test-channel-denied.png" });
+  await page.getByRole("button", { name: "일반 런처 받기" }).click();
+  await page.waitForFunction(() => window.__stableDownloadOpened === true);
+  console.log(JSON.stringify({ interactionChecks: ["test-channel-testers-only", "stable-installer-link"], errors }));
+  await browser.close();
+  process.exit(errors.length ? 1 : 0);
+}
+if (whatsNewMode) {
+  const dialog = page.getByRole("dialog", { name: "업데이트 소식" });
+  await dialog.waitFor({ timeout: 10000 });
+  const text = await dialog.innerText();
+  if (!text.includes("v0.1.35") || !text.includes("예전에 쓴 이름은 쓸 수 없어요")) throw new Error(`what's new dialog is missing the notes: ${text}`);
+  await page.screenshot({ path: "previews/bweeep-launcher-whats-new.png" });
+  await dialog.getByRole("button", { name: "확인" }).click();
+  await page.waitForFunction(() => window.__whatsNewSeen === "0.1.35");
+  if (await page.getByRole("dialog", { name: "업데이트 소식" }).count()) throw new Error("what's new dialog did not close");
+  await page.locator(".launchButton").waitFor();
+  console.log(JSON.stringify({ interactionChecks: ["whats-new-once-after-update"], errors }));
+  await browser.close();
+  process.exit(errors.length ? 1 : 0);
+}
 const expectedEntrySelector = accessUnavailable ? ".entryActions .primaryButton" : accessDenied ? ".entryInvite" : signedIn ? ".launchButton" : ".entryPrimary";
 await page.locator(expectedEntrySelector).waitFor({ state: "visible", timeout: 10000 });
 const interactionChecks = [];
@@ -285,11 +413,65 @@ if (catalogUnavailable) {
   if (await page.locator(".settingsModal").count()) throw new Error("Escape did not close the settings modal");
   await page.getByRole("button", { name: "설정", exact: true }).click();
   interactionChecks.push("escape-closes-modal");
+  await page.getByRole("button", { name: "테스터로 지정" }).click();
+  await page.getByRole("button", { name: "테스터 해제" }).waitFor();
+  interactionChecks.push("admin-designates-tester");
   await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
   await page.locator(".settingsModal .closeButton").click();
+
+  await page.getByRole("button", { name: "스킨", exact: true }).click();
+  await page.locator(".skinModal .skinCanvas").waitFor();
+  if (await page.locator(".skinModal .skinCard").count() !== 5) throw new Error("skin library should show the add card, two saved skins and Steve/Alex");
+  if (!(await page.locator(".skinCard.active").innerText()).includes("사용 중")) throw new Error("the applied skin is not marked as in use");
+  const canvasBox = await page.locator(".skinCanvas").boundingBox();
+  await page.mouse.move(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox.x + canvasBox.width / 2 + 120, canvasBox.y + canvasBox.height / 2, { steps: 8 });
+  await page.mouse.up();
+  interactionChecks.push("skin-preview-drag-rotate");
+  await page.locator(".skinCardPick").filter({ hasText: "보라 기사" }).click();
+  await page.getByRole("button", { name: "이 스킨 적용" }).click();
+  await page.getByText("스킨을 적용했어요. 다음 접속부터 게임에 보여요.").waitFor();
+  if (!(await page.locator(".skinCard.active").innerText()).includes("보라 기사")) throw new Error("applying a library skin did not make it current");
+  await page.getByRole("button", { name: "새 스킨" }).click();
+  await page.locator(".skinCardPick").filter({ hasText: "새로 넣은 스킨" }).waitFor();
+  interactionChecks.push("skin-library-apply-and-add");
+  await page.waitForTimeout(800);
+  const newCardDrawn = await page.locator(".skinCardPick").filter({ hasText: "새로 넣은 스킨" }).locator("canvas").evaluate((canvas) =>
+    canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 === 3 && value > 0));
+  if (!newCardDrawn) throw new Error("the added skin's card thumbnail stayed empty");
+  await page.screenshot({ path: "previews/bweeep-launcher-skins.png" });
+  await page.keyboard.press("Escape");
+  if (await page.locator(".skinModal").count()) throw new Error("Escape did not close the skin modal");
+
+  await page.getByRole("button", { name: "편의 모드", exact: true }).click();
+  await page.locator(".modItem").first().waitFor();
+  const modsText = await page.locator(".modsModal").innerText();
+  if (!modsText.includes("NeoForge · Minecraft 1.21.1용") || !modsText.includes("서버 팩에 포함") || !modsText.includes("서버에서 막음")) {
+    throw new Error("mod search does not show the server's loader, pack mods and blocked mods");
+  }
+  await page.locator(".modItem").filter({ hasText: "Sodium" }).getByRole("button", { name: "설치" }).click();
+  await page.getByText("Sodium을(를) 설치했어요. 다음 게임 시작부터 적용돼요.").waitFor();
+  if (!(await page.locator(".modItem").filter({ hasText: "Sodium" }).innerText()).includes("설치됨")) throw new Error("installed mod is not marked");
+  await page.screenshot({ path: "previews/bweeep-launcher-mods.png" });
+  await page.getByLabel("모드 검색").fill("fabulously optimized modpack");
+  await page.getByText("Fabulously Optimized은(는) 모드팩이라 통째로 받을 수 없어요.", { exact: false }).waitFor();
+  if (await page.locator(".modList .modItem").count() !== 0) throw new Error("modpack search still offers something to install");
+  await page.screenshot({ path: "previews/bweeep-launcher-mods-modpack.png" });
+  await page.getByLabel("모드 검색").fill("");
+  await page.locator(".modItem").first().waitFor();
+  interactionChecks.push("modpack-download-refused");
+  await page.getByRole("tab", { name: /설치됨/ }).click();
+  await page.locator(".modItem").filter({ hasText: "Sodium" }).getByRole("button", { name: "삭제" }).waitFor();
+  interactionChecks.push("personal-mod-search-install");
+  await page.keyboard.press("Escape");
   await page.locator(".profileBox").click();
   await page.getByRole("button", { name: "모드 폴더 선택" }).waitFor();
   if (await page.locator(".contentFolderItem").count() !== 2) throw new Error("saved personal content folders are missing");
+  await page.locator(".profileModal input[maxlength='16']").fill("noah_sky1012");
+  await page.getByRole("button", { name: "저장", exact: true }).click();
+  await page.getByText("다른 멤버가 쓰고 있거나 예전에 쓴 이름이라 쓸 수 없습니다", { exact: false }).waitFor();
+  interactionChecks.push("taken-name-refused");
   await page.locator(".profileModal input[maxlength='16']").fill("seos_py_new");
   await page.getByRole("button", { name: "저장", exact: true }).click();
   await page.getByText("인게임 이름 변경됨 · 다음 실행부터 적용", { exact: true }).waitFor();
@@ -353,6 +535,17 @@ if (catalogUnavailable) {
   await page.screenshot({ path: "previews/bweeep-launcher-game-exit.png" });
   interactionChecks.push("game-exit-visible");
   interactionChecks.push("game-lifecycle-lock");
+  await page.evaluate(() => { window.__exitBeforeLaunchResolves = false; });
+  await page.getByRole("button", { name: "게임 시작" }).click();
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
+  await page.evaluate(() => window.__failWithPersonalMods());
+  await page.getByText("개인 모드 때문일 수 있어요.", { exact: false }).waitFor();
+  await page.screenshot({ path: "previews/bweeep-launcher-retry-without-mods.png" });
+  await page.getByRole("button", { name: "개인 모드 빼고 시작" }).click();
+  await page.waitForFunction(() => window.__lastLaunchRequest?.withoutPersonalMods === true);
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
+  await page.evaluate(() => window.__exitGame());
+  interactionChecks.push("retry-without-personal-mods");
 } else {
   await page.getByRole("button", { name: "Discord로 로그인" }).click();
   await page.getByRole("button", { name: "브라우저에서 로그인하는 중" }).waitFor();

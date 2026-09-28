@@ -9,7 +9,12 @@ export default {
   productName: "Bweeep Test",
   directories: { ...base.directories, output: "release-installer-test" },
   artifactName: "Bweeep-Test-Setup-${version}.${ext}",
-  extraMetadata: { bweeepChannel: "test" },
+  // Each test build gets its own prerelease version (0.1.35-test.2, -test.3, …),
+  // so testers receive fixes without the stable version going up.
+  extraMetadata: {
+    bweeepChannel: "test",
+    ...(process.env.BWEEP_TEST_BUILD ? { version: `${packageJson.version}-test.${process.env.BWEEP_TEST_BUILD}` } : {})
+  },
   generateUpdatesFilesForAllChannels: true,
   publish: base.publish.map((publisher) => ({ ...publisher, channel: "test" })),
   protocols: [{ name: "Bweeep Test Invite Link", schemes: ["bwe-e-ep-test"] }],

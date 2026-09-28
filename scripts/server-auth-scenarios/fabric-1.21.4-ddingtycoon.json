@@ -1,0 +1,16 @@
+{
+  "name": "fabric-1.21.4-ddingtycoon",
+  "port": 25593,
+  "clients": 1,
+  "clientHeapMb": 2048,
+  "manifest": "scripts/server-auth-scenarios/manifests/ddingtycoon-private.json",
+  "clientJava": "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+  "clientMemoryMb": 2500,
+  "clientSkipMods": ["caramelchat*"],
+  "server": {
+    "source": "/home/dev/servers/ddingtycoon-fabric-1.21.4",
+    "exclude": ["/world*", "/logs", "/backups", "/crash-reports", "/*.json"],
+    "command": ["/usr/lib/jvm/java-21-openjdk-amd64/bin/java", "-Xms512M", "-Xmx2G", "-jar", "fabric-server-launch.jar", "nogui"],
+    "memoryMb": 2100
+  }
+}

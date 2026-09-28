@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "forge-1.20.1-check",
+  "name": "Forge 1.20.1 auth check",
+  "version": "1",
+  "minecraftVersion": "1.20.1",
+  "java": { "majorVersion": 17, "component": "java-runtime-gamma" },
+  "loader": { "kind": "forge", "version": "47.4.0" },
+  "server": { "host": "127.0.0.1", "port": 25565 },
+  "files": []
+}

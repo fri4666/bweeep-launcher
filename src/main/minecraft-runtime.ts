@@ -29,13 +29,23 @@ import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from ".
 type ProgressSink = (event: SyncProgress) => void;
 type InstallRuntime = ReturnType<typeof createDefaultNodeInstallRuntime>;
 
+export interface LaunchAuthorization {
+  identity: LaunchIdentity;
+  /** One-time ticket for servers running bweeep-server-auth; empty otherwise. */
+  ticket: string;
+  /** Set for servers that verify players through the Bweeep Yggdrasil API. */
+  yggdrasil?: { jvmArgs: string[] };
+}
+
 export async function installAndLaunch(
   manifest: ModpackManifest,
   instanceDir: string,
-  getLaunchAuthorization: () => Promise<{ identity: LaunchIdentity; ticket: string }>,
+  getLaunchAuthorization: () => Promise<LaunchAuthorization>,
   bundledClientMods: BundledClientMod[],
   progress: ProgressSink,
-  onExit: (exit: GameExitResult) => void
+  onExit: (exit: GameExitResult) => void,
+  /** JVM arguments of the connection guard agent; empty when the pack opts out. */
+  connectionGuardArgs: string[] = []
 ): Promise<{ pid: number; version: string }> {
   if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
     throw new Error("지원하지 않는 Minecraft 로더입니다.");
@@ -79,13 +89,14 @@ export async function installAndLaunch(
     await verifyRemoteConnectionLock(instanceDir, manifest);
     report({ kind: "info", stage: "서버 연결 보호", message: "연결 보호 모드 확인 완료" });
   }
-  const connectionLockEnabled = remoteLock === true
+  // The guard agent sets bweeep.targetServer itself; older lock mods read the same property.
+  const legacyLockOnly = connectionGuardArgs.length === 0 && (remoteLock === true
     || typeof remoteLock === "object"
-    || bundledClientMods.some((mod) => mod.targetName === "bweeep-client.jar");
+    || bundledClientMods.some((mod) => mod.targetName === "bweeep-client.jar"));
   const quickPlayPath = path.join(instanceDir, "quickPlay", "bweeep.json");
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
-  const { identity, ticket: gameTicket } = await runStage(report, "접속 인증", getLaunchAuthorization);
+  const { identity, ticket: gameTicket, yggdrasil } = await runStage(report, "접속 인증", getLaunchAuthorization);
   report({ kind: "info", stage: "게임 실행", message: "Minecraft 실행 명령을 준비하는 중" });
   const gameProcess = await launch({
     gamePath: instanceDir,
@@ -94,9 +105,14 @@ export async function installAndLaunch(
     version,
     accessToken: identity.accessToken,
     gameProfile: { id: identity.id, name: identity.name },
-    userType: "legacy",
+    // authlib-injector expects "mojang"; offline servers keep the legacy type.
+    userType: yggdrasil ? "mojang" : "legacy",
     quickPlayMultiplayer: `${manifest.server.host}:${manifest.server.port}`,
-    extraJVMArgs: connectionLockEnabled ? [`-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`] : [],
+    extraJVMArgs: [
+      ...(yggdrasil?.jvmArgs ?? []),
+      ...connectionGuardArgs,
+      ...(legacyLockOnly ? [`-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`] : [])
+    ],
     extraMCArgs: ["--quickPlayPath", quickPlayPath],
     extraExecOption: {
       env: { ...process.env, BWEEP_GAME_TICKET: gameTicket }

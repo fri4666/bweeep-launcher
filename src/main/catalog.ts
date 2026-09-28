@@ -13,7 +13,9 @@ export function toServerPreset(manifest: ModpackManifest): ServerPreset {
     java: manifest.java,
     loader: manifest.loader,
     serverLoader: manifest.serverLoader,
-    environment: manifest.audience === "testers" ? "test" : "production"
+    environment: manifest.audience === "testers" ? "test" : "production",
+    gameAuth: manifest.gameAuth ?? "offline",
+    blockedModrinthProjects: manifest.blockedModrinthProjects ?? []
   };
 }
 

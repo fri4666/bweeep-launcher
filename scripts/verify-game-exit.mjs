@@ -46,6 +46,15 @@ observeOutput(Buffer.from("craft 1.21.4 with Fabric Loader 0.18.1\n"));
 observeOutput(Buffer.from("Connecting to server.fri4666.com, 25565\n"));
 observeOutput(Buffer.from("[KubeJS Startup/]: Loaded script startup_scripts:fishPondDefinitions.js in 0.246 s\n"));
 observeOutput(Buffer.from("BWEEP_TARGET_JOINED\nBWEEP_TARGET_LEFT\nBWEEP_TARGET_REJECTED\n"));
+const guardEvents = [];
+const observeGuard = createGameOutputObserver((event) => guardEvents.push(event));
+observeGuard(Buffer.from("BWEEP_GUARD_READY\nBWEEP_TARGET_CONNECTED\nBWEEP_GUARD_BLOCKED 1.2.3.4:25565\nBWEEP_TARGET_DISCONNECTED\nBWEEP_TARGET_UNREACHABLE\n"));
+assert.deepEqual(guardEvents.map((event) => [event.kind, event.stage]), [
+  ["info", "선택 서버 입장"],
+  ["info", "다른 서버 차단"],
+  ["info", "서버 연결 종료"],
+  ["error", "서버 접속 실패"]
+]);
 assert.deepEqual(milestones.map((event) => event.stage), ["로더 초기화", "서버 연결", "모드팩 스크립트", "선택 서버 입장", "서버 연결 종료", "서버 접속 실패"]);
 assert.doesNotMatch(milestones[1].message, /server\.fri4666\.com/);
 assert.equal(milestones[5].kind, "error");

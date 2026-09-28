@@ -1,12 +1,14 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
 import { spawn } from "node:child_process";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toServerPreset } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
-import { installAndLaunch } from "./minecraft-runtime.js";
+import { installAndLaunch, type LaunchAuthorization } from "./minecraft-runtime.js";
+import { authlibInjectorJvmArgs, ensureAuthlibInjector } from "./authlib-injector.js";
 import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { fingerprint } from "./hash.js";
 import { authLogPath, gameErrorDetails, gameLogPath, writeAuthLog, writeGameLog } from "./logs.js";
@@ -14,12 +16,17 @@ import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpd
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherUser, LogTarget, SyncProgress, UserContentKind } from "../shared/types.js";
+import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
+import { findBlockedJars, installMod, listPersonalMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
 import { bundledFeatureMods } from "./client-feature-mods.js";
+import { connectionGuardEnabled, connectionGuardJvmArgs, ensureConnectionGuard } from "./connection-guard.js";
+import { markWhatsNewSeen, pendingWhatsNew } from "./whats-new.js";
+import { findDefaultSkins, SkinLibrary } from "./skins.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
 const auth = new SupabaseAuth();
+const skinLibrary = new SkinLibrary(path.join(app.getPath("userData"), "skins"));
 const pendingAuthUrls: string[] = [];
 const queuedAuthCallbacks = new Set<string>();
 const completedAuthFlows = new Set<string>();
@@ -55,8 +62,81 @@ function gameIsStarting(): boolean {
 }
 
 function requireInstanceRoot(value: unknown): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
+  if (typeof value !== "string" || !value.trim() || value.includes("\0") || !path.isAbsolute(value)) {
+    throw new Error("설치 위치가 올바르지 않습니다.");
+  }
+  return path.resolve(value);
+}
+
+// Server presets from the last catalog load. Mod requests take the loader,
+// version and blocked mods from here, never from the renderer.
+const catalogPresets = new Map<string, ServerPreset>();
+
+async function loadCatalog(): Promise<ServerPreset[]> {
+  if (!sessionUser) return [];
+  const presets = (await auth.listManifests(sessionUser)).map((manifest) => {
+    assertManifest(manifest);
+    return toServerPreset(manifest);
+  });
+  catalogPresets.clear();
+  for (const preset of presets) catalogPresets.set(preset.packId, preset);
+  return presets;
+}
+
+async function requireModTarget(value: unknown): Promise<ModTarget> {
+  const target = value as Partial<ModTarget> | null;
+  const packId = target?.packId;
+  if (typeof packId !== "string" || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(packId)) throw new Error("서버 정보가 올바르지 않습니다.");
+  if (!catalogPresets.has(packId)) await loadCatalog();
+  const preset = catalogPresets.get(packId);
+  if (!preset) throw new Error("서버 정보를 찾지 못했습니다. 서버 목록을 새로 불러와 주세요.");
+  return {
+    instanceRoot: requireInstanceRoot(target?.instanceRoot),
+    packId,
+    loader: preset.loader.kind,
+    minecraftVersion: preset.minecraftVersion,
+    blockedModrinthProjects: preset.blockedModrinthProjects
+  };
+}
+
+function optionalInstanceRoot(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function requireSkinModel(value: unknown): SkinModel {
+  if (value !== "default" && value !== "slim") throw new Error("팔 모양 정보가 올바르지 않습니다.");
   return value;
+}
+
+/**
+ * Server skin plus the local library; a skin set on another PC is saved here
+ * too. The library and preview still work when the server cannot be reached.
+ */
+async function skinState(instanceRoot: string | null): Promise<SkinState> {
+  let serverError: string | undefined;
+  const [server, defaults] = await Promise.all([
+    auth.getSkin(sessionUser).catch((error: unknown) => {
+      serverError = error instanceof Error ? error.message : String(error);
+      return null;
+    }),
+    instanceRoot ? findDefaultSkins(instanceRoot) : Promise.resolve([])
+  ]);
+  if (server && !(await skinLibrary.get(server.hash))) {
+    try {
+      const response = await fetch(await auth.skinUrl(server.hash));
+      if (response.ok) await skinLibrary.add(Buffer.from(await response.arrayBuffer()), "적용된 스킨", server.model, { asStored: true });
+    } catch {
+      // The library and preview still work; the applied skin shows up once the file can be fetched.
+    }
+  }
+  const library = await skinLibrary.list();
+  const applied = server ? library.find((entry) => entry.id === server.hash) : undefined;
+  return {
+    current: server && applied ? { id: server.hash, model: server.model, dataUrl: applied.dataUrl } : null,
+    library,
+    defaults,
+    ...(serverError ? { serverError } : {})
+  };
 }
 
 function requireContentKind(value: unknown): UserContentKind {
@@ -250,13 +330,8 @@ async function createWindow(): Promise<BrowserWindow> {
 
 app.whenReady().then(async () => {
   await session.defaultSession.setProxy({ mode: "system" });
-  ipcMain.handle("catalog:list", async () => {
-    if (!sessionUser) return [];
-    return (await auth.listManifests(sessionUser)).map((manifest) => {
-      assertManifest(manifest);
-      return toServerPreset(manifest);
-    });
-  });
+  setModrinthUserAgent(app.getVersion());
+  ipcMain.handle("catalog:list", () => loadCatalog());
   ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
   ipcMain.handle("paths:defaultInstanceRoot", () => defaultInstanceRoot());
   ipcMain.handle("content:folders", (_event, instanceRoot: unknown) => getUserContentFolders(requireInstanceRoot(instanceRoot)));
@@ -277,7 +352,12 @@ app.whenReady().then(async () => {
     if (typeof folder !== "string") throw new Error("콘텐츠 폴더 정보가 올바르지 않습니다.");
     return removeUserContentFolder(requireInstanceRoot(instanceRoot), requireContentKind(kind), folder);
   });
-  ipcMain.handle("shell:openPath", (_event, target: string) => shell.openPath(target));
+  // Only the install folder is opened from the renderer, so anything that is not a folder is refused.
+  ipcMain.handle("shell:openPath", async (_event, target: unknown) => {
+    const folder = requireInstanceRoot(target);
+    if (!(await fsp.stat(folder).catch(() => null))?.isDirectory()) return "폴더를 찾지 못했습니다.";
+    return shell.openPath(folder);
+  });
   ipcMain.handle("launcher:channel", () => getLauncherChannel());
   ipcMain.handle("launcher:version", () => app.getVersion());
   ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
@@ -332,6 +412,66 @@ app.whenReady().then(async () => {
     sessionUser = await auth.setGameProfile(sessionUser, gameName);
     return sessionUser;
   });
+  ipcMain.handle("access:listMembers", () => auth.listMembers(sessionUser));
+  ipcMain.handle("access:setTester", (_event, userId: unknown, tester: unknown) => {
+    if (typeof userId !== "string" || typeof tester !== "boolean") throw new Error("테스터 정보가 올바르지 않습니다.");
+    return auth.setTester(sessionUser, userId, tester);
+  });
+  ipcMain.handle("mods:search", async (_event, target: unknown, query: unknown, offset: unknown) =>
+    searchMods(await requireModTarget(target), typeof query === "string" ? query : "", typeof offset === "number" ? offset : 0));
+  ipcMain.handle("mods:list", async (_event, target: unknown, checkUpdates: unknown) => listPersonalMods(await requireModTarget(target), checkUpdates === true));
+  ipcMain.handle("mods:install", async (_event, target: unknown, projectId: unknown) => installMod(await requireModTarget(target), String(projectId)));
+  ipcMain.handle("mods:update", async (_event, target: unknown, projectId: unknown) => updateMod(await requireModTarget(target), String(projectId)));
+  ipcMain.handle("mods:remove", async (_event, target: unknown, projectId: unknown) => removeMod(await requireModTarget(target), String(projectId)));
+  ipcMain.handle("skin:state", (_event, instanceRoot: unknown) => skinState(optionalInstanceRoot(instanceRoot)));
+  ipcMain.handle("skin:add", async (event, instanceRoot: unknown) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = { title: "스킨 파일 선택", buttonLabel: "추가", filters: [{ name: "스킨 PNG", extensions: ["png"] }], properties: ["openFile"] };
+    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    const file = picked.canceled ? null : picked.filePaths[0];
+    if (file) {
+      const stat = await fsp.stat(file);
+      if (stat.size > 64 * 1024) throw new Error("스킨 파일은 64KB 이하의 PNG여야 합니다.");
+      await skinLibrary.add(await fsp.readFile(file), path.basename(file, path.extname(file)));
+    }
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
+  ipcMain.handle("skin:apply", async (_event, instanceRoot: unknown, id: unknown, model: unknown) => {
+    const stored = typeof id === "string" ? await skinLibrary.get(id) : null;
+    if (!stored) throw new Error("스킨을 찾지 못했습니다.");
+    const skinModel = requireSkinModel(model);
+    await skinLibrary.setModel(stored.entry.id, skinModel);
+    await auth.setSkin(sessionUser, stored.png, skinModel);
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
+  ipcMain.handle("skin:applyDefault", async (_event, instanceRoot: unknown, name: unknown) => {
+    const root = optionalInstanceRoot(instanceRoot);
+    const skin = (root ? await findDefaultSkins(root) : []).find((item) => item.name === name);
+    if (!skin) throw new Error("기본 스킨을 찾지 못했습니다.");
+    const png = Buffer.from(skin.dataUrl.slice(skin.dataUrl.indexOf(",") + 1), "base64");
+    const entry = await skinLibrary.add(png, skin.name, skin.model);
+    const stored = await skinLibrary.get(entry.id);
+    if (!stored) throw new Error("기본 스킨을 저장하지 못했습니다.");
+    await auth.setSkin(sessionUser, stored.png, skin.model);
+    return skinState(root);
+  });
+  ipcMain.handle("skin:setModel", async (_event, instanceRoot: unknown, id: unknown, model: unknown) => {
+    if (typeof id !== "string") throw new Error("스킨 정보가 올바르지 않습니다.");
+    await skinLibrary.setModel(id, requireSkinModel(model));
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
+  ipcMain.handle("skin:remove", async (_event, instanceRoot: unknown, id: unknown) => {
+    if (typeof id !== "string") throw new Error("스킨 정보가 올바르지 않습니다.");
+    // The applied skin would only come back from the server on the next refresh.
+    const applied = await auth.getSkin(sessionUser).catch(() => null);
+    if (applied?.hash === id) throw new Error("지금 적용 중인 스킨은 지울 수 없어요. 다른 스킨을 적용하거나 기본 스킨으로 돌린 뒤 지워 주세요.");
+    await skinLibrary.remove(id);
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
+  ipcMain.handle("skin:reset", async (_event, instanceRoot: unknown) => {
+    await auth.clearSkin(sessionUser);
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
   ipcMain.handle("invite:ready", () => {
     inviteReceiverReady = true;
     const firstInvite = pendingInviteCodes.shift() ?? null;
@@ -339,6 +479,10 @@ app.whenReady().then(async () => {
     return firstInvite;
   });
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
+  ipcMain.handle("launcher:whatsNew", () => pendingWhatsNew());
+  ipcMain.handle("launcher:whatsNewSeen", (_event, version: unknown) => markWhatsNewSeen(String(version)));
+  // Fixed address: the test build's non-tester screen points to the stable installer.
+  ipcMain.handle("launcher:openStableDownload", () => shell.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest"));
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:status", () => gameStatus);
@@ -348,7 +492,7 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.minecraft.stop-requested", { pid: gameStatus.pid });
     process.kill(gameStatus.pid);
   });
-  ipcMain.handle("game:launch", async (event, request: { packId: string; instanceDir: string }) => {
+  ipcMain.handle("game:launch", async (event, request: { packId: string; instanceDir: string; withoutPersonalMods?: boolean }) => {
     if (gameStatus.state !== "idle") {
       throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
     }
@@ -379,22 +523,47 @@ app.whenReady().then(async () => {
       const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), manifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: manifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest }, progress);
-      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, manifest);
-      progress({ kind: "info", stage: "개인 파일", message: `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리` });
+      const withoutPersonalMods = request.withoutPersonalMods === true;
+      const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, manifest, {
+        withoutPersonalMods,
+        findBlocked: (jars) => findBlockedJars(jars, manifest.blockedModrinthProjects ?? []),
+        launcherJars: bundledClientMods.map((mod) => mod.sourcePath)
+      });
+      progress({
+        kind: "info",
+        stage: "개인 파일",
+        message: withoutPersonalMods
+          ? `개인 모드 없이 시작 · 셰이더 ${userContent.copiedShaders}개 적용`
+          : `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리`
+      });
+      for (const skipped of userContent.skippedMods) {
+        progress({ kind: "info", stage: "개인 모드 제외", message: `${skipped.name}: ${skipped.reason}`, filePath: skipped.name });
+      }
+      const guardArgs = connectionGuardEnabled(manifest)
+        ? connectionGuardJvmArgs(await ensureConnectionGuard(path.join(app.getAppPath(), "resources", "java-agent"), synced.instanceDir), manifest)
+        : [];
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: manifest.minecraftVersion, loader: manifest.loader.version });
-      const getLaunchAuthorization = manifest.loader.kind === "vanilla"
-        ? async () => ({
+      const getLaunchAuthorization = async (): Promise<LaunchAuthorization> => {
+        if (manifest.gameAuth === "yggdrasil") {
+          await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
+          const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
+          const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
+          await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
+          return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
+        }
+        if (manifest.loader.kind === "vanilla") {
+          return {
             identity: createOfflineLaunchIdentity(launchUser.id, launchUser.gameName, launchUser.globalName, launchUser.username),
             ticket: ""
-          })
-        : async () => {
-            await writeGameLog("launch.authorization.requested", { provider: "discord" });
-            const authorization = await auth.createGameLaunchAuthorization(launchUser);
-            await writeGameLog("launch.authorization.created", { provider: "discord" });
-            return authorization;
           };
+        }
+        await writeGameLog("launch.authorization.requested", { provider: "discord" });
+        const authorization = await auth.createGameLaunchAuthorization(launchUser);
+        await writeGameLog("launch.authorization.created", { provider: "discord" });
+        return authorization;
+      };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
       const launched = await installAndLaunch(manifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
         if (exit.crashReportLocation) lastGameLogFile = path.resolve(synced.instanceDir, exit.crashReportLocation);
@@ -404,8 +573,20 @@ app.whenReady().then(async () => {
           : { kind: exit.abnormal ? "error" : "info", stage: "게임 종료", message: exit.message });
         if (gameRunId === runId) {
           setGameStatus(exit.abnormal && !stoppedByPlayer
-            ? { state: "idle", exitMessage: exit.message, exitError: true, crashReport: Boolean(exit.crashReportLocation) }
+            ? {
+                state: "idle",
+                exitMessage: exit.message,
+                exitError: true,
+                crashReport: Boolean(exit.crashReportLocation),
+                // A crash with personal mods in the game may be theirs; the player can retry without them.
+                retryWithoutPersonalMods: userContent.copiedMods > 0 ? request.packId : undefined
+              }
             : { state: "idle" });
+        }
+        // The game token only matters while joining; once the game is gone it is retired.
+        if (manifest.gameAuth === "yggdrasil") {
+          void auth.revokeGameAuth(launchUser).catch((error: unknown) =>
+            writeGameLog("launch.token.revoke-failed", { message: error instanceof Error ? error.message : String(error) }));
         }
         void captureSharedOptions(request.instanceDir, synced.instanceDir);
         void writeGameLog("launch.minecraft.exited", {
@@ -415,7 +596,7 @@ app.whenReady().then(async () => {
           abnormal: exit.abnormal,
           crashReportLocation: exit.crashReportLocation
         });
-      });
+      }, guardArgs);
       if (gameRunId === runId && gameIsStarting()) {
         setGameStatus({ state: "running", pid: launched.pid, startedAt });
         await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });

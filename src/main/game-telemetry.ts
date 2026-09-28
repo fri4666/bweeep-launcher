@@ -21,6 +21,22 @@ export function createGameOutputObserver(progress: (event: SyncProgress) => void
 
 function classifyGameLine(line: string): SyncProgress | null {
   const value = line.replace(/\u001b\[[0-9;]*m/g, "");
+  // Lines from the connection guard agent, the same on every version and loader.
+  if (value.includes("BWEEP_TARGET_CONNECTED")) {
+    return { kind: "info", stage: "선택 서버 입장", message: "서버에 연결했습니다" };
+  }
+  if (value.includes("BWEEP_TARGET_DISCONNECTED")) {
+    return { kind: "info", stage: "서버 연결 종료", message: "서버와 연결이 끊겼습니다" };
+  }
+  if (value.includes("BWEEP_TARGET_UNREACHABLE")) {
+    return { kind: "error", stage: "서버 접속 실패", message: "서버에 연결하지 못했습니다. 서버가 켜져 있는지 확인한 뒤 다시 시도해 주세요." };
+  }
+  if (value.includes("BWEEP_GUARD_BLOCKED")) {
+    return { kind: "info", stage: "다른 서버 차단", message: "붸에엡 런처로 실행한 게임은 선택한 서버에만 접속할 수 있습니다" };
+  }
+  if (value.includes("BWEEP_GUARD_DISABLED")) {
+    return { kind: "info", stage: "서버 연결 보호", message: "이 게임 버전에서는 연결 보호를 켜지 못했습니다" };
+  }
   if (value.includes("BWEEP_TARGET_JOINED")) {
     return { kind: "info", stage: "선택 서버 입장", message: "서버에 접속했습니다" };
   }

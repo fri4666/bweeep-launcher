@@ -1,6 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
-import { getBearerToken, getSessionId } from "./authorization.ts";
+import { getBearerToken, getLauncherVersion, getSessionId, isLauncherAtLeast, MIN_YGGDRASIL_LAUNCHER } from "./authorization.ts";
 import { previousGameNames } from "./profile-history.ts";
 import {
   createDisplaySessionToken,
@@ -9,8 +9,17 @@ import {
 } from "./display-name.ts";
 import { createGameTicket, isGameName, isGameTicket } from "./game-ticket.ts";
 import { decideInvite, invitePolicy, isInviteOpen, type InviteRole } from "./invite-policy.ts";
+import { launchGameName } from "./launch-name.ts";
+import { decodeBase64, isSkinModel, MAX_SKIN_BYTES, type SkinModel, validateSkinPng } from "./skin-image.ts";
 
 type RequestBody =
+  | { action: "listMembers" }
+  | { action: "setTester"; userId: string; tester: boolean }
+  | { action: "gameAuth" }
+  | { action: "revokeGameAuth" }
+  | { action: "skin" }
+  | { action: "setSkin"; png: string; model: SkinModel }
+  | { action: "clearSkin" }
   | { action: "status" }
   | { action: "redeem"; code: string }
   | { action: "createInvite"; maxUses?: number }
@@ -36,6 +45,7 @@ interface ModpackManifest {
   id: string;
   name: string;
   audience?: "members" | "testers";
+  gameAuth?: "offline" | "yggdrasil";
   version: string;
   minecraftVersion: string;
   java: { majorVersion: number; component: string };
@@ -45,6 +55,32 @@ interface ModpackManifest {
 }
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
+
+/** Game tokens only matter when joining, so half a day covers any session. */
+const GAME_TOKEN_HOURS = 12;
+const SKIN_CHANGE_INTERVAL_MS = 5_000;
+const OUTDATED_LAUNCHER = {
+  code: "LAUNCHER_OUTDATED",
+  message: "서버 접속 방식이 바뀌어서 런처를 업데이트해야 해요. 런처를 껐다 켜면 자동으로 업데이트돼요."
+};
+
+function gameNameTakenMessage(gameName: string): string {
+  return `'${gameName}'은(는) 다른 멤버가 쓰고 있거나 예전에 쓴 이름이라 쓸 수 없습니다.`;
+}
+
+/** Skin files are named by content hash and may be shared, so only unreferenced ones are deleted. */
+async function removeUnusedSkinFile(
+  supabase: ReturnType<typeof createClient<any, "public">>,
+  textureHash: string
+): Promise<void> {
+  const { count, error } = await supabase
+    .from("launcher_skins")
+    .select("user_id", { count: "exact", head: true })
+    .eq("texture_hash", textureHash);
+  if (error || count !== 0) return;
+  const { error: removeError } = await supabase.storage.from("launcher-skins").remove([`${textureHash}.png`]);
+  if (removeError) console.error("unused skin file removal failed", removeError);
+}
 
 export default {
   async fetch(request: Request): Promise<Response> {
@@ -205,6 +241,7 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ message: "테스트 서버 권한을 조회하지 못했습니다." }, 500);
     }
     const testAllowed = membership?.role === "admin" || Boolean(testAccess);
+    const supportsYggdrasil = isLauncherAtLeast(getLauncherVersion(request), MIN_YGGDRASIL_LAUNCHER);
 
     if (body.action === "status") {
       const { data: profile, error: profileError } = await supabaseAdmin
@@ -250,14 +287,174 @@ async function handleRequest(request: Request): Promise<Response> {
       if (!isGameName(body.gameName)) {
         return json({ message: "인게임 이름은 영문·숫자·밑줄 3~16자로 입력해 주세요." }, 400);
       }
+      // Another member's current or earlier name would hand over their
+      // character on servers that keep data by name, so it is refused.
+      const { data: available, error: availableError } = await supabaseAdmin.rpc("launcher_game_name_available", {
+        p_user_id: userId,
+        p_game_name: body.gameName
+      });
+      if (availableError) {
+        console.error("game name availability check failed", availableError);
+        return json({ message: "인게임 이름을 확인하지 못했습니다." }, 500);
+      }
+      if (available !== true) return json({ code: "GAME_NAME_TAKEN", message: gameNameTakenMessage(body.gameName) }, 409);
       const { error } = await supabaseAdmin
         .from("launcher_profiles")
         .upsert({ user_id: userId, game_name: body.gameName }, { onConflict: "user_id" });
+      if (error?.code === "23505") return json({ code: "GAME_NAME_TAKEN", message: gameNameTakenMessage(body.gameName) }, 409);
       if (error) {
         console.error("launcher profile save failed", error);
         return json({ message: "인게임 이름을 저장하지 못했습니다." }, 500);
       }
       return json({ ok: true, gameName: body.gameName });
+    }
+
+    if (body.action === "listMembers" || body.action === "setTester") {
+      if (membership.role !== "admin") return json({ message: "관리자만 테스터를 지정할 수 있습니다." }, 403);
+      if (body.action === "setTester") {
+        const { data: target } = await supabaseAdmin.from("launcher_members").select("user_id").eq("user_id", body.userId).maybeSingle();
+        if (!target) return json({ message: "멤버를 찾지 못했습니다." }, 404);
+        const { error } = body.tester
+          ? await supabaseAdmin.from("launcher_environment_access").upsert(
+            { user_id: body.userId, environment: "test", granted_by: userId },
+            { onConflict: "user_id,environment", ignoreDuplicates: true }
+          )
+          : await supabaseAdmin.from("launcher_environment_access").delete().eq("user_id", body.userId).eq("environment", "test");
+        if (error) {
+          console.error("tester update failed", error);
+          return json({ message: "테스터 지정을 저장하지 못했습니다." }, 500);
+        }
+      }
+      const [{ data: members, error: membersError }, { data: testers, error: testersError }, { data: profiles, error: profilesError }] = await Promise.all([
+        supabaseAdmin.from("launcher_members").select("user_id, role, invited_at").order("invited_at"),
+        supabaseAdmin.from("launcher_environment_access").select("user_id").eq("environment", "test"),
+        supabaseAdmin.from("launcher_profiles").select("user_id, game_name")
+      ]);
+      if (membersError || testersError || profilesError) {
+        console.error("member list failed", membersError ?? testersError ?? profilesError);
+        return json({ message: "멤버 목록을 불러오지 못했습니다." }, 500);
+      }
+      const testerIds = new Set((testers ?? []).map((row) => row.user_id));
+      const gameNames = new Map((profiles ?? []).map((row) => [row.user_id, row.game_name]));
+      const list = await Promise.all((members ?? []).map(async (member) => {
+        const { data } = await supabaseAdmin.auth.admin.getUserById(member.user_id);
+        const metadata = data.user?.user_metadata ?? {};
+        const name = [metadata.full_name, metadata.name, metadata.user_name].find((value) => typeof value === "string" && value.trim());
+        return {
+          userId: member.user_id,
+          name: typeof name === "string" ? name : "이름 없음",
+          gameName: gameNames.get(member.user_id) ?? null,
+          role: member.role,
+          tester: member.role === "admin" || testerIds.has(member.user_id)
+        };
+      }));
+      return json({ members: list });
+    }
+
+    if (body.action === "gameAuth") {
+      const [{ data: userData, error: userError }, { data: profile, error: profileError }] = await Promise.all([
+        supabaseAdmin.auth.admin.getUserById(userId),
+        supabaseAdmin.from("launcher_profiles").select("game_name").eq("user_id", userId).maybeSingle()
+      ]);
+      if (userError || !userData.user || profileError) {
+        console.error("game auth profile lookup failed", userError ?? profileError);
+        return json({ message: "게임 프로필을 확인하지 못했습니다." }, 500);
+      }
+      const gameName = await launchGameName(userData.user, profile?.game_name ?? null);
+      const { data: account, error: accountError } = await supabaseAdmin.rpc("launcher_claim_minecraft_account", {
+        p_user_id: userId,
+        p_game_name: gameName
+      });
+      if (accountError?.message === "GAME_NAME_TAKEN") {
+        return json({ code: "GAME_NAME_TAKEN", message: `${gameNameTakenMessage(gameName)} 계정 설정에서 인게임 이름을 바꿔 주세요.` }, 409);
+      }
+      const claimed = account?.[0];
+      if (accountError || !claimed) {
+        console.error("minecraft account claim failed", accountError);
+        return json({ message: "게임 계정을 준비하지 못했습니다." }, 500);
+      }
+
+      // Minecraft passes this token to the Bweeep Yggdrasil API when it joins a
+      // server. A launcher sign-out invalidates it through the session check.
+      // Only the newest token works: starting the game again retires the old
+      // one, and the launcher revokes it when the game exits.
+      const accessToken = createGameAccessToken();
+      const expiresAt = new Date(Date.now() + GAME_TOKEN_HOURS * 60 * 60_000).toISOString();
+      await supabaseAdmin.from("launcher_game_auth_tokens").delete().lt("expires_at", new Date().toISOString());
+      const { error: retireError } = await supabaseAdmin.from("launcher_game_auth_tokens").delete().eq("user_id", userId);
+      if (retireError) {
+        console.error("game auth token retirement failed", retireError);
+        return json({ message: "이전 게임 접속 토큰을 정리하지 못했습니다." }, 500);
+      }
+      const { error: tokenError } = await supabaseAdmin.from("launcher_game_auth_tokens").insert({
+        token_hash: await sha256(accessToken),
+        user_id: userId,
+        auth_session_id: sessionId,
+        expires_at: expiresAt
+      });
+      if (tokenError) {
+        console.error("game auth token creation failed", tokenError);
+        return json({ message: "게임 접속 토큰을 만들지 못했습니다." }, 500);
+      }
+      return json({
+        accessToken,
+        expiresAt,
+        profile: { id: String(claimed.minecraft_uuid).replaceAll("-", ""), name: claimed.game_name }
+      });
+    }
+
+    if (body.action === "revokeGameAuth") {
+      const { error } = await supabaseAdmin.from("launcher_game_auth_tokens").delete().eq("user_id", userId);
+      if (error) {
+        console.error("game auth token revocation failed", error);
+        return json({ message: "게임 접속 토큰을 폐기하지 못했습니다." }, 500);
+      }
+      return json({ ok: true });
+    }
+
+    if (body.action === "skin" || body.action === "clearSkin" || body.action === "setSkin") {
+      const { data: current, error: currentError } = await supabaseAdmin
+        .from("launcher_skins")
+        .select("texture_hash, model, updated_at")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (currentError) return json({ message: "스킨 정보를 불러오지 못했습니다." }, 500);
+      if (body.action === "skin") {
+        return json({ skin: current ? { hash: current.texture_hash, model: current.model } : null });
+      }
+      if (current && Date.now() - Date.parse(current.updated_at) < SKIN_CHANGE_INTERVAL_MS) {
+        return json({ message: "스킨은 몇 초에 한 번만 바꿀 수 있어요. 잠시 뒤 다시 시도해 주세요." }, 429);
+      }
+
+      if (body.action === "clearSkin") {
+        const { error } = await supabaseAdmin.from("launcher_skins").delete().eq("user_id", userId);
+        if (error) return json({ message: "스킨을 기본으로 되돌리지 못했습니다." }, 500);
+        if (current) await removeUnusedSkinFile(supabaseAdmin, current.texture_hash);
+        return json({ skin: null });
+      }
+
+      const bytes = decodeBase64(body.png);
+      const invalid = bytes ? await validateSkinPng(bytes) : "PNG 이미지가 아닙니다.";
+      if (!bytes || invalid) return json({ message: invalid }, 400);
+      // Files are named by content hash, as Minecraft caches textures by that name.
+      const hash = (await sha256Bytes(bytes)).toLowerCase();
+      const { error: uploadError } = await supabaseAdmin.storage
+        .from("launcher-skins")
+        .upload(`${hash}.png`, bytes, { contentType: "image/png", upsert: true, cacheControl: "31536000" });
+      if (uploadError) {
+        console.error("skin upload failed", uploadError);
+        return json({ message: "스킨 파일을 올리지 못했습니다." }, 500);
+      }
+      const { error } = await supabaseAdmin.from("launcher_skins").upsert(
+        { user_id: userId, texture_hash: hash, model: body.model, updated_at: new Date().toISOString() },
+        { onConflict: "user_id" }
+      );
+      if (error) {
+        console.error("skin save failed", error);
+        return json({ message: "스킨을 저장하지 못했습니다." }, 500);
+      }
+      if (current && current.texture_hash !== hash) await removeUnusedSkinFile(supabaseAdmin, current.texture_hash);
+      return json({ skin: { hash, model: body.model } });
     }
 
     if (body.action === "gameTicket") {
@@ -312,6 +509,7 @@ async function handleRequest(request: Request): Promise<Response> {
       if (data.manifest.audience === "testers" && !testAllowed) {
         return json({ message: "테스트 서버는 지정된 테스터만 접속할 수 있습니다." }, 403);
       }
+      if (data.manifest.gameAuth === "yggdrasil" && !supportsYggdrasil) return json(OUTDATED_LAUNCHER, 426);
       const manifest = await resolveManifestDownloads(supabaseAdmin, data.manifest);
       return json({ manifest, version: data.version });
     }
@@ -341,9 +539,13 @@ async function handleRequest(request: Request): Promise<Response> {
           version: release.version
         };
       });
-      return json({
-        manifests: manifests.filter(({ manifest }) => manifest.audience !== "testers" || testAllowed)
-      });
+      const visible = manifests.filter(({ manifest }) => manifest.audience !== "testers" || testAllowed);
+      // Older launchers ignore gameAuth and would be turned away by the server
+      // with no explanation, so they are asked to update first.
+      if (!supportsYggdrasil && visible.some(({ manifest }) => manifest.gameAuth === "yggdrasil")) {
+        return json(OUTDATED_LAUNCHER, 426);
+      }
+      return json({ manifests: visible });
     }
 
     const role: InviteRole = membership.role === "admin" ? "admin" : "member";
@@ -411,6 +613,13 @@ function isRequestBody(value: unknown): value is RequestBody {
   if (!value || typeof value !== "object" || !("action" in value)) return false;
   const body = value as Record<string, unknown>;
   if (body.action === "status") return true;
+  if (["gameAuth", "revokeGameAuth", "skin", "clearSkin", "listMembers"].includes(String(body.action))) return true;
+  if (body.action === "setTester") {
+    return typeof body.userId === "string" && /^[0-9a-f-]{36}$/i.test(body.userId) && typeof body.tester === "boolean";
+  }
+  if (body.action === "setSkin") {
+    return typeof body.png === "string" && body.png.length <= Math.ceil(MAX_SKIN_BYTES / 3) * 4 && isSkinModel(body.model);
+  }
   if (body.action === "redeem") return typeof body.code === "string";
   if (body.action === "catalog") return true;
   if (body.action === "manifest") return typeof body.packId === "string";
@@ -430,8 +639,19 @@ function createInviteCode(): string {
   return `BWEEP-${toHex(bytes.slice(0, 6))}-${toHex(bytes.slice(6))}`;
 }
 
+function createGameAccessToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
 async function sha256(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return sha256Bytes(new TextEncoder().encode(value));
+}
+
+async function sha256Bytes(value: Uint8Array<ArrayBuffer>): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
   return toHex(new Uint8Array(digest));
 }
 
