@@ -67,17 +67,6 @@ export function startLauncherUpdates(
   interval.unref();
 }
 
-export async function downloadLauncherUpdate(): Promise<LauncherUpdateStatus> {
-  if (status.state !== "available") return status;
-  setStatus({ state: "downloading", update: status.update, percent: 0 });
-  try {
-    await autoUpdater.downloadUpdate();
-  } catch (error) {
-    setStatus({ state: "error", update: status.update, message: safeUpdateError(error) });
-  }
-  return status;
-}
-
 export function installPendingLauncherUpdate(): void {
   if (status.state !== "ready" || installScheduled || !canInstallNow()) return;
   installScheduled = true;

@@ -19,7 +19,7 @@ export function createGameOutputObserver(progress: (event: SyncProgress) => void
   };
 }
 
-export function classifyGameLine(line: string): SyncProgress | null {
+function classifyGameLine(line: string): SyncProgress | null {
   const value = line.replace(/\u001b\[[0-9;]*m/g, "");
   if (value.includes("BWEEP_TARGET_JOINED")) {
     return { kind: "info", stage: "선택 서버 입장", message: "서버에 접속했습니다" };

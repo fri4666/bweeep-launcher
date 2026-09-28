@@ -1,6 +1,13 @@
+import fsp from "node:fs/promises";
 import path from "node:path";
 import type { ModpackManifest } from "../shared/types.js";
-import type { BundledClientMod } from "./companion-mod.js";
+import { hashBytes, hashFile } from "./hash.js";
+
+export interface BundledClientMod {
+  sourcePath: string;
+  targetName: string;
+  sha256: string;
+}
 
 /**
  * Launcher-owned features are version and loader specific. Supported clients
@@ -45,4 +52,33 @@ export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManif
 
 function bundled(resourcesRoot: string, sourceName: string, targetName: string, sha256: string): BundledClientMod {
   return { sourcePath: path.join(resourcesRoot, sourceName), targetName, sha256 };
+}
+
+export async function ensureBundledClientMods(instanceDir: string, mods: BundledClientMod[]): Promise<void> {
+  for (const mod of mods) {
+    const contents = await fsp.readFile(mod.sourcePath);
+    if (hashBytes("sha256", contents) !== mod.sha256) {
+      throw new Error("붸에엡 전용 클라이언트 모드가 손상되었습니다.");
+    }
+    const target = path.join(instanceDir, "mods", mod.targetName);
+    try {
+      if (await hashFile(target, "sha256") === mod.sha256) continue;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    const temp = `${target}.part`;
+    await fsp.writeFile(temp, contents);
+    await fsp.rm(target, { force: true });
+    await fsp.rename(temp, target);
+  }
+}
+
+/** Verify the remote bridge again after player-owned mods have been copied. */
+export async function verifyRemoteConnectionLock(instanceDir: string, manifest: ModpackManifest): Promise<void> {
+  const lock = manifest.clientFeatures?.connectionLock;
+  if (typeof lock !== "object") return;
+  if (await hashFile(path.join(instanceDir, lock.path), "sha256") !== lock.sha256.toLowerCase()) {
+    throw new Error("선택 서버 연결 보호 모드가 손상되었거나 개인 모드로 교체되었습니다.");
+  }
 }

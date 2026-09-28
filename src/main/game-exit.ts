@@ -15,7 +15,7 @@ export function describeGameExit(exit: {
   const code = typeof exit.code === "number" ? exit.code : null;
   const signal = exit.signal || null;
   const crashReportLocation = exit.crashReportLocation?.trim() || null;
-  const detail = signal ? `신호 ${signal}` : code !== null ? `코드 ${code}` : "종료 코드 없음";
+  const detail = signal ? `신호 ${signal}` : code !== null ? `코드 ${formatExitCode(code)}` : "종료 코드 없음";
   const abnormal = Boolean(signal || exit.crashReport || crashReportLocation || code !== 0);
   return {
     abnormal,
@@ -26,4 +26,11 @@ export function describeGameExit(exit: {
     signal,
     crashReportLocation
   };
+}
+
+// Windows reports killed or crashed processes as large unsigned values
+// (4294967295, 3221225477); hex matches how those codes are documented.
+function formatExitCode(code: number): string {
+  if (code >= 0x80000000 && code <= 0xffffffff) return `0x${code.toString(16).toUpperCase()}`;
+  return String(code);
 }

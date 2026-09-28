@@ -1,6 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
-import { getBearerToken } from "./authorization.ts";
+import { getBearerToken, getSessionId } from "./authorization.ts";
 import { previousGameNames } from "./profile-history.ts";
 import {
   createDisplaySessionToken,
@@ -167,15 +167,27 @@ async function handleRequest(request: Request): Promise<Response> {
   // function validates the user token explicitly before any member operation.
   const { data: authData, error: authError } = await supabaseAdmin.auth.getClaims(accessToken);
   const userId = typeof authData?.claims?.sub === "string" ? authData.claims.sub : null;
-  if (authError || !userId) {
+  const sessionId = getSessionId(authData?.claims);
+  if (authError || !userId || !sessionId) {
     return json({ code: "INVALID_BEARER_TOKEN", message: "로그인 세션을 확인할 수 없습니다." }, 401);
   }
 
-    const { data: membership, error: membershipError } = await supabaseAdmin
-      .from("launcher_members")
-      .select("role")
-      .eq("user_id", userId)
-      .maybeSingle();
+    // getClaims cannot see a sign-out, so the session row is checked alongside membership.
+    const [
+      { data: sessionActive, error: sessionError },
+      { data: membership, error: membershipError }
+    ] = await Promise.all([
+      supabaseAdmin.rpc("launcher_auth_session_active", { p_session_id: sessionId, p_user_id: userId }),
+      supabaseAdmin.from("launcher_members").select("role").eq("user_id", userId).maybeSingle()
+    ]);
+
+    if (sessionError) {
+      console.error("launcher auth session query failed", sessionError);
+      return json({ message: "로그인 세션을 확인하지 못했습니다." }, 500);
+    }
+    if (sessionActive !== true) {
+      return json({ code: "INVALID_BEARER_TOKEN", message: "로그아웃된 세션입니다. 다시 로그인해 주세요." }, 401);
+    }
 
     if (membershipError) {
       console.error("launcher membership query failed", membershipError);

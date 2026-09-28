@@ -12,7 +12,7 @@
 - Game launch: installs Minecraft 1.21.1, Java 21, and NeoForge 21.1.228 into the selected instance and starts the modded client.
 - Discord launch: creates a stable offline Minecraft profile derived from the Discord account and display name.
 - Server authentication: issues a 90-second, one-use ticket bound to the verified Discord provider ID, database role, and exact game name. The bundled Bweeep Bridge mod consumes it before allowing play.
-- Account menu: shows the Discord profile, stores a server host/port override, and signs out locally.
+- Account menu: shows the Discord profile and signs out locally.
 - Settings: keeps the install location and sync log, and can reset launcher settings without deleting installed modpack files or the Discord account.
 - Launcher updates: fetches optional HTTPS release metadata and shows a download popup when a newer version is published.
 
@@ -58,11 +58,11 @@ The publishable key is safe to ship with the launcher. Do not add a Supabase sec
 
 ## Server authentication mode
 
-The server stays on `online-mode=false` so Discord-derived offline profiles can join without a separate Mojang login. Install the bundled `bweeep-client-1.1.0.jar` on both the client and dedicated NeoForge server. A direct client without the bridge cannot complete the required payload negotiation; a joined player is held without OP until the server consumes a matching one-use Supabase ticket. The server grants OP only when that ticket carries the `admin` role and removes OP again on disconnect. `ops.json` should therefore remain empty while no authenticated administrator is online.
+The server stays on `online-mode=false` so Discord-derived offline profiles can join without a separate Mojang login. Install the bundled `bweeep-client-1.2.0.jar` on both the client and dedicated NeoForge server. A direct client without the bridge cannot complete the required payload negotiation; a joined player is held without OP until the server consumes a matching one-use Supabase ticket. The server grants OP only when that ticket carries the `admin` role and removes OP again on disconnect. `ops.json` should therefore remain empty while no authenticated administrator is online.
 
 ## Windows package
 
-Run `npm run package:win` in WSL to create `release-installer/Bweeep-Setup-<version>.exe`. The installer lets each player choose an installation folder and creates Bweeep shortcuts in the Start menu and on the desktop. Use `npm run package:portable` when a ZIP-style portable folder is needed instead.
+Run `npm run package:win` in WSL to create `release-installer/Bweeep-Setup-<version>.exe`. The installer lets each player choose an installation folder and creates Bweeep shortcuts in the Start menu and on the desktop.
 
 5. After the first owner signs in, promote that Supabase Auth user to the first launcher admin in the SQL Editor:
 
@@ -82,5 +82,3 @@ Packaged releases use `electron-updater` with the public GitHub Releases feed. T
 - `latest.yml`
 
 `v0.1.14` is the bootstrap release for this updater, so users on `v0.1.13` or older must install it once manually. Later releases update automatically. Development builds skip remote update checks.
-
-The old `discord.local.json` and `access-policy.json` files are only legacy prototype artifacts and are no longer read by the launcher.

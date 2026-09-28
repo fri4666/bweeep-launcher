@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { SyncProgress, SyncRequest, SyncResult } from "../shared/types.js";
 import { fetchWithSystemNetwork } from "./system-network.js";
 import { prepareMrpack } from "./mrpack.js";
+import { hashFile } from "./hash.js";
 export { assertManifest } from "./manifest-validation.js";
 
 type ProgressSink = (event: SyncProgress) => void;
@@ -100,13 +100,12 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink):
   return { manifest, instanceDir, downloaded, skipped };
 }
 
+// A missing or unreadable manifest just means every file is checked again.
 async function readManifestVersion(filePath: string): Promise<string | null> {
   try {
     const value: unknown = JSON.parse(await fsp.readFile(filePath, "utf8"));
-    if (value && typeof value === "object" && "version" in value && typeof value.version === "string") return value.version;
-    return null;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return value && typeof value === "object" && "version" in value && typeof value.version === "string" ? value.version : null;
+  } catch {
     return null;
   }
 }
@@ -181,21 +180,9 @@ async function fileMatches(filePath: string, file: { sha256?: string; sha512?: s
   const expected = file.sha256 ?? file.sha512;
   if (!expected) return false;
   try {
-    const algorithm = file.sha256 ? "sha256" : "sha512";
-    return await hashFile(filePath, algorithm) === expected;
+    return await hashFile(filePath, file.sha256 ? "sha256" : "sha512") === expected.toLowerCase();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-}
-
-async function hashFile(filePath: string, algorithm: "sha256" | "sha512"): Promise<string> {
-  const hash = crypto.createHash(algorithm);
-  await new Promise<void>((resolve, reject) => {
-    fs.createReadStream(filePath)
-      .on("data", (chunk) => hash.update(chunk))
-      .on("end", resolve)
-      .on("error", reject);
-  });
-  return hash.digest("hex");
 }

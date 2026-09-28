@@ -74,7 +74,6 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       ];
     },
     defaultInstanceRoot: async () => "C:\\Bweeep\\instances",
-    userContentRoot: async () => "C:\\Bweeep\\instances\\.bweeep-user-content",
     userContentFolders: async () => ({ mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] }),
     chooseUserContentFolders: async (_root, kind) => ({ folders: kind === "mods" ? { mods: ["D:\\Minecraft\\my-mods", "D:\\Minecraft\\more-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] } : { mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders", "D:\\Minecraft\\more-shaders"] }, selected: 1 }),
     removeUserContentFolder: async (_root, kind, folder) => ({ mods: kind === "mods" ? [] : ["D:\\Minecraft\\my-mods"], shaderpacks: kind === "shaderpacks" ? [] : ["D:\\Minecraft\\my-shaders"] }),
@@ -119,14 +118,9 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     chooseInstanceRoot: async () => "D:\\Bweeep",
     openLog: async () => undefined,
     stopGame: async () => { window.__stopRequests += 1; },
-    serverConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
-    saveServerConnection: async (connection) => connection,
-    resetServerConnection: async () => ({ host: "server.fri4666.com", port: 25565 }),
-    launcherChannel: async () => "production",
     setGameProfile: async (gameName) => ({ id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, gameName }),
     checkLauncherUpdate: async () => ({ state: "current" }),
     launcherChannel: async () => "production",
-    openTestLauncher: async () => "opened",
     launcherVersion: async () => "0.1.30",
     gameStatus: async () => gameStatus,
     launchGame: async () => {
@@ -159,7 +153,6 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       return result;
     },
     openPath: async () => "",
-    openExternal: async () => undefined,
     copyText: async (value) => { window.__copiedText = value; },
     readyForInvite: async () => null,
     minimizeWindow: () => undefined,
