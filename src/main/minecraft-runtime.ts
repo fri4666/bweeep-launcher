@@ -20,7 +20,7 @@ import {
   resolveNeoForgedInstallerFile
 } from "@xmcl/installer";
 import type { ModpackManifest, SyncProgress } from "../shared/types.js";
-import { ensureBundledClientMods, verifyRemoteConnectionLock, type BundledClientMod } from "./client-feature-mods.js";
+import { ensureBundledClientMods, removeStaleLockMod, verifyRemoteConnectionLock, type BundledClientMod } from "./client-feature-mods.js";
 import type { LaunchIdentity } from "./launch-identity.js";
 import { describeGameExit, type GameExitResult } from "./game-exit.js";
 import { createGameOutputObserver } from "./game-telemetry.js";
@@ -81,6 +81,9 @@ export async function installAndLaunch(
       ? await runStage(report, "Fabric 설치", () => installFabric(minecraft, manifest, runtime, report))
       : await runStage(report, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", () => installForgeFamily(minecraft, manifest, javaPath, runtime, report));
   await runStage(report, "실행 라이브러리", () => installLaunchLibraries(minecraft, version, runtime, report));
+  if (await removeStaleLockMod(instanceDir, manifest, bundledClientMods)) {
+    report({ kind: "info", stage: "게임 파일", message: "안 쓰는 예전 모드 정리" });
+  }
   if (manifest.loader.kind !== "vanilla") {
     await ensureBundledClientMods(instanceDir, bundledClientMods);
   }
