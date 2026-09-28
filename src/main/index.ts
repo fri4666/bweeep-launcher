@@ -13,6 +13,7 @@ import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseIn
 import { fingerprint } from "./hash.js";
 import { authLogPath, gameErrorDetails, gameLogPath, writeAuthLog, writeGameLog } from "./logs.js";
 import { getLauncherUpdateStatus, installPendingLauncherUpdate, setLauncherUpdateAudience, startLauncherUpdates } from "./launcher-update.js";
+import { isCatalogServer, isSameDocument } from "./navigation.js";
 import { loadPatchNotes } from "./patch-notes.js";
 import { isReleasePageUrl } from "./release-notes.js";
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
@@ -92,10 +93,18 @@ async function loadCatalog(): Promise<ServerPreset[]> {
   return presets;
 }
 
+const PACK_ID = /^[a-z0-9][a-z0-9-]{1,62}$/;
+
+function requireLaunchRequest(value: unknown): { packId: string; instanceDir: string; withoutPersonalMods: boolean } {
+  const request = value as { packId?: unknown; instanceDir?: unknown; withoutPersonalMods?: unknown } | null;
+  if (typeof request?.packId !== "string" || !PACK_ID.test(request.packId)) throw new Error("서버 정보가 올바르지 않습니다.");
+  return { packId: request.packId, instanceDir: requireInstanceRoot(request.instanceDir), withoutPersonalMods: request.withoutPersonalMods === true };
+}
+
 async function requireModTarget(value: unknown): Promise<ModTarget> {
   const target = value as Partial<ModTarget> | null;
   const packId = target?.packId;
-  if (typeof packId !== "string" || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(packId)) throw new Error("서버 정보가 올바르지 않습니다.");
+  if (typeof packId !== "string" || !PACK_ID.test(packId)) throw new Error("서버 정보가 올바르지 않습니다.");
   if (!catalogPresets.has(packId)) await loadCatalog();
   const preset = catalogPresets.get(packId);
   if (!preset) throw new Error("서버 정보를 찾지 못했습니다. 서버 목록을 새로 불러와 주세요.");
@@ -162,6 +171,8 @@ async function pickFolders(event: IpcMainInvokeEvent, options: OpenDialogOptions
 // Windows has no default app for .log files, so openPath shows the
 // "choose an app" prompt there. Notepad ships with Windows and reads them.
 async function openLogFile(file: string): Promise<boolean> {
+  // The crash report path comes from the game's own output, so only text files are ever opened, never run.
+  if (![".log", ".txt"].includes(path.extname(file).toLowerCase())) return false;
   if (process.platform !== "win32" || path.extname(file).toLowerCase() !== ".log") {
     return !(await shell.openPath(file));
   }
@@ -211,9 +222,16 @@ function queueDeepLink(url: string, source: "argv" | "second-instance"): void {
       void writeAuthLog("callback.duplicate.ignored", { callbackId, source });
       return;
     }
+    // Any web page can open a bwe-e-ep:// link; one that is not even a URL must not crash the launcher at startup.
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      void writeAuthLog("callback.malformed.ignored", { callbackId, source });
+      return;
+    }
     queuedAuthCallbacks.add(callbackId);
     pendingAuthUrls.push(url);
-    const parsedUrl = new URL(url);
     const flowId = parsedUrl.searchParams.get("sb_flow_id");
     const state = parsedUrl.searchParams.get("state");
     void writeAuthLog("callback.queued", {
@@ -337,11 +355,26 @@ async function createWindow(): Promise<BrowserWindow> {
   return win;
 }
 
+// The preload bridge belongs to the launcher's own page only: no other page,
+// popup or embedded view may load in its place, and the page asks for no
+// browser permissions (camera, notifications, …).
+app.on("web-contents-created", (_event, contents) => {
+  contents.setWindowOpenHandler(() => ({ action: "deny" }));
+  contents.on("will-navigate", (navigation, url) => {
+    if (!isSameDocument(contents.getURL(), url)) navigation.preventDefault();
+  });
+  contents.on("will-attach-webview", (attach) => attach.preventDefault());
+});
+
 app.whenReady().then(async () => {
+  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   await session.defaultSession.setProxy({ mode: "system" });
   setModrinthUserAgent(app.getVersion());
   ipcMain.handle("catalog:list", () => loadCatalog());
-  ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
+  ipcMain.handle("server:status", (_event, server: unknown) => {
+    if (!isCatalogServer(server, [...catalogPresets.values()].map((preset) => preset.server))) throw new Error("서버 목록에 없는 주소입니다.");
+    return checkServer({ host: server.host, port: server.port });
+  });
   ipcMain.handle("paths:defaultInstanceRoot", () => defaultInstanceRoot());
   ipcMain.handle("content:folders", (_event, instanceRoot: unknown) => getUserContentFolders(requireInstanceRoot(instanceRoot)));
   ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: unknown) => {
@@ -369,7 +402,10 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("launcher:channel", () => getLauncherChannel());
   ipcMain.handle("launcher:version", () => app.getVersion());
-  ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
+  ipcMain.handle("clipboard:writeText", (_event, value: unknown) => {
+    if (typeof value !== "string" || value.length > 200_000) throw new Error("복사할 내용이 올바르지 않습니다.");
+    clipboard.writeText(value);
+  });
   ipcMain.handle("account:login", () => auth.startLogin());
   ipcMain.handle("account:cancelLogin", () => auth.cancelPendingLogin("user_cancelled"));
   ipcMain.handle("account:logout", async () => {
@@ -509,7 +545,8 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.minecraft.stop-requested", { pid: gameStatus.pid });
     process.kill(gameStatus.pid);
   });
-  ipcMain.handle("game:launch", async (event, request: { packId: string; instanceDir: string; withoutPersonalMods?: boolean }) => {
+  ipcMain.handle("game:launch", async (event, raw: unknown) => {
+    const request = requireLaunchRequest(raw);
     if (gameStatus.state !== "idle") {
       throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
     }

@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: 소스 내려받기
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: 초안 게시
         env:

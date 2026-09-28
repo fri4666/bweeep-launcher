@@ -16,8 +16,12 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
+      # 쓰기 토큰을 .git/config에 남기지 않습니다. npm ci가 돌리는 패키지 스크립트가
+      # 읽어 갈 수 있기 때문이며, 게시는 GH_TOKEN을 받은 gh 명령만 합니다.
       - name: 소스 내려받기
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Node 설치
         uses: actions/setup-node@v4
