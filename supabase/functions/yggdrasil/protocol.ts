@@ -55,11 +55,26 @@ export function toSignedUuid(unsigned: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** The function is served below /yggdrasil; everything after it is the API path. */
-export function parseRoute(method: string, pathname: string): Route {
+/**
+ * Who a server built on this API root lets in. A test server points its
+ * agent at /yggdrasil/testers, so only testers and admins pass hasJoined.
+ */
+export type Audience = "members" | "testers";
+
+function apiSegments(pathname: string): { audience: Audience; segments: string[] } {
   const segments = pathname.split("/").filter(Boolean);
   const base = segments.indexOf("yggdrasil");
-  const path = (base >= 0 ? segments.slice(base + 1) : segments).join("/");
+  const rest = base >= 0 ? segments.slice(base + 1) : segments;
+  return rest[0] === "testers" ? { audience: "testers", segments: rest.slice(1) } : { audience: "members", segments: rest };
+}
+
+export function routeAudience(pathname: string): Audience {
+  return apiSegments(pathname).audience;
+}
+
+/** The function is served below /yggdrasil (or /yggdrasil/testers); everything after it is the API path. */
+export function parseRoute(method: string, pathname: string): Route {
+  const path = apiSegments(pathname).segments.join("/");
   if (method === "GET" && path === "") return { kind: "metadata" };
   if (method === "POST" && path === "sessionserver/session/minecraft/join") return { kind: "join" };
   if (method === "GET" && path === "sessionserver/session/minecraft/hasJoined") return { kind: "hasJoined" };

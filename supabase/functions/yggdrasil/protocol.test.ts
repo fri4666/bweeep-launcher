@@ -4,6 +4,7 @@ import {
   importSigningKey,
   importVerifyKey,
   parseRoute,
+  routeAudience,
   serializeProfile,
   texturesValue,
   toSignedUuid,
@@ -34,6 +35,16 @@ Deno.test("routes authlib-injector paths below the function name", () => {
   assert(byName.kind === "profileByName" && byName.name === "Steve_01", "single lookup");
   assert(parseRoute("GET", "/yggdrasil/sessionserver/session/minecraft/join").kind === "notFound", "wrong method");
   assert(parseRoute("GET", "/yggdrasil/authserver/authenticate").kind === "notFound", "password login is not offered");
+});
+
+Deno.test("a /testers root serves the same API for test servers", () => {
+  assert(parseRoute("GET", "/functions/v1/yggdrasil/testers/").kind === "metadata", "tester root is metadata");
+  assert(parseRoute("GET", "/yggdrasil/testers/sessionserver/session/minecraft/hasJoined").kind === "hasJoined", "tester hasJoined");
+  assert(routeAudience("/functions/v1/yggdrasil/testers/sessionserver/session/minecraft/hasJoined") === "testers", "tester audience");
+  assert(routeAudience("/functions/v1/yggdrasil/sessionserver/session/minecraft/hasJoined") === "members", "member audience");
+  // A player named "testers" is still looked up by name on the member root.
+  const byName = parseRoute("GET", "/yggdrasil/api/users/profiles/minecraft/testers");
+  assert(byName.kind === "profileByName" && byName.name === "testers", "name lookup");
 });
 
 Deno.test("converts between signed and unsigned UUIDs", () => {

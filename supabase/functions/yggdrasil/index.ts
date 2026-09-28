@@ -9,6 +9,7 @@ import {
   MAX_BATCH_NAMES,
   parseRoute,
   type ProfileRow,
+  routeAudience,
   serializeProfile,
   tokenHash,
   toSignedUuid,
@@ -90,7 +91,8 @@ async function handleRequest(request: Request): Promise<Response> {
       const { data, error } = await admin.rpc("launcher_yggdrasil_has_joined", {
         p_game_name: username,
         p_server_id: serverId,
-        p_ip: null
+        p_ip: null,
+        p_testers_only: routeAudience(url.pathname) === "testers"
       });
       if (error) {
         console.error("yggdrasil hasJoined failed", error);
