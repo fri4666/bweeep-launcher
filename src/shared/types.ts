@@ -199,14 +199,23 @@ export interface GameStatus {
 
 export type LogTarget = "game" | "launcher";
 
-/** Patch note groups, in the order players read them. "other" is a plain list or an unknown heading. */
-export type ReleaseNoteSectionKind = "new" | "changed" | "fixed" | "known" | "other";
+/**
+ * Patch note groups, in the order players read them. "upcoming" is the
+ * next-patch preview (patch notes tab only). "other" is a plain list or an
+ * unknown heading.
+ */
+export type ReleaseNoteSectionKind = "new" | "changed" | "fixed" | "known" | "upcoming" | "other";
 
 export interface ReleaseNoteSection {
   kind: ReleaseNoteSectionKind;
   /** Heading as written; null for a list with no headings (0.1.35 and older). */
   title: string | null;
   items: string[];
+  /**
+   * Small notes under each item ("참고: …"), from indented bullets; details[i]
+   * belongs to items[i]. Missing in notes cached by older launchers.
+   */
+  details?: string[][];
 }
 
 /** One version's notes, from build/release-notes.txt or the same text on its GitHub release. */

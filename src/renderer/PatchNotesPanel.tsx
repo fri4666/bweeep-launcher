@@ -18,7 +18,10 @@ const sourceNotices: Record<PatchNotes["source"], string> = {
   bundled: "오프라인 · 이 버전 내용만 보여요"
 };
 
-/** Grouped bullets (새 기능, 바뀐 점, 고친 문제, 알려진 문제); a list with no headings stays one list. */
+/**
+ * Grouped bullets (새 기능, 바뀐 점, 고친 문제, 알려진 문제, 다음 패치 예고), each
+ * with its small "참고:" notes; a list with no headings stays one list.
+ */
 export function ReleaseNoteSections({ sections }: { sections: ReleaseNoteSection[] }) {
   return (
     <div className="releaseSections">
@@ -26,7 +29,19 @@ export function ReleaseNoteSections({ sections }: { sections: ReleaseNoteSection
         <section className={`releaseSection is-${section.kind}`} key={`${section.kind}-${index}`}>
           {section.title && <h4>{section.title}</h4>}
           <ul className="whatsNewList">
-            {section.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}
+            {section.items.map((item, itemIndex) => {
+              const notes = section.details?.[itemIndex] ?? [];
+              return (
+                <li key={itemIndex}>
+                  {item}
+                  {notes.length > 0 && (
+                    <ul className="releaseSubNotes">
+                      {notes.map((note, noteIndex) => <li key={noteIndex}>{note}</li>)}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </section>
       ))}

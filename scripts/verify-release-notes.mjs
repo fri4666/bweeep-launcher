@@ -70,10 +70,55 @@ assert.deepEqual(prose.sections, []);
 assert.equal(prose.intro, null);
 assert.equal(parseReleaseNotesText("가".repeat(400)).summary.length, 240);
 
+// Indented "참고:" bullets belong to the item above; the next-patch preview is its own group.
+const withNotes = [
+  "v0.1.36",
+  "요약: 요약",
+  "인사",
+  "## 바뀐 점",
+  "- 첫 항목",
+  "  - 참고: 첫 메모",
+  "\t- 걱정하지 마세요. 둘째 메모",
+  "- 둘째 항목",
+  "## 다음 패치 예고",
+  "- 준비 중",
+  "맺음말"
+].join("\n");
+const noted = parseReleaseNotes(withNotes, "0.1.36");
+assert.deepEqual(noted.sections[0].items, ["첫 항목", "둘째 항목"], "sub-notes are not items of their own");
+assert.deepEqual(noted.sections[0].details, [["참고: 첫 메모", "걱정하지 마세요. 둘째 메모"], []]);
+assert.equal(noted.sections[1].kind, "upcoming");
+assert.equal(noted.sections[1].details, undefined, "a group without notes carries no details");
+assert.equal(noted.outro, "맺음말");
+const notedShort = shortenReleaseNotes(noted, 6);
+assert.deepEqual(notedShort.sections.map((section) => section.kind), ["changed"], "the dialog leaves out the next-patch preview");
+assert.equal(notedShort.sections[0].details, undefined, "the dialog leaves out sub-notes");
+// A stray indented bullet before any item is still an item.
+assert.deepEqual(parseReleaseNotesText("## 새 기능\n  - 들여 쓴 첫 항목").sections[0].items, ["들여 쓴 첫 항목"]);
+
 // The file shipped with this build parses for the package version.
 const packageVersion = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-const bundled = parseReleaseNotes(fs.readFileSync(new URL("../build/release-notes.txt", import.meta.url), "utf8"), packageVersion);
+const bundledText = fs.readFileSync(new URL("../build/release-notes.txt", import.meta.url), "utf8");
+const bundled = parseReleaseNotes(bundledText, packageVersion);
 assert.ok(bundled && bundled.sections.length > 0, "build/release-notes.txt must list notes for the package version");
+assert.ok(bundled.summary && bundled.intro && bundled.outro, "the notes have a summary, a greeting and a sign-off");
+assert.ok(bundled.intro.includes("월급루팡 클로드"), "the greeting names the author persona");
+assert.ok(bundled.sections.some((section) => section.details?.some((notes) => notes.length > 0)), "sub-notes are parsed from the shipped notes");
+assert.equal(bundled.sections.at(-1).kind, "upcoming", "the next-patch preview comes last");
+assert.ok(bundled.sections.at(-1).items.length <= 3, "the next-patch preview is a short teaser, not a feature list");
+// Patch notes are for players: nothing about security or operations internals.
+assert.doesNotMatch(bundledText, /메모리|RAM|토큰|관리자 탭|오프라인 실행|장애|접속 실패 기록|로그 수집/, "the notes mention internal or sensitive details");
+for (const section of shortenReleaseNotes(bundled, 6).sections) {
+  assert.notEqual(section.kind, "upcoming");
+  assert.equal(section.details, undefined);
+}
+// GitHub renders the file as the release body: sub-notes must sit under a list item as a nested list.
+const lines = bundledText.split(/\r?\n/);
+for (const [index, line] of lines.entries()) {
+  if (!/^\s+[-*]\s/.test(line)) continue;
+  assert.match(line, /^ {2}- /, `sub-note on line ${index + 1} must be indented by two spaces`);
+  assert.match(lines[index - 1], /^(?: {2})?- /, `sub-note on line ${index + 1} must follow a list item`);
+}
 
 // GitHub releases: newest first, no drafts, betas only for testers, one entry per version.
 const release = (tag, extra = {}) => ({
@@ -125,4 +170,5 @@ for (const url of [
 ]) assert.equal(isReleasePageUrl(url), false, String(url));
 
 console.log("release-notes-format=passed");
+console.log("release-notes-sub-notes-and-preview=passed");
 console.log("patch-notes-release-selection=passed");

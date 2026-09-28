@@ -458,9 +458,8 @@ function App() {
   const progressDetail = gameRunning && joinedServer
     ? selected?.name ?? ""
     : stripStage(displayProgress?.stage, displayProgress?.message);
-  const savedGameName = user?.gameName ?? "";
   // With the Bweeep login server the UUID belongs to the account, so renaming keeps the character.
-  const vanillaServer = selected ? isVanillaServer(selected) && selected.gameAuth !== "yggdrasil" : false;
+  const savedGameName = user?.gameName ?? "";
   const serverState = catalogState === "error"
     ? "catalogError"
     : catalogState === "loading" || !connection
@@ -628,15 +627,6 @@ function App() {
 
   function requestSaveGameProfile() {
     if (!gameNameValid || !gameNameChanged) return;
-    if (savedGameName && vanillaServer) {
-      setConfirmRequest({
-        title: "인게임 이름을 바꿀까요?",
-        body: `바닐라 서버는 새 이름이면 새 캐릭터로 시작해요. ${savedGameName}(으)로 되돌리면 지금 캐릭터로 돌아와요.`,
-        confirmLabel: "이름 바꾸기",
-        onConfirm: () => void saveGameProfile()
-      });
-      return;
-    }
     void saveGameProfile();
   }
 
@@ -1221,8 +1211,8 @@ function App() {
                   <button className="primaryButton" type="submit" disabled={!gameNameValid || !gameNameChanged}>저장</button>
                 </form>
                 {gameNameHint && gameNameChanged && <p className="fieldError">{gameNameHint}</p>}
-                {vanillaServer && savedGameName && gameNameChanged && gameNameValid && (
-                  <p className="fieldWarning">바닐라 서버는 새 이름이면 새 캐릭터로 시작해요.</p>
+                {savedGameName && gameNameChanged && gameNameValid && (
+                  <p className="fieldNote">{savedGameName}은(는) 하루 동안 내 이름으로 남아요.</p>
                 )}
               </section>
               <section className="panel">
@@ -1307,10 +1297,6 @@ function loaderLabel(kind: LoaderKind | ServerSoftwareKind): string {
   return labels[kind] ?? kind;
 }
 
-function isVanillaServer(server: ServerPreset): boolean {
-  return (server.serverLoader?.kind ?? server.loader.kind) === "vanilla";
-}
-
 function serverKindLabel(server: ServerPreset): string {
   const kind = server.serverLoader?.kind ?? server.loader.kind;
   return kind === "vanilla" ? "바닐라 서버" : `${loaderLabel(kind)} 서버`;
@@ -1339,11 +1325,24 @@ function UpdateIndicator({ status }: { status: LauncherUpdateStatus | null }) {
     : state === "ready" ? "업데이트 준비됨"
     : "다시 시작하는 중";
   const version = status?.update?.version ? ` v${status.update.version}` : "";
+  // A ready update installs by itself when the game is closed normally; after a crash it waits for this click.
+  if (state === "ready") {
+    return (
+      <button
+        type="button"
+        className="updateIndicator is-ready"
+        aria-label={label}
+        title={`${label}${version} · 눌러서 다시 시작`}
+        onClick={() => void window.bweeep.installLauncherUpdate()}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
+      </button>
+    );
+  }
   return (
     <div className={`updateIndicator is-${state}`} role="status" aria-label={label} title={`${label}${version}`}>
       {state === "checking" ? <span className="spinner" aria-hidden="true" />
         : downloading ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
-        : state === "ready" ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
         : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg>}
       {downloading && <span>{status?.percent ?? 0}%</span>}
     </div>

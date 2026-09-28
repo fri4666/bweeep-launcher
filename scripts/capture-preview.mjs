@@ -212,23 +212,25 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     openLog: async () => undefined,
     stopGame: async () => { window.__stopRequests += 1; },
     setGameProfile: async (gameName) => {
-      if (gameName === "noah_sky1012") throw new Error(`Error invoking remote method 'account:setGameProfile': Error: '${gameName}'은(는) 다른 멤버가 쓰고 있거나 예전에 쓴 이름이라 쓸 수 없습니다.`);
+      if (gameName === "noah_sky1012") throw new Error(`Error invoking remote method 'account:setGameProfile': Error: '${gameName}'은(는) 다른 멤버가 쓰고 있거나 하루 안에 쓴 이름이에요.`);
       return { id: "1", username: "bweeep", globalName: "붸에엡", avatarUrl: null, gameName };
     },
     checkLauncherUpdate: async () => ({ state: "current" }),
+    installLauncherUpdate: async () => { window.__updateInstallRequests = (window.__updateInstallRequests ?? 0) + 1; },
     launcherChannel: async () => previewTestChannelDenied ? "test" : "production",
     launcherVersion: async () => "0.1.30",
     gameStatus: async () => gameStatus,
+    // Shaped like the main process's shortened notes: summary and top-level items only.
     whatsNew: async () => previewWhatsNew && !window.__whatsNewSeen ? {
-      version: "0.1.35",
-      summary: "스킨 탭이 생기고, 이름과 접속 서버를 더 단단히 지켜요.",
+      version: "0.1.36",
+      summary: "패치노트 탭, 테스터 먼저 받기, 모드팩 이어받기, 모드 설정 유지, 이름 규칙 완화까지!",
       intro: null,
       outro: null,
       sections: [
-        { kind: "new", title: "새 기능", items: ["스킨 탭이 생겼어요. 스킨을 3D로 돌려 보고 바로 적용할 수 있어요."] },
+        { kind: "new", title: "새 기능", items: ["왼쪽 메뉴에 패치노트가 생겼어요."] },
         { kind: "changed", title: "바뀐 점", items: [
-          "다른 멤버가 지금 쓰거나 예전에 쓴 이름은 쓸 수 없어요. 캐릭터와 OP가 이름을 따라 넘어가지 않아요.",
-          "게임은 고른 서버에만 접속돼요."
+          "모드팩 다운로드가 빨라졌어요. 끊겨도 받던 데부터 이어받습니다.",
+          "이름 규칙이 느슨해졌어요. 게임에서 실제로 쓴 이름만, 바꾼 뒤 하루 동안 내 것으로 남아요."
         ] }
       ]
     } : null,
@@ -238,12 +240,18 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       const current = {
         version: "0.1.30",
         summary: "패치노트 탭이 생겼고, 테스터는 새 버전을 먼저 받아요.",
-        intro: "안녕하세요, 붸에엡 런처 개발자입니다!",
-        outro: "다음 패치에서 뵙겠습니다!",
+        intro: "여러분 안녕하세요?! 월급루팡 클로드입니다.",
+        outro: "루팡은 이만 퇴근합니다!",
         sections: [
-          { kind: "new", title: "새 기능", items: ["왼쪽 메뉴의 패치노트에서 버전마다 바뀐 점을 볼 수 있어요.", "테스터는 일반 런처에서 테스트 버전을 먼저 받아요."] },
+          {
+            kind: "new",
+            title: "새 기능",
+            items: ["왼쪽 메뉴의 패치노트에서 버전마다 바뀐 점을 볼 수 있어요.", "테스터는 일반 런처에서 테스트 버전을 먼저 받아요."],
+            details: [[], ["참고: 이번 한 번만 테스트 버전을 직접 설치해야 해요."]]
+          },
           { kind: "fixed", title: "고친 문제", items: ["필요 없어진 붸에엡 전용 모드를 알아서 정리해요."] },
-          { kind: "known", title: "알려진 문제", items: ["따로 설치한 '붸에엡 테스트' 런처는 이제 업데이트되지 않아요."] }
+          { kind: "known", title: "알려진 문제", items: ["따로 설치한 '붸에엡 테스트' 런처는 이제 업데이트되지 않아요."] },
+          { kind: "upcoming", title: "다음 패치 예고", items: ["여러 가지를 한꺼번에 준비하고 있어요. 뭔지는 아직 비밀입니다."] }
         ],
         prerelease: false,
         publishedAt: previewPatchNotesOffline ? null : "2026-09-28T12:31:39Z",
@@ -356,11 +364,12 @@ if (whatsNewMode) {
   const dialog = page.getByRole("dialog", { name: "업데이트 소식" });
   await dialog.waitFor({ timeout: 10000 });
   const text = await dialog.innerText();
-  if (!text.includes("v0.1.35") || !text.includes("예전에 쓴 이름은 쓸 수 없어요")) throw new Error(`what's new dialog is missing the notes: ${text}`);
-  if (!text.includes("이름과 접속 서버를 더 단단히 지켜요") || !text.includes("새 기능") || !text.includes("바뀐 점")) throw new Error(`what's new dialog is missing the summary or groups: ${text}`);
+  if (!text.includes("v0.1.36") || !text.includes("바꾼 뒤 하루 동안 내 것으로 남아요")) throw new Error(`what's new dialog is missing the notes: ${text}`);
+  if (!text.includes("이름 규칙 완화까지") || !text.includes("새 기능") || !text.includes("바뀐 점")) throw new Error(`what's new dialog is missing the summary or groups: ${text}`);
+  if (await dialog.locator(".releaseSubNotes, .releaseSection.is-upcoming").count()) throw new Error("what's new dialog shows sub-notes or the next-patch preview");
   await page.screenshot({ path: "previews/bweeep-launcher-whats-new.png" });
   await dialog.getByRole("button", { name: "확인" }).click();
-  await page.waitForFunction(() => window.__whatsNewSeen === "0.1.35");
+  await page.waitForFunction(() => window.__whatsNewSeen === "0.1.36");
   if (await page.getByRole("dialog", { name: "업데이트 소식" }).count()) throw new Error("what's new dialog did not close");
   await page.locator(".launchButton").waitFor();
   console.log(JSON.stringify({ interactionChecks: ["whats-new-once-after-update"], errors }));
@@ -441,6 +450,28 @@ if (catalogUnavailable) {
     throw new Error("server loader metadata was not displayed separately from the client loader");
   }
   interactionChecks.push("server-loader-visible");
+  // The smallest window (920x620): the launch button must not cover the server chips.
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(150);
+  const narrowLayout = await page.evaluate(() => {
+    const box = (element) => element.getBoundingClientRect();
+    const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const dock = box(document.querySelector(".actionDock"));
+    const copy = document.querySelector(".heroCopy");
+    const chips = [...document.querySelectorAll(".chips span")].map(box);
+    return {
+      chipOverlap: chips.some((chip) => overlaps(chip, dock)),
+      copyOverlap: overlaps(box(copy), dock),
+      chips: chips.length,
+      horizontalScroll: document.documentElement.scrollWidth > window.innerWidth
+    };
+  });
+  await page.screenshot({ path: "previews/bweeep-launcher-narrow.png" });
+  if (narrowLayout.chips === 0 || narrowLayout.chipOverlap || narrowLayout.copyOverlap || narrowLayout.horizontalScroll) {
+    throw new Error(`narrow window layout overlaps: ${JSON.stringify(narrowLayout)}`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  interactionChecks.push("narrow-window-no-overlap");
   const serverFact = await page.locator(".serverPill").innerText();
   if (!serverFact.includes("방금 전") || /\d{1,2}시\s*\d{1,2}분|\d{1,2}:\d{2}/.test(serverFact)) {
     throw new Error(`server checked time is not relative: ${serverFact}`);
@@ -461,6 +492,11 @@ if (catalogUnavailable) {
     }
   }
   if ((await page.locator(".topbar").innerText()).includes("업데이트")) throw new Error("update words are written on screen");
+  // After a crash the update waits; a click on the ready icon restarts into it.
+  await page.evaluate(() => window.__emitUpdate({ state: "ready", update: { version: "0.1.31", notes: [] } }));
+  await page.locator("button.updateIndicator.is-ready").click();
+  await page.waitForFunction(() => window.__updateInstallRequests === 1);
+  interactionChecks.push("update-ready-click-installs");
   await page.evaluate(() => window.__emitUpdate({ state: "current" }));
   await indicator.waitFor({ state: "detached" });
   interactionChecks.push("update-icon-and-percent-only");
@@ -565,10 +601,19 @@ if (catalogUnavailable) {
   if (!(await patchNotes.locator(".patchVersion").nth(1).innerText()).includes("지금 버전")) throw new Error("the running version is not marked");
   await patchNotes.locator(".patchVersion").nth(1).click();
   const detail = await patchNotes.locator(".patchDetail").innerText();
-  for (const expected of ["v0.1.30", "패치노트 탭이 생겼고", "안녕하세요, 붸에엡 런처 개발자입니다!", "새 기능", "고친 문제", "알려진 문제", "다음 패치에서 뵙겠습니다!", "2026년 9월 28일"]) {
+  for (const expected of ["v0.1.30", "패치노트 탭이 생겼고", "월급루팡 클로드입니다", "새 기능", "고친 문제", "알려진 문제", "다음 패치 예고", "루팡은 이만 퇴근합니다!", "2026년 9월 28일"]) {
     if (!detail.includes(expected)) throw new Error(`patch note detail is missing ${expected}: ${detail}`);
   }
-  if (await patchNotes.locator(".releaseSection h4").count() !== 3) throw new Error("patch note groups are not shown as headings");
+  if (await patchNotes.locator(".releaseSection h4").count() !== 4) throw new Error("patch note groups are not shown as headings");
+  const subNote = patchNotes.locator(".releaseSection.is-new > .whatsNewList > li").nth(1).locator(".releaseSubNotes li");
+  if (await subNote.count() !== 1 || !(await subNote.innerText()).startsWith("참고:")) throw new Error("the 참고 note is not shown under its item");
+  const [itemSize, noteSize] = await Promise.all([
+    patchNotes.locator(".releaseSection.is-new > .whatsNewList > li").nth(1).evaluate((element) => parseFloat(getComputedStyle(element).fontSize)),
+    subNote.evaluate((element) => parseFloat(getComputedStyle(element).fontSize))
+  ]);
+  if (!(noteSize < itemSize)) throw new Error("the sub-note is not smaller than its item");
+  if (await patchNotes.locator(".releaseSection.is-upcoming li").count() !== 1) throw new Error("the next-patch preview is missing from the patch notes");
+  interactionChecks.push("patch-notes-sub-notes-and-preview");
   await page.screenshot({ path: "previews/bweeep-launcher-patch-notes.png" });
   await patchNotes.getByRole("button", { name: "자세히 보기" }).click();
   await page.waitForFunction(() => window.__openedReleasePage === "https://github.com/fri4666/bweeep-launcher/releases/tag/v0.1.30");
@@ -584,11 +629,19 @@ if (catalogUnavailable) {
   if (await page.locator(".contentFolderItem").count() !== 2) throw new Error("saved personal content folders are missing");
   await page.locator(".profileModal input[maxlength='16']").fill("noah_sky1012");
   await page.getByRole("button", { name: "저장", exact: true }).click();
-  await page.getByText("다른 멤버가 쓰고 있거나 예전에 쓴 이름이라 쓸 수 없습니다", { exact: false }).waitFor();
+  await page.getByText("다른 멤버가 쓰고 있거나 하루 안에 쓴 이름이에요", { exact: false }).waitFor();
   interactionChecks.push("taken-name-refused");
   await page.locator(".profileModal input[maxlength='16']").fill("seos_py_new");
   await page.getByRole("button", { name: "저장", exact: true }).click();
   await page.getByText("이름 바뀜 · 다음 실행부터", { exact: true }).waitFor();
+  // Changing a saved name says, in one line, that the old one stays yours for a day.
+  await page.locator(".profileModal input[maxlength='16']").fill("seos_py_next");
+  const holdNote = await page.locator(".profileModal .fieldNote").innerText();
+  if (holdNote !== "seos_py_new은(는) 하루 동안 내 이름으로 남아요.") throw new Error(`name hold note is wrong: ${holdNote}`);
+  if (await page.locator(".profileModal .fieldWarning").count()) throw new Error("the old vanilla rename warning is still shown");
+  await page.locator(".profileModal input[maxlength='16']").fill("seos_py_new");
+  if (await page.locator(".profileModal .fieldNote").count()) throw new Error("the hold note stays when the name is unchanged");
+  interactionChecks.push("name-hold-note");
   await page.getByRole("button", { name: "모드 폴더 선택" }).click();
   await page.getByText("모드 폴더 추가됨", { exact: true }).waitFor();
   await page.screenshot({ path: "previews/bweeep-launcher-profile-preview.png" });
