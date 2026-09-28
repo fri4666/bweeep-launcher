@@ -14,6 +14,7 @@ import {
   resolveAssetMetadataInstallFiles,
   resolveAssetObjectInstallFiles,
   resolveJava,
+  resolveJavaWithDiagnostic,
   resolveLibraryInstallFiles,
   resolveMinecraftJarInstallFile,
   resolveMinecraftVersionJsonInstallFile,
@@ -25,6 +26,7 @@ import type { LaunchIdentity } from "./launch-identity.js";
 import { describeGameExit, type GameExitResult } from "./game-exit.js";
 import { createGameOutputObserver } from "./game-telemetry.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
+import { isUsableSystemJava } from "./system-java.js";
 
 type ProgressSink = (event: SyncProgress) => void;
 type InstallRuntime = ReturnType<typeof createDefaultNodeInstallRuntime>;
@@ -201,12 +203,30 @@ async function resolveRuntime(
   const bundled = process.platform === "win32"
     ? path.join(instanceDir, ".bweeep", "runtime", "bin", "javaw.exe")
     : path.join(instanceDir, ".bweeep", "runtime", "bin", "java");
-  const candidates = [bundled, ...(await getPotentialJavaLocations())];
-  for (const candidate of candidates) {
-    const java = await resolveJava(candidate);
-    if (java && java.majorVersion === requiredJava.majorVersion) return java.path;
+  // The Mojang runtime for the pack's Java component comes first; a Java that
+  // happens to be on the PC may be 32-bit or a build the game does not like.
+  const installed = await resolveJava(bundled);
+  if (installed && installed.majorVersion === requiredJava.majorVersion) return installed.path;
+  try {
+    return await installMojangRuntime(bundled, requiredJava, runtime, progress);
+  } catch (error) {
+    for (const candidate of await getPotentialJavaLocations()) {
+      const probe = await resolveJavaWithDiagnostic(candidate);
+      if (isUsableSystemJava(probe, requiredJava.majorVersion)) {
+        progress({ kind: "info", stage: "Java 런타임", message: `PC의 Java ${requiredJava.majorVersion} 사용` });
+        return probe.java!.path;
+      }
+    }
+    throw error;
   }
+}
 
+async function installMojangRuntime(
+  bundled: string,
+  requiredJava: ModpackManifest["java"],
+  runtime: InstallRuntime,
+  progress: ProgressSink
+): Promise<string> {
   progress({ kind: "info", stage: "Java 런타임", message: `Java ${requiredJava.majorVersion} 받는 중` });
   const platform = process.platform === "win32"
     ? process.arch === "arm64" ? "windows-arm64" : "windows-x64"

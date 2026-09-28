@@ -59,6 +59,7 @@ const api = {
   setGameProfile: (gameName: string) => ipcRenderer.invoke("account:setGameProfile", gameName) as Promise<LauncherUser>,
   readyForInvite: () => ipcRenderer.invoke("invite:ready") as Promise<string | null>,
   checkLauncherUpdate: () => ipcRenderer.invoke("launcher:checkUpdate") as Promise<LauncherUpdateStatus>,
+  installLauncherUpdate: () => ipcRenderer.invoke("launcher:installUpdate") as Promise<void>,
   launcherChannel: () => ipcRenderer.invoke("launcher:channel") as Promise<"production" | "test">,
   launcherVersion: () => ipcRenderer.invoke("launcher:version") as Promise<string>,
   launchGame: (request: { packId: string; instanceDir: string; withoutPersonalMods?: boolean }) => ipcRenderer.invoke("game:launch", request) as Promise<LaunchResult>,

@@ -14,7 +14,8 @@ let status: LauncherUpdateStatus = { state: "checking" };
 let started = false;
 let installScheduled = false;
 let publishStatus: (next: LauncherUpdateStatus) => void = () => undefined;
-let canInstallNow: () => boolean = () => true;
+/** Whether the launcher may restart into the update now; `playerAsked` is a click on the update icon. */
+let canInstallNow: (playerAsked: boolean) => boolean = () => true;
 /** The separate "Bweeep Test" app keeps its own test channel. */
 let testApp = false;
 /** Signed-in tester or admin: gets -beta.N builds in the normal launcher. */
@@ -28,7 +29,7 @@ export function getLauncherUpdateStatus(): LauncherUpdateStatus {
 
 export function startLauncherUpdates(
   publish: (next: LauncherUpdateStatus) => void,
-  canInstall: () => boolean
+  canInstall: (playerAsked: boolean) => boolean
 ): void {
   publishStatus = publish;
   canInstallNow = canInstall;
@@ -111,8 +112,9 @@ export function setLauncherUpdateAudience(tester: boolean): void {
   void checkForUpdates();
 }
 
-export function installPendingLauncherUpdate(): void {
-  if (status.state !== "ready" || installScheduled || !canInstallNow()) return;
+export function installPendingLauncherUpdate(options: { playerAsked?: boolean } = {}): void {
+  const playerAsked = options.playerAsked === true;
+  if (status.state !== "ready" || installScheduled || !canInstallNow(playerAsked)) return;
   const update = status.update;
   installScheduled = true;
   setStatus({ state: "installing", update });
@@ -122,6 +124,12 @@ export function installPendingLauncherUpdate(): void {
       installScheduled = false;
       autoUpdater.autoInstallOnAppQuit = false;
       setStatus({ state: "current" });
+      return;
+    }
+    // A game may have started in the meantime; the restart waits for it to end.
+    if (!canInstallNow(playerAsked)) {
+      installScheduled = false;
+      setStatus({ state: "ready", update });
       return;
     }
     try {

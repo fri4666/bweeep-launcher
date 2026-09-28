@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { toServerPreset } from "./catalog.js";
+import { presetsFromManifests, requireBweeepAccounts } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
@@ -16,7 +16,6 @@ import { getLauncherUpdateStatus, installPendingLauncherUpdate, setLauncherUpdat
 import { isCatalogServer, isSameDocument } from "./navigation.js";
 import { loadPatchNotes } from "./patch-notes.js";
 import { isReleasePageUrl } from "./release-notes.js";
-import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
@@ -65,6 +64,15 @@ function setGameStatus(status: GameStatus): void {
   if (status.state === "idle") installPendingLauncherUpdate();
 }
 
+/**
+ * A downloaded launcher update restarts the launcher only while no game is
+ * starting or running. After a crash the player is reading the error, so the
+ * restart waits for their click on the update icon (or the next start).
+ */
+function mayRestartForUpdate(playerAsked: boolean): boolean {
+  return gameStatus.state === "idle" && (playerAsked || gameStatus.exitError !== true);
+}
+
 // A function call keeps TypeScript from narrowing gameStatus across awaits,
 // where the exit callback may already have changed it.
 function gameIsStarting(): boolean {
@@ -84,9 +92,9 @@ const catalogPresets = new Map<string, ServerPreset>();
 
 async function loadCatalog(): Promise<ServerPreset[]> {
   if (!sessionUser) return [];
-  const presets = (await auth.listManifests(sessionUser)).map((manifest) => {
-    assertManifest(manifest);
-    return toServerPreset(manifest);
+  const presets = presetsFromManifests(await auth.listManifests(sessionUser), (manifest, reason) => {
+    const id = manifest && typeof manifest === "object" && "id" in manifest ? String(manifest.id) : null;
+    void writeGameLog("catalog.manifest.skipped", { packId: id, reason });
   });
   catalogPresets.clear();
   for (const preset of presets) catalogPresets.set(preset.packId, preset);
@@ -527,6 +535,7 @@ app.whenReady().then(async () => {
     return firstInvite;
   });
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
+  ipcMain.handle("launcher:installUpdate", () => installPendingLauncherUpdate({ playerAsked: true }));
   ipcMain.handle("launcher:whatsNew", () => pendingWhatsNew());
   ipcMain.handle("launcher:whatsNewSeen", (_event, version: unknown) => markWhatsNewSeen(String(version)));
   ipcMain.handle("launcher:patchNotes", () => loadPatchNotes(testerAudience));
@@ -574,6 +583,7 @@ app.whenReady().then(async () => {
       const manifest = await auth.getManifest(sessionUser, request.packId);
       assertManifest(manifest);
       if (manifest.id !== request.packId) throw new Error("선택한 서버와 받은 모드팩 정보가 일치하지 않습니다.");
+      requireBweeepAccounts(manifest);
       const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), manifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: manifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest }, progress);
@@ -599,24 +609,13 @@ app.whenReady().then(async () => {
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: manifest.minecraftVersion, loader: manifest.loader.version });
+      // Every server checks players through the Bweeep account API (requireBweeepAccounts above).
       const getLaunchAuthorization = async (): Promise<LaunchAuthorization> => {
-        if (manifest.gameAuth === "yggdrasil") {
-          await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
-          const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
-          const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
-          await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
-          return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
-        }
-        if (manifest.loader.kind === "vanilla") {
-          return {
-            identity: createOfflineLaunchIdentity(launchUser.id, launchUser.gameName, launchUser.globalName, launchUser.username),
-            ticket: ""
-          };
-        }
-        await writeGameLog("launch.authorization.requested", { provider: "discord" });
-        const authorization = await auth.createGameLaunchAuthorization(launchUser);
-        await writeGameLog("launch.authorization.created", { provider: "discord" });
-        return authorization;
+        await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
+        const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
+        const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
+        await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
+        return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
       };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
       // The Minecraft installer libraries are a large module graph, so they load on the first launch, not at startup.
@@ -640,10 +639,8 @@ app.whenReady().then(async () => {
             : { state: "idle" });
         }
         // The game token only matters while joining; once the game is gone it is retired.
-        if (manifest.gameAuth === "yggdrasil") {
-          void auth.revokeGameAuth(launchUser).catch((error: unknown) =>
-            writeGameLog("launch.token.revoke-failed", { message: error instanceof Error ? error.message : String(error) }));
-        }
+        void auth.revokeGameAuth(launchUser).catch((error: unknown) =>
+          writeGameLog("launch.token.revoke-failed", { message: error instanceof Error ? error.message : String(error) }));
         void captureSharedOptions(request.instanceDir, synced.instanceDir);
         void writeGameLog("launch.minecraft.exited", {
           packId: request.packId,
@@ -675,7 +672,7 @@ app.whenReady().then(async () => {
       // The renderer will show its normal signed-out state when a persisted session cannot be restored.
     }
     await createWindow();
-    startLauncherUpdates((status) => broadcast("launcher:updateStatus", status), () => gameStatus.state === "idle");
+    startLauncherUpdates((status) => broadcast("launcher:updateStatus", status), mayRestartForUpdate);
     schedulePendingDeepLinks();
   })();
 });
