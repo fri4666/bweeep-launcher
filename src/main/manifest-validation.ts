@@ -31,6 +31,15 @@ export function assertManifest(manifest: ModpackManifest): void {
       throw new Error("선택 서버 연결 보호 모드 정보가 올바르지 않습니다.");
     }
   }
+  if (manifest.gameAuth !== undefined && manifest.gameAuth !== "offline" && manifest.gameAuth !== "yggdrasil") {
+    throw new Error("지원하지 않는 서버 인증 방식입니다.");
+  }
+  if (manifest.blockedModrinthProjects !== undefined && (
+    !Array.isArray(manifest.blockedModrinthProjects) ||
+    !manifest.blockedModrinthProjects.every((id) => typeof id === "string" && /^[A-Za-z0-9]{8}$/.test(id))
+  )) {
+    throw new Error("차단 모드 목록 형식이 올바르지 않습니다.");
+  }
   if (manifest.mrpack && (!/^https:\/\//.test(manifest.mrpack.url) || !Number.isSafeInteger(manifest.mrpack.size) || manifest.mrpack.size < 1 || !/^[a-f0-9]{128}$/i.test(manifest.mrpack.sha512))) {
     throw new Error("Modrinth 모드팩 정보가 올바르지 않습니다.");
   }

@@ -1,12 +1,14 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
 import { spawn } from "node:child_process";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toServerPreset } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
-import { installAndLaunch } from "./minecraft-runtime.js";
+import { installAndLaunch, type LaunchAuthorization } from "./minecraft-runtime.js";
+import { authlibInjectorJvmArgs, ensureAuthlibInjector } from "./authlib-injector.js";
 import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { fingerprint } from "./hash.js";
 import { authLogPath, gameErrorDetails, gameLogPath, writeAuthLog, writeGameLog } from "./logs.js";
@@ -14,12 +16,15 @@ import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpd
 import { createOfflineLaunchIdentity } from "./launch-identity.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherUser, LogTarget, SyncProgress, UserContentKind } from "../shared/types.js";
+import type { GameStatus, LauncherUser, LogTarget, ModTarget, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
+import { installMod, listPersonalMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
 import { bundledFeatureMods } from "./client-feature-mods.js";
+import { findDefaultSkins, SkinLibrary } from "./skins.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
 const auth = new SupabaseAuth();
+const skinLibrary = new SkinLibrary(path.join(app.getPath("userData"), "skins"));
 const pendingAuthUrls: string[] = [];
 const queuedAuthCallbacks = new Set<string>();
 const completedAuthFlows = new Set<string>();
@@ -57,6 +62,60 @@ function gameIsStarting(): boolean {
 function requireInstanceRoot(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) throw new Error("설치 위치가 올바르지 않습니다.");
   return value;
+}
+
+function requireModTarget(value: unknown): ModTarget {
+  const target = value as Partial<ModTarget> | null;
+  if (
+    !target || typeof target.packId !== "string" || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(target.packId) ||
+    !["vanilla", "fabric", "forge", "neoforge"].includes(target.loader ?? "") ||
+    typeof target.minecraftVersion !== "string" || !Array.isArray(target.blockedModrinthProjects)
+  ) {
+    throw new Error("서버 정보가 올바르지 않습니다.");
+  }
+  return {
+    instanceRoot: requireInstanceRoot(target.instanceRoot),
+    packId: target.packId,
+    loader: target.loader!,
+    minecraftVersion: target.minecraftVersion,
+    blockedModrinthProjects: target.blockedModrinthProjects.filter((id): id is string => typeof id === "string")
+  };
+}
+
+function optionalInstanceRoot(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function requireSkinModel(value: unknown): SkinModel {
+  if (value !== "default" && value !== "slim") throw new Error("팔 모양 정보가 올바르지 않습니다.");
+  return value;
+}
+
+/**
+ * Server skin plus the local library; a skin set on another PC is saved here
+ * too. The library and preview still work when the server cannot be reached.
+ */
+async function skinState(instanceRoot: string | null): Promise<SkinState> {
+  let serverError: string | undefined;
+  const [server, defaults] = await Promise.all([
+    auth.getSkin(sessionUser).catch((error: unknown) => {
+      serverError = error instanceof Error ? error.message : String(error);
+      return null;
+    }),
+    instanceRoot ? findDefaultSkins(instanceRoot) : Promise.resolve([])
+  ]);
+  if (server && !(await skinLibrary.get(server.hash))) {
+    const response = await fetch(await auth.skinUrl(server.hash));
+    if (response.ok) await skinLibrary.add(Buffer.from(await response.arrayBuffer()), "적용된 스킨", server.model).catch(() => undefined);
+  }
+  const library = await skinLibrary.list();
+  const applied = server ? library.find((entry) => entry.id === server.hash) : undefined;
+  return {
+    current: server && applied ? { id: server.hash, model: server.model, dataUrl: applied.dataUrl } : null,
+    library,
+    defaults,
+    ...(serverError ? { serverError } : {})
+  };
 }
 
 function requireContentKind(value: unknown): UserContentKind {
@@ -250,6 +309,7 @@ async function createWindow(): Promise<BrowserWindow> {
 
 app.whenReady().then(async () => {
   await session.defaultSession.setProxy({ mode: "system" });
+  setModrinthUserAgent(app.getVersion());
   ipcMain.handle("catalog:list", async () => {
     if (!sessionUser) return [];
     return (await auth.listManifests(sessionUser)).map((manifest) => {
@@ -332,6 +392,61 @@ app.whenReady().then(async () => {
     sessionUser = await auth.setGameProfile(sessionUser, gameName);
     return sessionUser;
   });
+  ipcMain.handle("access:listMembers", () => auth.listMembers(sessionUser));
+  ipcMain.handle("access:setTester", (_event, userId: unknown, tester: unknown) => {
+    if (typeof userId !== "string" || typeof tester !== "boolean") throw new Error("테스터 정보가 올바르지 않습니다.");
+    return auth.setTester(sessionUser, userId, tester);
+  });
+  ipcMain.handle("mods:search", (_event, target: unknown, query: unknown, offset: unknown) =>
+    searchMods(requireModTarget(target), typeof query === "string" ? query : "", typeof offset === "number" ? offset : 0));
+  ipcMain.handle("mods:list", (_event, target: unknown, checkUpdates: unknown) => listPersonalMods(requireModTarget(target), checkUpdates === true));
+  ipcMain.handle("mods:install", (_event, target: unknown, projectId: unknown) => installMod(requireModTarget(target), String(projectId)));
+  ipcMain.handle("mods:update", (_event, target: unknown, projectId: unknown) => updateMod(requireModTarget(target), String(projectId)));
+  ipcMain.handle("mods:remove", (_event, target: unknown, projectId: unknown) => removeMod(requireModTarget(target), String(projectId)));
+  ipcMain.handle("skin:state", (_event, instanceRoot: unknown) => skinState(optionalInstanceRoot(instanceRoot)));
+  ipcMain.handle("skin:add", async (event, instanceRoot: unknown) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = { title: "스킨 파일 선택", buttonLabel: "추가", filters: [{ name: "스킨 PNG", extensions: ["png"] }], properties: ["openFile"] };
+    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    const file = picked.canceled ? null : picked.filePaths[0];
+    if (file) {
+      const stat = await fsp.stat(file);
+      if (stat.size > 64 * 1024) throw new Error("스킨 파일은 64KB 이하의 PNG여야 합니다.");
+      await skinLibrary.add(await fsp.readFile(file), path.basename(file, path.extname(file)));
+    }
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
+  ipcMain.handle("skin:apply", async (_event, instanceRoot: unknown, id: unknown, model: unknown) => {
+    const stored = typeof id === "string" ? await skinLibrary.get(id) : null;
+    if (!stored) throw new Error("스킨을 찾지 못했습니다.");
+    const skinModel = requireSkinModel(model);
+    await skinLibrary.setModel(stored.entry.id, skinModel);
+    await auth.setSkin(sessionUser, stored.png, skinModel);
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
+  ipcMain.handle("skin:applyDefault", async (_event, instanceRoot: unknown, name: unknown) => {
+    const root = optionalInstanceRoot(instanceRoot);
+    const skin = (root ? await findDefaultSkins(root) : []).find((item) => item.name === name);
+    if (!skin) throw new Error("기본 스킨을 찾지 못했습니다.");
+    const png = Buffer.from(skin.dataUrl.slice(skin.dataUrl.indexOf(",") + 1), "base64");
+    await skinLibrary.add(png, skin.name, skin.model);
+    await auth.setSkin(sessionUser, png, skin.model);
+    return skinState(root);
+  });
+  ipcMain.handle("skin:setModel", async (_event, instanceRoot: unknown, id: unknown, model: unknown) => {
+    if (typeof id !== "string") throw new Error("스킨 정보가 올바르지 않습니다.");
+    await skinLibrary.setModel(id, requireSkinModel(model));
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
+  ipcMain.handle("skin:remove", async (_event, instanceRoot: unknown, id: unknown) => {
+    if (typeof id !== "string") throw new Error("스킨 정보가 올바르지 않습니다.");
+    await skinLibrary.remove(id);
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
+  ipcMain.handle("skin:reset", async (_event, instanceRoot: unknown) => {
+    await auth.clearSkin(sessionUser);
+    return skinState(optionalInstanceRoot(instanceRoot));
+  });
   ipcMain.handle("invite:ready", () => {
     inviteReceiverReady = true;
     const firstInvite = pendingInviteCodes.shift() ?? null;
@@ -384,17 +499,25 @@ app.whenReady().then(async () => {
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: manifest.minecraftVersion, loader: manifest.loader.version });
-      const getLaunchAuthorization = manifest.loader.kind === "vanilla"
-        ? async () => ({
+      const getLaunchAuthorization = async (): Promise<LaunchAuthorization> => {
+        if (manifest.gameAuth === "yggdrasil") {
+          await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
+          const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
+          const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
+          await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
+          return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
+        }
+        if (manifest.loader.kind === "vanilla") {
+          return {
             identity: createOfflineLaunchIdentity(launchUser.id, launchUser.gameName, launchUser.globalName, launchUser.username),
             ticket: ""
-          })
-        : async () => {
-            await writeGameLog("launch.authorization.requested", { provider: "discord" });
-            const authorization = await auth.createGameLaunchAuthorization(launchUser);
-            await writeGameLog("launch.authorization.created", { provider: "discord" });
-            return authorization;
           };
+        }
+        await writeGameLog("launch.authorization.requested", { provider: "discord" });
+        const authorization = await auth.createGameLaunchAuthorization(launchUser);
+        await writeGameLog("launch.authorization.created", { provider: "discord" });
+        return authorization;
+      };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
       const launched = await installAndLaunch(manifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
         if (exit.crashReportLocation) lastGameLogFile = path.resolve(synced.instanceDir, exit.crashReportLocation);

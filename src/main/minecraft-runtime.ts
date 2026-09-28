@@ -29,10 +29,18 @@ import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from ".
 type ProgressSink = (event: SyncProgress) => void;
 type InstallRuntime = ReturnType<typeof createDefaultNodeInstallRuntime>;
 
+export interface LaunchAuthorization {
+  identity: LaunchIdentity;
+  /** One-time ticket for servers running bweeep-server-auth; empty otherwise. */
+  ticket: string;
+  /** Set for servers that verify players through the Bweeep Yggdrasil API. */
+  yggdrasil?: { jvmArgs: string[] };
+}
+
 export async function installAndLaunch(
   manifest: ModpackManifest,
   instanceDir: string,
-  getLaunchAuthorization: () => Promise<{ identity: LaunchIdentity; ticket: string }>,
+  getLaunchAuthorization: () => Promise<LaunchAuthorization>,
   bundledClientMods: BundledClientMod[],
   progress: ProgressSink,
   onExit: (exit: GameExitResult) => void
@@ -85,7 +93,7 @@ export async function installAndLaunch(
   const quickPlayPath = path.join(instanceDir, "quickPlay", "bweeep.json");
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
-  const { identity, ticket: gameTicket } = await runStage(report, "접속 인증", getLaunchAuthorization);
+  const { identity, ticket: gameTicket, yggdrasil } = await runStage(report, "접속 인증", getLaunchAuthorization);
   report({ kind: "info", stage: "게임 실행", message: "Minecraft 실행 명령을 준비하는 중" });
   const gameProcess = await launch({
     gamePath: instanceDir,
@@ -94,9 +102,13 @@ export async function installAndLaunch(
     version,
     accessToken: identity.accessToken,
     gameProfile: { id: identity.id, name: identity.name },
-    userType: "legacy",
+    // authlib-injector expects "mojang"; offline servers keep the legacy type.
+    userType: yggdrasil ? "mojang" : "legacy",
     quickPlayMultiplayer: `${manifest.server.host}:${manifest.server.port}`,
-    extraJVMArgs: connectionLockEnabled ? [`-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`] : [],
+    extraJVMArgs: [
+      ...(yggdrasil?.jvmArgs ?? []),
+      ...(connectionLockEnabled ? [`-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`] : [])
+    ],
     extraMCArgs: ["--quickPlayPath", quickPlayPath],
     extraExecOption: {
       env: { ...process.env, BWEEP_GAME_TICKET: gameTicket }

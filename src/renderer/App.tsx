@@ -8,6 +8,7 @@ import type {
   LauncherUpdateStatus,
   LauncherUser,
   LoaderKind,
+  MemberSummary,
   ServerConnection,
   ServerPreset,
   ServerSoftwareKind,
@@ -18,6 +19,8 @@ import type {
 } from "../shared/types.js";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
+import { ModsPanel } from "./ModsPanel.js";
+import { SkinPanel } from "./SkinPanel.js";
 
 const selectedPackStorageKey = "bweeep.selected-pack-id";
 const instanceRootStorageKey = "bweeep.instance-root";
@@ -161,6 +164,10 @@ function App() {
   const [actionToast, setActionToast] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [skinOpen, setSkinOpen] = useState(false);
+  const [modsOpen, setModsOpen] = useState(false);
+  const [members, setMembers] = useState<MemberSummary[]>([]);
+  const [testerBusyId, setTesterBusyId] = useState<string | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [launcherVersion, setLauncherVersion] = useState("");
@@ -299,10 +306,12 @@ function App() {
       if (confirmRequest) setConfirmRequest(null);
       else if (settingsOpen) setSettingsOpen(false);
       else if (profileOpen) setProfileOpen(false);
+      else if (skinOpen) setSkinOpen(false);
+      else if (modsOpen) setModsOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmRequest, settingsOpen, profileOpen]);
+  }, [confirmRequest, settingsOpen, profileOpen, skinOpen, modsOpen]);
 
   const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
     setServerChecking(true);
@@ -326,7 +335,22 @@ function App() {
     setSettingsNotice("");
     void loadCatalog({ quiet: true });
     void refreshInvites();
+    if (access?.isAdmin) {
+      window.bweeep.listMembers().then(setMembers).catch((error) => setSettingsNotice(errorMessage(error, "멤버 목록을 불러오지 못했어요.")));
+    }
   }, [settingsOpen]);
+
+  async function toggleTester(member: MemberSummary) {
+    setTesterBusyId(member.userId);
+    setSettingsNotice("");
+    try {
+      setMembers(await window.bweeep.setTester(member.userId, !member.tester));
+    } catch (error) {
+      setSettingsNotice(errorMessage(error, "테스터 지정을 저장하지 못했어요."));
+    } finally {
+      setTesterBusyId(null);
+    }
+  }
 
   useEffect(() => {
     if (createdInvite) createdInviteRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -384,7 +408,8 @@ function App() {
     ? selected?.name ?? ""
     : stripStage(displayProgress?.stage, displayProgress?.message);
   const savedGameName = user?.gameName ?? "";
-  const vanillaServer = selected ? isVanillaServer(selected) : false;
+  // With the Bweeep login server the UUID belongs to the account, so renaming keeps the character.
+  const vanillaServer = selected ? isVanillaServer(selected) && selected.gameAuth !== "yggdrasil" : false;
   const serverState = catalogState === "error"
     ? "catalogError"
     : catalogState === "loading" || !connection
@@ -773,6 +798,18 @@ function App() {
     );
   }
 
+  // Test builds get updates before everyone else, so only designated testers use them.
+  if (launcherChannel === "test" && !access.testAllowed) {
+    return (
+      <EntryLayout eyebrow="테스트 런처" title="지정된 테스터만 쓸 수 있어요">
+        <p className="entryDescription">이 런처는 새 버전을 먼저 확인하는 테스트용이에요. 일반 붸에엡 런처를 설치해 주세요.</p>
+        <div className="entryActions">
+          <button className="textButton" onClick={() => void logout()}>다른 계정으로 로그인</button>
+        </div>
+      </EntryLayout>
+    );
+  }
+
   const updateBanner = launcherUpdateBanner(launcherUpdate);
 
   return (
@@ -792,6 +829,14 @@ function App() {
           <button className="sideAction" onClick={() => setProfileOpen(true)}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c.8-3.4 3.1-5.2 7-5.2s6.2 1.8 7 5.2" /></svg>
             <span>계정</span>
+          </button>
+          <button className="sideAction" onClick={() => setSkinOpen(true)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="7" rx="1" /><path d="M7 21v-9h10v9M4 12h3v6H4zM17 12h3v6h-3z" /></svg>
+            <span>스킨</span>
+          </button>
+          <button className="sideAction" disabled={!selected} onClick={() => setModsOpen(true)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M4 7.5l8 4.5 8-4.5M12 12v9" /></svg>
+            <span>편의 모드</span>
           </button>
           <button className="sideAction" onClick={() => setSettingsOpen(true)}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
@@ -1026,6 +1071,34 @@ function App() {
                 )}
               </article>
 
+              {access.isAdmin && (
+                <article className="panel">
+                  <div className="panelHeader">
+                    <h3>테스터</h3>
+                    <span>테스트 런처는 여기서 지정한 사람만 쓸 수 있고, 새 버전을 먼저 받아요.</span>
+                  </div>
+                  <div className="memberList">
+                    {members.length === 0 && <p className="emptyText">멤버 목록을 불러오는 중이에요.</p>}
+                    {members.map((member) => (
+                      <div className="memberItem" key={member.userId}>
+                        <span>
+                          {member.name}
+                          {member.gameName ? ` · ${member.gameName}` : ""}
+                          {member.role === "admin" ? " · 관리자(항상 테스터)" : ""}
+                        </span>
+                        {member.role === "admin" ? (
+                          <span className="mutedText">테스터</span>
+                        ) : (
+                          <button className={member.tester ? "secondaryButton" : "textButton"} disabled={testerBusyId !== null} onClick={() => void toggleTester(member)}>
+                            {testerBusyId === member.userId ? "저장 중…" : member.tester ? "테스터 해제" : "테스터로 지정"}
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              )}
+
               <section className="panel logPanel">
                 <div className="panelHeader">
                   <h3>설치 기록</h3>
@@ -1131,6 +1204,18 @@ function App() {
             </footer>
           </section>
         </div>
+      )}
+
+      {modsOpen && selected && (
+        <ModsPanel server={selected} instanceRoot={instanceRoot} onClose={() => setModsOpen(false)} />
+      )}
+
+      {skinOpen && (
+        <SkinPanel
+          instanceRoot={instanceRoot}
+          serverShowsSkins={selected?.gameAuth === "yggdrasil"}
+          onClose={() => setSkinOpen(false)}
+        />
       )}
 
       {confirmDialog}

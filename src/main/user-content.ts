@@ -68,6 +68,16 @@ function userContentRoot(instanceRoot: string): string {
   return path.resolve(instanceRoot, ".bweeep-user-content");
 }
 
+/** Personal mods for one loader and version, which is where Modrinth installs go. */
+export function personalModsDir(instanceRoot: string, loaderKind: ModpackManifest["loader"]["kind"], minecraftVersion: string): string {
+  return userContentPaths(instanceRoot, loaderKind, minecraftVersion).userModsDir;
+}
+
+/** Names of the personal jars the last launch copied into an instance's mods folder. */
+export async function copiedPersonalMods(instanceDir: string): Promise<string[]> {
+  return readStringArray(path.join(instanceDir, ".bweeep", USER_MODS_FILE));
+}
+
 function userContentPaths(instanceRoot: string, loaderKind: ModpackManifest["loader"]["kind"], minecraftVersion: string): UserContentPaths {
   const root = userContentRoot(instanceRoot);
   const compatibilityId = `${loaderKind}-${minecraftVersion}`;
