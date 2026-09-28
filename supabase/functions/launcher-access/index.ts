@@ -2,6 +2,7 @@ import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
 import { getBearerToken, getLauncherVersion, getSessionId, isLauncherAtLeast, MIN_YGGDRASIL_LAUNCHER } from "./authorization.ts";
 import { isModpackManifest, type ModpackManifest, selectCatalog, usesBweeepAccounts } from "./catalog.ts";
+import { retryingFetch } from "./db-fetch.ts";
 import { gameNameTakenMessage, isGameNameTaken, OFFLINE_SERVER } from "./game-name.ts";
 import { previousGameNames } from "./profile-history.ts";
 import {
@@ -82,7 +83,8 @@ async function handleRequest(request: Request): Promise<Response> {
   }
 
   const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
-    auth: { autoRefreshToken: false, persistSession: false }
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: retryingFetch() }
   });
   let body: unknown;
   try {

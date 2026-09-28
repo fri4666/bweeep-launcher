@@ -1,5 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { retryingFetch } from "./db-fetch.ts";
 import {
   apiMetadata,
   generateSigningKeyPair,
@@ -45,7 +46,8 @@ async function handleRequest(request: Request): Promise<Response> {
   // URLs need the address players can reach.
   const publicUrl = Deno.env.get("BWEEP_PUBLIC_SUPABASE_URL") ?? supabaseUrl;
   const admin = createClient(supabaseUrl, serviceRoleKey, {
-    auth: { autoRefreshToken: false, persistSession: false }
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: retryingFetch() }
   });
   const url = new URL(request.url);
   const route = parseRoute(request.method, url.pathname);
