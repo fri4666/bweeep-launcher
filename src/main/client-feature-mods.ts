@@ -10,11 +10,13 @@ export interface BundledClientMod {
 }
 
 /**
- * Launcher-owned features are version and loader specific. Supported clients
- * are protected by default; a manifest can explicitly opt out, but cannot
- * claim that an unsupported client has a connection lock.
+ * Older launcher features built as version-specific mods. The connection
+ * guard agent now keeps every client on its server, and servers on the Bweeep
+ * Yggdrasil API need no mod for names or skins, so these are only added to
+ * the offline packs they were made for.
  */
 export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManifest): BundledClientMod[] {
+  if (manifest.gameAuth === "yggdrasil") return [];
   if (manifest.clientFeatures?.connectionLock === false) return [];
   if (typeof manifest.clientFeatures?.connectionLock === "object") return [];
 
@@ -44,9 +46,7 @@ export function bundledFeatureMods(resourcesRoot: string, manifest: ModpackManif
     ];
   }
 
-  if (manifest.clientFeatures?.connectionLock === true) {
-    throw new Error(`${manifest.minecraftVersion} ${manifest.loader.kind}용 붸에엡 연결 보호 모드가 아직 검증되지 않았습니다. 안전을 위해 이 서버의 연결 잠금 기능은 실행하지 않습니다.`);
-  }
+  // Any other version is covered by the connection guard agent.
   return [];
 }
 

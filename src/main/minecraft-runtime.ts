@@ -43,7 +43,9 @@ export async function installAndLaunch(
   getLaunchAuthorization: () => Promise<LaunchAuthorization>,
   bundledClientMods: BundledClientMod[],
   progress: ProgressSink,
-  onExit: (exit: GameExitResult) => void
+  onExit: (exit: GameExitResult) => void,
+  /** JVM arguments of the connection guard agent; empty when the pack opts out. */
+  connectionGuardArgs: string[] = []
 ): Promise<{ pid: number; version: string }> {
   if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
     throw new Error("지원하지 않는 Minecraft 로더입니다.");
@@ -87,9 +89,10 @@ export async function installAndLaunch(
     await verifyRemoteConnectionLock(instanceDir, manifest);
     report({ kind: "info", stage: "서버 연결 보호", message: "연결 보호 모드 확인 완료" });
   }
-  const connectionLockEnabled = remoteLock === true
+  // The guard agent sets bweeep.targetServer itself; older lock mods read the same property.
+  const legacyLockOnly = connectionGuardArgs.length === 0 && (remoteLock === true
     || typeof remoteLock === "object"
-    || bundledClientMods.some((mod) => mod.targetName === "bweeep-client.jar");
+    || bundledClientMods.some((mod) => mod.targetName === "bweeep-client.jar"));
   const quickPlayPath = path.join(instanceDir, "quickPlay", "bweeep.json");
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
@@ -107,7 +110,8 @@ export async function installAndLaunch(
     quickPlayMultiplayer: `${manifest.server.host}:${manifest.server.port}`,
     extraJVMArgs: [
       ...(yggdrasil?.jvmArgs ?? []),
-      ...(connectionLockEnabled ? [`-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`] : [])
+      ...connectionGuardArgs,
+      ...(legacyLockOnly ? [`-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`] : [])
     ],
     extraMCArgs: ["--quickPlayPath", quickPlayPath],
     extraExecOption: {

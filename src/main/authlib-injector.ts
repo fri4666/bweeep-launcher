@@ -1,6 +1,5 @@
-import fsp from "node:fs/promises";
 import path from "node:path";
-import { hashBytes, hashFile } from "./hash.js";
+import { ensureVerifiedCopy } from "./verified-copy.js";
 
 /**
  * authlib-injector redirects Minecraft's login and skin requests to the
@@ -25,21 +24,13 @@ export function yggdrasilApiRoot(supabaseUrl: string): string {
 }
 
 /** Java cannot load an agent from inside app.asar, so a verified copy is kept per instance. */
-export async function ensureAuthlibInjector(resourcesRoot: string, instanceDir: string): Promise<string> {
-  const contents = await fsp.readFile(path.join(resourcesRoot, AGENT.fileName));
-  if (hashBytes("sha256", contents) !== AGENT.sha256) throw new Error("로그인 연결 파일(authlib-injector)이 손상되었습니다.");
-  const target = path.join(instanceDir, ".bweeep", "authlib-injector.jar");
-  try {
-    if (await hashFile(target, "sha256") === AGENT.sha256) return target;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  await fsp.mkdir(path.dirname(target), { recursive: true });
-  const temp = `${target}.part`;
-  await fsp.writeFile(temp, contents);
-  await fsp.rm(target, { force: true });
-  await fsp.rename(temp, target);
-  return target;
+export function ensureAuthlibInjector(resourcesRoot: string, instanceDir: string): Promise<string> {
+  return ensureVerifiedCopy(
+    path.join(resourcesRoot, AGENT.fileName),
+    AGENT.sha256,
+    path.join(instanceDir, ".bweeep", "authlib-injector.jar"),
+    "로그인 연결 파일(authlib-injector)이 손상되었습니다."
+  );
 }
 
 export function authlibInjectorJvmArgs(agentPath: string, launch: YggdrasilLaunch): string[] {
