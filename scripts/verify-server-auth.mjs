@@ -152,7 +152,15 @@ async function main() {
       const shot = path.join(WORK, `${player.name}.png`);
       execFileSync("import", ["-display", player.display, "-window", "root", shot]);
       const target = players[1] ? players[(index + 1) % players.length] : player;
-      const share = colourShare(shot, target.body);
+      let share = colourShare(shot, target.body);
+      // Some loaders drop a key press now and then. F5 cycles through the
+      // three views, so pressing it again soon reaches the front view.
+      for (let attempt = 0; !players[1] && share <= 0.01 && attempt < 3; attempt += 1) {
+        await key(player, "F5");
+        await sleep(1500);
+        execFileSync("import", ["-display", player.display, "-window", "root", shot]);
+        share = colourShare(shot, target.body);
+      }
       check(`${player.name}: sees ${target.name}'s skin`, share > 0.01, `${(share * 100).toFixed(1)}% of the centre matches, ${shot}`);
     }
     rcon.close();
