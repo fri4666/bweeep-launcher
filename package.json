@@ -74,6 +74,10 @@
       }
     ],
     "asar": true,
+    "electronLanguages": [
+      "ko",
+      "en-US"
+    ],
     "icon": "build/icon-source-v2.png",
     "protocols": [
       {
@@ -92,6 +96,8 @@
       "resources/supabase.example.json",
       "package.json",
       "!node_modules/bare-{fs,path,stream,url}/**",
+      "!node_modules/argparse/**",
+      "!node_modules/js-yaml/{bin,dist}/**",
       "!node_modules/**/*.map",
       "!node_modules/**/*.md",
       "!node_modules/**/*.ts",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   AccessStatus,
@@ -22,7 +22,9 @@ import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
 import { ModsPanel } from "./ModsPanel.js";
 import { PatchNotesPanel, ReleaseNoteSections } from "./PatchNotesPanel.js";
-import { SkinPanel } from "./SkinPanel.js";
+
+// The 3D skin preview brings in three.js, so it loads when the skin tab first opens.
+const SkinPanel = lazy(() => import("./SkinPanel.js").then((module) => ({ default: module.SkinPanel })));
 
 const selectedPackStorageKey = "bweeep.selected-pack-id";
 const instanceRootStorageKey = "bweeep.instance-root";
@@ -1266,11 +1268,13 @@ function App() {
       )}
 
       {skinOpen && (
-        <SkinPanel
-          instanceRoot={instanceRoot}
-          serverShowsSkins={selected?.gameAuth === "yggdrasil"}
-          onClose={() => setSkinOpen(false)}
-        />
+        <Suspense fallback={null}>
+          <SkinPanel
+            instanceRoot={instanceRoot}
+            serverShowsSkins={selected?.gameAuth === "yggdrasil"}
+            onClose={() => setSkinOpen(false)}
+          />
+        </Suspense>
       )}
 
       {patchNotesOpen && <PatchNotesPanel onClose={() => setPatchNotesOpen(false)} />}

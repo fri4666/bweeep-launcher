@@ -7,7 +7,7 @@ import { toServerPreset } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
-import { installAndLaunch, type LaunchAuthorization } from "./minecraft-runtime.js";
+import type { LaunchAuthorization } from "./minecraft-runtime.js";
 import { authlibInjectorJvmArgs, ensureAuthlibInjector } from "./authlib-injector.js";
 import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { fingerprint } from "./hash.js";
@@ -582,6 +582,8 @@ app.whenReady().then(async () => {
         return authorization;
       };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
+      // The Minecraft installer libraries are a large module graph, so they load on the first launch, not at startup.
+      const { installAndLaunch } = await import("./minecraft-runtime.js");
       const launched = await installAndLaunch(manifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
         if (exit.crashReportLocation) lastGameLogFile = path.resolve(synced.instanceDir, exit.crashReportLocation);
         const stoppedByPlayer = stopRequestedRunId === runId;
