@@ -13,6 +13,7 @@ import {
 import { createGameTicket, isGameName, isGameTicket, ticketNameProblem } from "./game-ticket.ts";
 import { decideInvite, invitePolicy, isInviteOpen, type InviteRole } from "./invite-policy.ts";
 import { launchGameName } from "./launch-name.ts";
+import { parseStorageObjectUrl } from "./manifest-shape.ts";
 import { decodeBase64, isSkinModel, MAX_SKIN_BYTES, type SkinModel, validateSkinPng } from "./skin-image.ts";
 
 type RequestBody =
@@ -659,15 +660,4 @@ async function resolveManifestDownloads(
   }));
 
   return { ...rawManifest, files };
-}
-
-function parseStorageObjectUrl(value: string): { bucket: string; path: string } | null {
-  if (!value.startsWith("storage://")) return null;
-  const url = new URL(value);
-  const bucket = url.hostname;
-  const path = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-  if (!/^[a-z0-9][a-z0-9-]{1,62}$/i.test(bucket) || !path || path.includes("..")) {
-    throw new Error("Stored launcher manifest contains an invalid storage object URL.");
-  }
-  return { bucket, path };
 }
