@@ -21,7 +21,7 @@ import type {
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
 import { ModsPanel } from "./ModsPanel.js";
-import { PatchNotesPanel, ReleaseNoteSections } from "./PatchNotesPanel.js";
+import { PatchNotesPanel, ReleaseMeta, ReleaseNoteSections, releaseTitle } from "./PatchNotesPanel.js";
 
 // The 3D skin preview brings in three.js, so it loads when the skin tab first opens.
 const SkinPanel = lazy(() => import("./SkinPanel.js").then((module) => ({ default: module.SkinPanel })));
@@ -153,9 +153,9 @@ function WhatsNewDialog({ whatsNew, onClose }: { whatsNew: WhatsNew; onClose: ()
   return (
     <div className="modalBackdrop confirmBackdrop" onClick={onClose}>
       <section className="confirmDialog whatsNewDialog" role="dialog" aria-modal="true" aria-label="업데이트 소식" onClick={(event) => event.stopPropagation()}>
-        <p className="eyebrow">업데이트 완료 · v{whatsNew.version}</p>
-        <h2>이번 버전에서 바뀐 점</h2>
-        {whatsNew.summary && <p className="whatsNewSummary">{whatsNew.summary}</p>}
+        <h2 className="releaseTitle">{releaseTitle(whatsNew.version)}</h2>
+        <ReleaseMeta />
+        {whatsNew.summary && <p className="releaseSummary">요약: {whatsNew.summary}</p>}
         <ReleaseNoteSections sections={whatsNew.sections} />
         <div className="confirmActions">
           <button ref={confirmRef} className="primaryButton" onClick={onClose}>확인</button>

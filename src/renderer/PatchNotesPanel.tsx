@@ -18,17 +18,21 @@ const sourceNotices: Record<PatchNotes["source"], string> = {
   bundled: "오프라인 · 이 버전 내용만 보여요"
 };
 
+/** Who writes the notes; shown in the article's meta line. */
+const AUTHOR = "월급루팡 클로드";
+
 /**
- * Grouped bullets (새 기능, 바뀐 점, 고친 문제, 알려진 문제, 다음 패치 예고), each
- * with its small "참고:" notes; a list with no headings stays one list.
+ * Plain section headings (새 기능, 바뀐 점, 고친 문제, 알려진 문제, 다음 패치 예고)
+ * with plain bullets and each item's nested "참고:" notes, like a patch notes
+ * article. A list with no headings stays one list.
  */
 export function ReleaseNoteSections({ sections }: { sections: ReleaseNoteSection[] }) {
   return (
     <div className="releaseSections">
       {sections.map((section, index) => (
         <section className={`releaseSection is-${section.kind}`} key={`${section.kind}-${index}`}>
-          {section.title && <h4>{section.title}</h4>}
-          <ul className="whatsNewList">
+          {section.title && <h3>{section.title}</h3>}
+          <ul className="releaseList">
             {section.items.map((item, itemIndex) => {
               const notes = section.details?.[itemIndex] ?? [];
               return (
@@ -49,6 +53,21 @@ export function ReleaseNoteSections({ sections }: { sections: ReleaseNoteSection
   );
 }
 
+/** "런처 업데이트 | 월급루팡 클로드 | 날짜" under the title. */
+export function ReleaseMeta({ date }: { date?: string }) {
+  return (
+    <p className="releaseMeta">
+      <span className="releaseCategory">런처 업데이트</span>
+      <span>{AUTHOR}</span>
+      {date && <span>{date}</span>}
+    </p>
+  );
+}
+
+export function releaseTitle(version: string): string {
+  return `붸에엡 런처 ${version} 패치 노트`;
+}
+
 /** The developer's greeting or sign-off, one paragraph per line. */
 function Paragraphs({ className, text }: { className: string; text: string }) {
   return (
@@ -58,11 +77,11 @@ function Paragraphs({ className, text }: { className: string; text: string }) {
   );
 }
 
-function VersionBadges({ note, currentVersion }: { note: PatchNote; currentVersion: string }) {
+function VersionTags({ note, currentVersion }: { note: PatchNote; currentVersion: string }) {
   return (
     <>
-      {note.version === currentVersion && <span className="patchBadge isCurrent">지금 버전</span>}
-      {note.prerelease && <span className="patchBadge isBeta">테스트</span>}
+      {note.version === currentVersion && <span className="patchTag isCurrent">지금 버전</span>}
+      {note.prerelease && <span className="patchTag isBeta">테스트</span>}
     </>
   );
 }
@@ -105,7 +124,6 @@ export function PatchNotesPanel({ onClose }: { onClose: () => void }) {
           <div>
             <p className="eyebrow">패치노트</p>
             <h2>업데이트 소식</h2>
-            {patchNotes && <small>지금 쓰는 버전 v{patchNotes.currentVersion}</small>}
           </div>
           <button className="closeButton" onClick={onClose}>닫기</button>
         </header>
@@ -127,24 +145,26 @@ export function PatchNotesPanel({ onClose }: { onClose: () => void }) {
                   >
                     <strong>v{note.version}</strong>
                     <small>{formatReleaseDate(note.publishedAt) || "날짜 없음"}</small>
-                    <span className="patchBadges"><VersionBadges note={note} currentVersion={patchNotes.currentVersion} /></span>
+                    <VersionTags note={note} currentVersion={patchNotes.currentVersion} />
                   </button>
                 ))}
               </nav>
               <article className="patchDetail" aria-label={`v${selected.version} 패치노트`}>
-                <p className="eyebrow">{formatReleaseDate(selected.publishedAt) || "패치노트"}</p>
-                <h3>
-                  v{selected.version}
-                  <VersionBadges note={selected} currentVersion={patchNotes.currentVersion} />
-                </h3>
-                {selected.summary && <p className="patchSummary">{selected.summary}</p>}
+                <header className="patchHead">
+                  <h2 className="releaseTitle">{releaseTitle(selected.version)}</h2>
+                  <p className="patchSubtitle">
+                    {selected.prerelease ? "테스터가 먼저 받아 보는 버전입니다." : "이번 업데이트에서 달라진 점을 정리했습니다."}
+                  </p>
+                </header>
+                <ReleaseMeta date={formatReleaseDate(selected.publishedAt)} />
+                {selected.summary && <p className="releaseSummary">요약: {selected.summary}</p>}
                 {selected.intro && <Paragraphs className="patchIntro" text={selected.intro} />}
                 {selected.sections.length > 0
                   ? <ReleaseNoteSections sections={selected.sections} />
                   : <p className="emptyText">적힌 내용이 없어요.</p>}
                 {selected.outro && <Paragraphs className="patchOutro" text={selected.outro} />}
                 {selected.url && (
-                  <button className="secondaryButton patchMore" onClick={() => void openDetails(selected.url!)}>자세히 보기</button>
+                  <button className="textButton patchMore" onClick={() => void openDetails(selected.url!)}>GitHub에서 자세히 보기</button>
                 )}
               </article>
             </div>

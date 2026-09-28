@@ -364,10 +364,23 @@ if (whatsNewMode) {
   const dialog = page.getByRole("dialog", { name: "업데이트 소식" });
   await dialog.waitFor({ timeout: 10000 });
   const text = await dialog.innerText();
-  if (!text.includes("v0.1.36") || !text.includes("바꾼 뒤 하루 동안 내 것으로 남아요")) throw new Error(`what's new dialog is missing the notes: ${text}`);
-  if (!text.includes("이름 규칙 완화까지") || !text.includes("새 기능") || !text.includes("바뀐 점")) throw new Error(`what's new dialog is missing the summary or groups: ${text}`);
+  if (!text.includes("바꾼 뒤 하루 동안 내 것으로 남아요")) throw new Error(`what's new dialog is missing the notes: ${text}`);
+  if (!text.includes("새 기능") || !text.includes("바뀐 점")) throw new Error(`what's new dialog is missing the groups: ${text}`);
   if (await dialog.locator(".releaseSubNotes, .releaseSection.is-upcoming").count()) throw new Error("what's new dialog shows sub-notes or the next-patch preview");
+  // Same article structure as the patch notes tab: title, meta line, bold summary, headings.
+  if ((await dialog.locator(".releaseTitle").innerText()) !== "붸에엡 런처 0.1.36 패치 노트") throw new Error("what's new title is not the patch note title");
+  if (!(await dialog.locator(".releaseMeta").innerText()).includes("월급루팡 클로드")) throw new Error("what's new meta line has no author");
+  const summary = dialog.locator(".releaseSummary");
+  if (!(await summary.innerText()).startsWith("요약: 패치노트 탭") || Number(await summary.evaluate((element) => getComputedStyle(element).fontWeight)) < 700) {
+    throw new Error("what's new summary is not a bold 요약 paragraph");
+  }
+  if (await dialog.locator(".releaseSection h3").count() !== 2) throw new Error("what's new groups are not headings");
   await page.screenshot({ path: "previews/bweeep-launcher-whats-new.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  if (await dialog.evaluate((element) => element.scrollWidth > element.clientWidth)) throw new Error("what's new dialog overflows sideways at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-whats-new-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await dialog.getByRole("button", { name: "확인" }).click();
   await page.waitForFunction(() => window.__whatsNewSeen === "0.1.36");
   if (await page.getByRole("dialog", { name: "업데이트 소식" }).count()) throw new Error("what's new dialog did not close");
@@ -382,7 +395,7 @@ if (patchNotesOffline) {
   const panel = page.getByRole("dialog", { name: "패치노트" });
   await panel.getByText("이 버전 내용만 보여요", { exact: false }).waitFor({ timeout: 10000 });
   if (await panel.locator(".patchVersion").count() !== 1) throw new Error("offline patch notes should show only this build's notes");
-  if (!(await panel.locator(".patchDetail").innerText()).includes("지금 버전")) throw new Error("the bundled notes are not marked as the current version");
+  if (!(await panel.locator(".patchVersion").innerText()).includes("지금 버전")) throw new Error("the bundled notes are not marked as the current version");
   await page.screenshot({ path: "previews/bweeep-launcher-patch-notes-offline.png" });
   console.log(JSON.stringify({ interactionChecks: ["patch-notes-offline-fallback"], errors }));
   await browser.close();
@@ -601,24 +614,42 @@ if (catalogUnavailable) {
   if (!(await patchNotes.locator(".patchVersion").nth(1).innerText()).includes("지금 버전")) throw new Error("the running version is not marked");
   await patchNotes.locator(".patchVersion").nth(1).click();
   const detail = await patchNotes.locator(".patchDetail").innerText();
-  for (const expected of ["v0.1.30", "패치노트 탭이 생겼고", "월급루팡 클로드입니다", "새 기능", "고친 문제", "알려진 문제", "다음 패치 예고", "루팡은 이만 퇴근합니다!", "2026년 9월 28일"]) {
+  for (const expected of ["패치노트 탭이 생겼고", "월급루팡 클로드입니다", "새 기능", "고친 문제", "알려진 문제", "다음 패치 예고", "루팡은 이만 퇴근합니다!"]) {
     if (!detail.includes(expected)) throw new Error(`patch note detail is missing ${expected}: ${detail}`);
   }
-  if (await patchNotes.locator(".releaseSection h4").count() !== 4) throw new Error("patch note groups are not shown as headings");
-  const subNote = patchNotes.locator(".releaseSection.is-new > .whatsNewList > li").nth(1).locator(".releaseSubNotes li");
-  if (await subNote.count() !== 1 || !(await subNote.innerText()).startsWith("참고:")) throw new Error("the 참고 note is not shown under its item");
+  // Article structure: title, subtitle, divider, meta line with author and date, bold 요약, headings, nested notes.
+  if ((await patchNotes.locator(".patchDetail .releaseTitle").innerText()) !== "붸에엡 런처 0.1.30 패치 노트") throw new Error("the article title is wrong");
+  if (!(await patchNotes.locator(".patchSubtitle").innerText()).trim()) throw new Error("the article has no subtitle");
+  if (await patchNotes.locator(".patchHead").evaluate((element) => getComputedStyle(element).borderBottomWidth) !== "1px") throw new Error("the title has no thin divider");
+  const meta = await patchNotes.locator(".patchDetail .releaseMeta").innerText();
+  if (!meta.includes("런처 업데이트") || !meta.includes("월급루팡 클로드") || !meta.includes("2026년 9월 28일")) throw new Error(`the meta line is wrong: ${meta}`);
+  const articleSummary = patchNotes.locator(".patchDetail .releaseSummary");
+  if (!(await articleSummary.innerText()).startsWith("요약: ") || Number(await articleSummary.evaluate((element) => getComputedStyle(element).fontWeight)) < 700) {
+    throw new Error("the 요약 paragraph is not bold");
+  }
+  if (await patchNotes.locator(".releaseSection h3").count() !== 4) throw new Error("patch note groups are not shown as headings");
+  if (await patchNotes.locator(".releaseList").first().evaluate((element) => getComputedStyle(element).listStyleType) !== "disc") throw new Error("bullets are not plain discs");
+  const noteItem = patchNotes.locator(".releaseSection.is-new > .releaseList > li").nth(1);
+  const subNote = noteItem.locator(":scope > .releaseSubNotes > li");
+  if (await subNote.count() !== 1 || !(await subNote.innerText()).startsWith("참고:")) throw new Error("the 참고 note is not nested under its item");
   const [itemSize, noteSize] = await Promise.all([
-    patchNotes.locator(".releaseSection.is-new > .whatsNewList > li").nth(1).evaluate((element) => parseFloat(getComputedStyle(element).fontSize)),
+    noteItem.evaluate((element) => parseFloat(getComputedStyle(element).fontSize)),
     subNote.evaluate((element) => parseFloat(getComputedStyle(element).fontSize))
   ]);
   if (!(noteSize < itemSize)) throw new Error("the sub-note is not smaller than its item");
   if (await patchNotes.locator(".releaseSection.is-upcoming li").count() !== 1) throw new Error("the next-patch preview is missing from the patch notes");
+  interactionChecks.push("patch-notes-article-structure");
   interactionChecks.push("patch-notes-sub-notes-and-preview");
   await page.screenshot({ path: "previews/bweeep-launcher-patch-notes.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  if (await patchNotes.locator(".patchDetail").evaluate((element) => element.scrollWidth > element.clientWidth)) throw new Error("the patch note article overflows sideways at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-patch-notes-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await patchNotes.getByRole("button", { name: "자세히 보기" }).click();
   await page.waitForFunction(() => window.__openedReleasePage === "https://github.com/fri4666/bweeep-launcher/releases/tag/v0.1.30");
   await patchNotes.locator(".patchVersion").nth(2).click();
-  if (await patchNotes.locator(".releaseSection h4").count() !== 0 || await patchNotes.locator(".patchDetail li").count() !== 2) {
+  if (await patchNotes.locator(".releaseSection h3").count() !== 0 || await patchNotes.locator(".patchDetail li").count() !== 2) {
     throw new Error("a plain list without headings is not shown as one list");
   }
   interactionChecks.push("patch-notes-newest-first");
