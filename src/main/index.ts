@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell } from "electron";
+import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +45,22 @@ function setGameStatus(status: GameStatus): void {
 
 function gameIsStarting(): boolean {
   return gameStatus.state === "starting";
+}
+
+// Windows has no default app for .log files, so openPath shows the
+// "choose an app" prompt there. Notepad ships with Windows and reads them.
+async function openLogFile(file: string): Promise<boolean> {
+  if (process.platform !== "win32" || path.extname(file).toLowerCase() !== ".log") {
+    return !(await shell.openPath(file));
+  }
+  return new Promise((resolve) => {
+    const child = spawn("notepad.exe", [file], { detached: true, stdio: "ignore" });
+    child.once("error", () => resolve(false));
+    child.once("spawn", () => {
+      child.unref();
+      resolve(true);
+    });
+  });
 }
 
 function publishLauncherUpdate(status: LauncherUpdateStatus): void {
@@ -336,10 +353,7 @@ app.whenReady().then(async () => {
     return picked.canceled ? null : picked.filePaths[0] ?? null;
   });
   ipcMain.handle("logs:open", async (_event, target: LogTarget) => {
-    if (target === "game" && lastGameLogFile) {
-      const failed = await shell.openPath(lastGameLogFile);
-      if (!failed) return;
-    }
+    if (target === "game" && lastGameLogFile && await openLogFile(lastGameLogFile)) return;
     shell.showItemInFolder(gameLogPath());
   });
   ipcMain.handle("account:setGameProfile", async (_event, gameName: unknown) => {
