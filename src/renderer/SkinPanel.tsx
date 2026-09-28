@@ -118,7 +118,7 @@ export function SkinPanel({ instanceRoot, serverShowsSkins, onClose }: {
   useEffect(() => {
     void run(() => window.bweeep.skinState(instanceRoot), "스킨 정보를 불러오지 못했어요.").then((next) => {
       if (next?.current) setModel(next.current.model);
-      if (next?.serverError) setNotice({ text: `적용된 스킨을 서버에서 확인하지 못했어요. (${next.serverError})`, error: true });
+      if (next?.serverError) setNotice({ text: `적용된 스킨을 확인하지 못했어요 (${next.serverError})`, error: true });
     });
   }, [instanceRoot]);
 
@@ -136,7 +136,7 @@ export function SkinPanel({ instanceRoot, serverShowsSkins, onClose }: {
 
   async function apply() {
     const target = selected;
-    const done = "스킨을 적용했어요. 다음 접속부터 게임에 보여요.";
+    const done = "스킨 적용됨 · 다음 접속부터";
     if (!target && current) {
       await run(() => window.bweeep.applySkin(instanceRoot, current.id, model), "스킨을 적용하지 못했어요.", done);
     } else if (target?.kind === "library") {
@@ -173,13 +173,13 @@ export function SkinPanel({ instanceRoot, serverShowsSkins, onClose }: {
         <div className="modalBody skinBody">
           {notice && <p className={`noticeBar${notice.error ? "" : " isInfo"}`} role={notice.error ? "alert" : "status"}>{notice.text}</p>}
           {!serverShowsSkins && (
-            <p className="noticeBar isInfo">선택한 서버는 아직 붸에엡 스킨을 쓰지 않아요. 서버가 준비되면 저장해 둔 스킨이 자동으로 보여요.</p>
+            <p className="noticeBar isInfo">이 서버는 아직 붸에엡 스킨을 안 써요.</p>
           )}
           <div className="skinLayout">
             <section className="skinStage">
               <h3>{selected ? `미리보기 · ${selected.name}` : "현재 스킨"}</h3>
               {previewUrl ? <SkinPreview dataUrl={previewUrl} model={model} /> : (
-                <div className="skinEmpty">기본 스킨을 쓰고 있어요.<br />라이브러리에서 스킨을 골라 보세요.</div>
+                <div className="skinEmpty">기본 스킨 사용 중</div>
               )}
               <p className="mutedText">끌어서 돌려 볼 수 있어요.</p>
               <div className="segmented" role="radiogroup" aria-label="팔 모양">
@@ -196,7 +196,7 @@ export function SkinPanel({ instanceRoot, serverShowsSkins, onClose }: {
                   </button>
                 )}
                 {current && (
-                  <button className="textButton" disabled={busy} onClick={() => void run(() => window.bweeep.resetSkin(instanceRoot), "기본 스킨으로 되돌리지 못했어요.", "기본 스킨으로 되돌렸어요.")}>
+                  <button className="textButton" disabled={busy} onClick={() => void run(() => window.bweeep.resetSkin(instanceRoot), "기본 스킨으로 되돌리지 못했어요.", "기본 스킨으로 바뀜")}>
                     기본 스킨으로
                   </button>
                 )}

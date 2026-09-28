@@ -533,7 +533,7 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
-      progress({ kind: "info", stage: "서버 목록", message: "선택한 서버 정보 요청" });
+      progress({ kind: "info", stage: "서버 목록", message: "받는 중" });
       const manifest = await auth.getManifest(sessionUser, request.packId);
       assertManifest(manifest);
       if (manifest.id !== request.packId) throw new Error("선택한 서버와 받은 모드팩 정보가 일치하지 않습니다.");
@@ -550,8 +550,8 @@ app.whenReady().then(async () => {
         kind: "info",
         stage: "개인 파일",
         message: withoutPersonalMods
-          ? `개인 모드 없이 시작 · 셰이더 ${userContent.copiedShaders}개 적용`
-          : `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리`
+          ? `개인 모드 없이 · 셰이더 ${userContent.copiedShaders}개`
+          : `모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개`
       });
       for (const skipped of userContent.skippedMods) {
         progress({ kind: "info", stage: "개인 모드 제외", message: `${skipped.name}: ${skipped.reason}`, filePath: skipped.name });
@@ -588,7 +588,7 @@ app.whenReady().then(async () => {
         if (exit.crashReportLocation) lastGameLogFile = path.resolve(synced.instanceDir, exit.crashReportLocation);
         const stoppedByPlayer = stopRequestedRunId === runId;
         progress(stoppedByPlayer
-          ? { kind: "info", stage: "게임 종료", message: "플레이어가 게임을 종료했습니다" }
+          ? { kind: "info", stage: "게임 종료", message: "직접 끔" }
           : { kind: exit.abnormal ? "error" : "info", stage: "게임 종료", message: exit.message });
         if (gameRunId === runId) {
           setGameStatus(exit.abnormal && !stoppedByPlayer

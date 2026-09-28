@@ -15,6 +15,8 @@ page.on("pageerror", (error) => errors.push(error.message));
 await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline }) => {
   const listeners = [];
   const gameStatusListeners = [];
+  const updateListeners = [];
+  window.__emitUpdate = (status) => updateListeners.forEach((listener) => listener(status));
   let gameStatus = { state: "idle" };
   const emitGameStatus = (status) => {
     gameStatus = status;
@@ -220,6 +222,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     whatsNew: async () => previewWhatsNew && !window.__whatsNewSeen ? {
       version: "0.1.35",
       summary: "스킨 탭이 생기고, 이름과 접속 서버를 더 단단히 지켜요.",
+      intro: null,
+      outro: null,
       sections: [
         { kind: "new", title: "새 기능", items: ["스킨 탭이 생겼어요. 스킨을 3D로 돌려 보고 바로 적용할 수 있어요."] },
         { kind: "changed", title: "바뀐 점", items: [
@@ -234,6 +238,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       const current = {
         version: "0.1.30",
         summary: "패치노트 탭이 생겼고, 테스터는 새 버전을 먼저 받아요.",
+        intro: "안녕하세요, 붸에엡 런처 개발자입니다!",
+        outro: "다음 패치에서 뵙겠습니다!",
         sections: [
           { kind: "new", title: "새 기능", items: ["왼쪽 메뉴의 패치노트에서 버전마다 바뀐 점을 볼 수 있어요.", "테스터는 일반 런처에서 테스트 버전을 먼저 받아요."] },
           { kind: "fixed", title: "고친 문제", items: ["필요 없어진 붸에엡 전용 모드를 알아서 정리해요."] },
@@ -251,6 +257,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
           {
             version: "0.1.31-beta.1",
             summary: "다음 버전을 테스터가 먼저 확인해요.",
+            intro: null,
+            outro: null,
             sections: [{ kind: "changed", title: "바뀐 점", items: ["서버 목록을 더 빨리 불러와요."] }],
             prerelease: true,
             publishedAt: "2026-09-29T09:00:00Z",
@@ -260,6 +268,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
           {
             version: "0.1.29",
             summary: null,
+            intro: null,
+            outro: null,
             sections: [{ kind: "other", title: null, items: ["스킨 탭이 생겼어요.", "게임은 고른 서버에만 접속돼요."] }],
             prerelease: false,
             publishedAt: "2026-09-20T18:24:04Z",
@@ -307,7 +317,13 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     onAuthSession: () => () => {},
     onAuthError: () => () => {},
     onInviteReceived: () => () => {},
-    onLauncherUpdate: () => () => {},
+    onLauncherUpdate: (listener) => {
+      updateListeners.push(listener);
+      return () => {
+        const index = updateListeners.indexOf(listener);
+        if (index >= 0) updateListeners.splice(index, 1);
+      };
+    },
     onProgress: (listener) => {
       listeners.push(listener);
       return () => {
@@ -355,7 +371,7 @@ if (patchNotesOffline) {
   await page.locator(".launchButton").waitFor();
   await page.getByRole("button", { name: "패치노트", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "패치노트" });
-  await panel.getByText("이 버전의 패치노트만 보여 줘요", { exact: false }).waitFor({ timeout: 10000 });
+  await panel.getByText("이 버전 내용만 보여요", { exact: false }).waitFor({ timeout: 10000 });
   if (await panel.locator(".patchVersion").count() !== 1) throw new Error("offline patch notes should show only this build's notes");
   if (!(await panel.locator(".patchDetail").innerText()).includes("지금 버전")) throw new Error("the bundled notes are not marked as the current version");
   await page.screenshot({ path: "previews/bweeep-launcher-patch-notes-offline.png" });
@@ -430,6 +446,24 @@ if (catalogUnavailable) {
     throw new Error(`server checked time is not relative: ${serverFact}`);
   }
   interactionChecks.push("relative-server-time");
+  const indicator = page.locator(".updateIndicator");
+  await page.evaluate(() => window.__emitUpdate({ state: "downloading", update: { version: "0.1.31", notes: ["긴 업데이트 설명은 화면에 나오면 안 돼요."] }, percent: 42 }));
+  await indicator.waitFor();
+  if ((await indicator.innerText()).trim() !== "42%" || await indicator.locator("svg").count() !== 1 || await indicator.getAttribute("aria-label") !== "업데이트 받는 중") {
+    throw new Error(`update download should show only an icon and the percent: ${await indicator.innerText()}`);
+  }
+  await page.locator(".topbar").screenshot({ path: "previews/bweeep-launcher-update-downloading.png" });
+  for (const [state, label] of [["ready", "업데이트 준비됨"], ["installing", "다시 시작하는 중"], ["checking", "업데이트 확인 중"]]) {
+    await page.evaluate((next) => window.__emitUpdate({ state: next, update: { version: "0.1.31", notes: [] } }), state);
+    await page.locator(`.updateIndicator.is-${state}`).waitFor();
+    if ((await indicator.innerText()).trim() !== "" || await indicator.getAttribute("aria-label") !== label) {
+      throw new Error(`update ${state} should be icon-only: ${await indicator.innerText()}`);
+    }
+  }
+  if ((await page.locator(".topbar").innerText()).includes("업데이트")) throw new Error("update words are written on screen");
+  await page.evaluate(() => window.__emitUpdate({ state: "current" }));
+  await indicator.waitFor({ state: "detached" });
+  interactionChecks.push("update-icon-and-percent-only");
   await page.getByRole("button", { name: "설정", exact: true }).click();
   await page.waitForTimeout(100);
   const settingsText = await page.locator(".settingsModal").innerText();
@@ -487,7 +521,7 @@ if (catalogUnavailable) {
   interactionChecks.push("skin-preview-drag-rotate");
   await page.locator(".skinCardPick").filter({ hasText: "보라 기사" }).click();
   await page.getByRole("button", { name: "이 스킨 적용" }).click();
-  await page.getByText("스킨을 적용했어요. 다음 접속부터 게임에 보여요.").waitFor();
+  await page.getByText("스킨 적용됨 · 다음 접속부터").waitFor();
   if (!(await page.locator(".skinCard.active").innerText()).includes("보라 기사")) throw new Error("applying a library skin did not make it current");
   await page.getByRole("button", { name: "새 스킨" }).click();
   await page.locator(".skinCardPick").filter({ hasText: "새로 넣은 스킨" }).waitFor();
@@ -507,11 +541,11 @@ if (catalogUnavailable) {
     throw new Error("mod search does not show the server's loader, pack mods and blocked mods");
   }
   await page.locator(".modItem").filter({ hasText: "Sodium" }).getByRole("button", { name: "설치" }).click();
-  await page.getByText("Sodium을(를) 설치했어요. 다음 게임 시작부터 적용돼요.").waitFor();
+  await page.getByText("Sodium 설치됨").waitFor();
   if (!(await page.locator(".modItem").filter({ hasText: "Sodium" }).innerText()).includes("설치됨")) throw new Error("installed mod is not marked");
   await page.screenshot({ path: "previews/bweeep-launcher-mods.png" });
   await page.getByLabel("모드 검색").fill("fabulously optimized modpack");
-  await page.getByText("Fabulously Optimized은(는) 모드팩이라 통째로 받을 수 없어요.", { exact: false }).waitFor();
+  await page.getByText("Fabulously Optimized은(는) 모드팩이라 받을 수 없어요.", { exact: false }).waitFor();
   if (await page.locator(".modList .modItem").count() !== 0) throw new Error("modpack search still offers something to install");
   await page.screenshot({ path: "previews/bweeep-launcher-mods-modpack.png" });
   await page.getByLabel("모드 검색").fill("");
@@ -531,7 +565,7 @@ if (catalogUnavailable) {
   if (!(await patchNotes.locator(".patchVersion").nth(1).innerText()).includes("지금 버전")) throw new Error("the running version is not marked");
   await patchNotes.locator(".patchVersion").nth(1).click();
   const detail = await patchNotes.locator(".patchDetail").innerText();
-  for (const expected of ["v0.1.30", "패치노트 탭이 생겼고", "새 기능", "고친 문제", "알려진 문제", "2026년 9월 28일"]) {
+  for (const expected of ["v0.1.30", "패치노트 탭이 생겼고", "안녕하세요, 붸에엡 런처 개발자입니다!", "새 기능", "고친 문제", "알려진 문제", "다음 패치에서 뵙겠습니다!", "2026년 9월 28일"]) {
     if (!detail.includes(expected)) throw new Error(`patch note detail is missing ${expected}: ${detail}`);
   }
   if (await patchNotes.locator(".releaseSection h4").count() !== 3) throw new Error("patch note groups are not shown as headings");
@@ -554,9 +588,9 @@ if (catalogUnavailable) {
   interactionChecks.push("taken-name-refused");
   await page.locator(".profileModal input[maxlength='16']").fill("seos_py_new");
   await page.getByRole("button", { name: "저장", exact: true }).click();
-  await page.getByText("인게임 이름 변경됨 · 다음 실행부터 적용", { exact: true }).waitFor();
+  await page.getByText("이름 바뀜 · 다음 실행부터", { exact: true }).waitFor();
   await page.getByRole("button", { name: "모드 폴더 선택" }).click();
-  await page.getByText("모드 폴더 1개 추가됨 · 다음 실행부터 적용", { exact: true }).waitFor();
+  await page.getByText("모드 폴더 추가됨", { exact: true }).waitFor();
   await page.screenshot({ path: "previews/bweeep-launcher-profile-preview.png" });
   interactionChecks.push("personal-content-folder-settings");
   interactionChecks.push("successful-actions-toast");
@@ -619,7 +653,7 @@ if (catalogUnavailable) {
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
   await page.evaluate(() => window.__failWithPersonalMods());
-  await page.getByText("개인 모드 때문일 수 있어요.", { exact: false }).waitFor();
+  await page.getByText("개인 모드 때문일 수 있어요", { exact: false }).waitFor();
   await page.screenshot({ path: "previews/bweeep-launcher-retry-without-mods.png" });
   await page.getByRole("button", { name: "개인 모드 빼고 시작" }).click();
   await page.waitForFunction(() => window.__lastLaunchRequest?.withoutPersonalMods === true);
@@ -628,7 +662,7 @@ if (catalogUnavailable) {
   interactionChecks.push("retry-without-personal-mods");
 } else {
   await page.getByRole("button", { name: "Discord로 로그인" }).click();
-  await page.getByRole("button", { name: "브라우저에서 로그인하는 중" }).waitFor();
+  await page.getByRole("button", { name: "로그인 중" }).waitFor();
   if (await page.getByRole("button", { name: /Microsoft/ }).count()) {
     throw new Error("Microsoft login remained visible");
   }

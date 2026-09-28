@@ -478,19 +478,41 @@ h3 {
   to { opacity: 0.45; transform: scale(0.82); }
 }
 
-.updateBanner {
-  min-width: 0;
-  padding: 8px 12px;
-  overflow: hidden;
+/* Launcher self-update: an icon, plus the percent while downloading. */
+.updateIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
   color: var(--warn);
   font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
   background: rgba(217, 176, 114, 0.1);
   border: 1px solid rgba(217, 176, 114, 0.28);
   border-radius: 999px;
   -webkit-app-region: no-drag;
+}
+
+.updateIndicator svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.updateIndicator.is-ready {
+  color: var(--ok);
+  background: rgba(132, 173, 114, 0.1);
+  border-color: rgba(132, 173, 114, 0.3);
+}
+
+.updateIndicator.is-installing svg {
+  animation: spin 1200ms linear infinite;
 }
 
 .topbarActions {
@@ -1562,6 +1584,12 @@ input[aria-invalid="true"] {
 }
 
 /* What's new after an update */
+.whatsNewDialog {
+  width: min(480px, 100%);
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
+}
+
 .whatsNewDialog p.eyebrow {
   margin: 0 0 6px;
   color: var(--accent);
@@ -1731,6 +1759,19 @@ input[aria-invalid="true"] {
   background: rgba(217, 176, 114, 0.07);
   border-left: 3px solid var(--accent);
   border-radius: 8px;
+}
+
+.patchIntro p,
+.patchOutro p {
+  margin-top: 12px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.patchOutro p {
+  margin-top: 16px;
+  color: var(--muted);
 }
 
 .patchMore {

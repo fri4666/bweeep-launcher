@@ -52,14 +52,15 @@ export function startLauncherUpdates(
   } else {
     useStableFeed();
   }
-  autoUpdater.on("checking-for-update", () => setStatus({ state: "checking" }));
+  // Only the first check at startup shows as "checking"; the minute-by-minute
+  // checks after it stay silent unless they find something.
   autoUpdater.on("update-not-available", () => setStatus({ state: "current" }));
   autoUpdater.on("update-available", (info) => {
     if (!mayInstall(info.version)) {
       setStatus({ state: "current" });
       return;
     }
-    setStatus({ state: "available", update: toLauncherUpdate(info), message: "새 업데이트를 설치할 수 있습니다." });
+    setStatus({ state: "available", update: toLauncherUpdate(info) });
   });
   autoUpdater.on("download-progress", (progress) => {
     setStatus({

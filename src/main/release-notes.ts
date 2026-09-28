@@ -8,11 +8,24 @@ import { isNewerLauncherVersion } from "./version.js";
 //
 //   요약: 한 줄 요약
 //
+//   인사 한두 문장 (패치노트 탭에만 보임)
+//
 //   ## 새 기능
 //   - 짧은 항목
 //
-// The summary and the headings are optional. A plain bullet list (0.1.35 and
-// older) becomes one list without a heading.
+//   맺음말 한 문장 (패치노트 탭에만 보임)
+//
+// The summary, greeting, headings and sign-off are optional. A plain bullet
+// list (0.1.35 and older) becomes one list without a heading. The what's new
+// dialog shows only the summary and the bullets.
+//
+// 말투 (tone guide): 게임 패치노트처럼 개발자가 플레이어에게 직접 말하듯
+// 씁니다. 맨 위 "요약:" 한 줄, 짧은 인사와 맺음말, 기본은 "~합니다"체에
+// 가끔 가벼운 농담이나 솔직한 한마디("깜빡했네요!" 같은)를 섞습니다. 항목마다
+// 플레이어에게 무엇이 달라졌는지만 쉬운 말로 적고, 내부 용어(파일 이름,
+// 워크플로, 함수 이름)는 쓰지 않습니다. 다른 게임의 문장을 그대로 가져오지
+// 말고 말투만 따라 합니다. 업데이트 안내 창에는 요약과 항목 6개까지만
+// 나오니, 중요한 항목을 먼저 적습니다.
 
 export const RELEASES_PAGE = "https://github.com/fri4666/bweeep-launcher/releases";
 
@@ -27,22 +40,25 @@ const VERSION_LINE = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)$/;
 /** Stable tags and the normal launcher's -beta.N builds; -test.N belongs to the old separate test app. */
 const RELEASE_TAG = /^v(\d+\.\d+\.\d+(?:-beta\.\d+)?)$/;
 
-export function parseReleaseNotesText(text: string): { version: string | null; summary: string | null; sections: ReleaseNoteSection[] } {
+export function parseReleaseNotesText(text: string): { version: string | null } & Omit<ReleaseNotes, "version"> {
   let version: string | null = null;
   let summary: string | null = null;
   let started = false;
-  const loose: string[] = [];
+  const intro: string[] = [];
+  const outro: string[] = [];
   const sections: ReleaseNoteSection[] = [];
   let current: ReleaseNoteSection | null = null;
   for (const raw of text.replace(/^﻿/, "").split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
-    const versionLine = !started ? VERSION_LINE.exec(line) : null;
-    started = true;
+    const versionLine = VERSION_LINE.exec(line);
     if (versionLine) {
-      version = versionLine[1];
+      // Only a first line names the version; a beta's copy of it further down is skipped.
+      if (!started) version = versionLine[1];
+      started = true;
       continue;
     }
+    started = true;
     const summaryLine = /^요약\s*[:：]\s*(.+)$/.exec(line);
     if (summaryLine && summary === null && sections.length === 0) {
       summary = plain(summaryLine[1]);
@@ -64,26 +80,26 @@ export function parseReleaseNotesText(text: string): { version: string | null; s
       current.items.push(plain(bullet[1]));
       continue;
     }
-    // Other lines, such as the note the workflow puts above a beta's text, are not part of the list.
-    loose.push(plain(line));
+    // Other lines are the greeting before the list and the sign-off after it.
+    (sections.length === 0 ? intro : outro).push(plain(line));
   }
   const listed = sections.filter((section) => section.items.length > 0);
   // Releases before 0.1.34 were written as prose; their first lines stand in as the summary.
-  if (summary === null && listed.length === 0 && loose.length > 0) {
-    const prose = loose.join(" ");
+  if (summary === null && listed.length === 0 && intro.length > 0) {
+    const prose = intro.splice(0).join(" ");
     summary = prose.length > 240 ? `${prose.slice(0, 239)}…` : prose;
   }
-  return { version, summary, sections: listed };
+  return { version, summary, intro: intro.join("\n") || null, outro: outro.join("\n") || null, sections: listed };
 }
 
 /** The notes for exactly this version, or null when the file is for another one or empty. */
 export function parseReleaseNotes(text: string, version: string): ReleaseNotes | null {
-  const parsed = parseReleaseNotesText(text);
-  if (parsed.version !== version || parsed.sections.length === 0) return null;
-  return { version, summary: parsed.summary, sections: parsed.sections };
+  const { version: written, ...notes } = parseReleaseNotesText(text);
+  if (written !== version || notes.sections.length === 0) return null;
+  return { version, ...notes };
 }
 
-/** Keeps the first few items, in order, so a dialog stays short. */
+/** The summary and the first few items, in order, so a dialog stays short. */
 export function shortenReleaseNotes(notes: ReleaseNotes, maxItems: number): ReleaseNotes {
   let left = maxItems;
   const sections: ReleaseNoteSection[] = [];
@@ -93,7 +109,7 @@ export function shortenReleaseNotes(notes: ReleaseNotes, maxItems: number): Rele
     left -= items.length;
     sections.push({ ...section, items });
   }
-  return { ...notes, sections };
+  return { ...notes, intro: null, outro: null, sections };
 }
 
 /**
@@ -111,11 +127,13 @@ export function patchNotesFromReleases(payload: unknown, includePrereleases: boo
     const version = tag[1];
     const prerelease = release.prerelease === true || version.includes("-");
     if (prerelease && !includePrereleases) continue;
-    const parsed = parseReleaseNotesText(typeof release.body === "string" ? release.body : "");
+    const { summary, intro, outro, sections } = parseReleaseNotesText(typeof release.body === "string" ? release.body : "");
     notes.push({
       version,
-      summary: parsed.summary,
-      sections: parsed.sections,
+      summary,
+      intro,
+      outro,
+      sections,
       prerelease,
       publishedAt: typeof release.published_at === "string" ? release.published_at : null,
       url: isReleasePageUrl(release.html_url) ? release.html_url : null

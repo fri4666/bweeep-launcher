@@ -60,7 +60,7 @@ async function downloadArchive(source: MrpackSource, archivePath: string, progre
   const hash = crypto.createHash("sha512");
   let received = 0;
   let lastReport = 0;
-  progress({ kind: "download", stage: "모드팩 목록", message: "모드팩 목록 다운로드 중", completed: 0, total: source.size, unit: "bytes" });
+  progress({ kind: "download", stage: "모드팩 목록", message: "받는 중", completed: 0, total: source.size, unit: "bytes" });
   await fsp.rm(temporary, { force: true });
   try {
     await pipeline(
@@ -72,7 +72,7 @@ async function downloadArchive(source: MrpackSource, archivePath: string, progre
           const now = Date.now();
           if (now - lastReport >= 250 || received === source.size) {
             lastReport = now;
-            progress({ kind: "download", stage: "모드팩 목록", message: "모드팩 목록 다운로드 중", completed: received, total: source.size, unit: "bytes" });
+            progress({ kind: "download", stage: "모드팩 목록", message: "받는 중", completed: received, total: source.size, unit: "bytes" });
           }
           callback(null, chunk);
         }
@@ -128,7 +128,7 @@ async function applyOverrides(instanceDir: string, entries: Map<string, Buffer>,
     await fsp.writeFile(target, bytes);
     completed += 1;
     if (completed === 1 || completed % 25 === 0 || completed === total) {
-      progress({ kind: "info", stage: "모드팩 기본 설정", message: `기본 설정 적용: ${relative}`, completed, total, unit: "files", filePath: relative });
+      progress({ kind: "info", stage: "모드팩 기본 설정", message: `적용: ${relative}`, completed, total, unit: "files", filePath: relative });
     }
   }
   const previous = await readPaths(recordPath);

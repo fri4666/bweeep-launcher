@@ -14,8 +14,8 @@ function formatReleaseDate(value: string | null): string {
 
 const sourceNotices: Record<PatchNotes["source"], string> = {
   live: "",
-  cache: "지금은 인터넷에 연결되지 않아 마지막으로 받은 패치노트를 보여 줘요.",
-  bundled: "지금은 인터넷에 연결되지 않아 이 버전의 패치노트만 보여 줘요."
+  cache: "오프라인 · 마지막으로 받은 내용이에요",
+  bundled: "오프라인 · 이 버전 내용만 보여요"
 };
 
 /** Grouped bullets (새 기능, 바뀐 점, 고친 문제, 알려진 문제); a list with no headings stays one list. */
@@ -30,6 +30,15 @@ export function ReleaseNoteSections({ sections }: { sections: ReleaseNoteSection
           </ul>
         </section>
       ))}
+    </div>
+  );
+}
+
+/** The developer's greeting or sign-off, one paragraph per line. */
+function Paragraphs({ className, text }: { className: string; text: string }) {
+  return (
+    <div className={className}>
+      {text.split("\n").map((line, index) => <p key={index}>{line}</p>)}
     </div>
   );
 }
@@ -88,8 +97,8 @@ export function PatchNotesPanel({ onClose }: { onClose: () => void }) {
         <div className="modalBody">
           {notice && <p className="noticeBar isInfo" role="status">{notice}</p>}
           {error && <p className="noticeBar" role="alert">{error}</p>}
-          {!patchNotes && !error && <p className="emptyText">패치노트를 불러오는 중…</p>}
-          {patchNotes && patchNotes.notes.length === 0 && <p className="emptyText">아직 보여 줄 패치노트가 없어요.</p>}
+          {!patchNotes && !error && <p className="emptyText">불러오는 중…</p>}
+          {patchNotes && patchNotes.notes.length === 0 && <p className="emptyText">아직 없어요.</p>}
           {patchNotes && selected && (
             <div className="patchLayout">
               <nav className="patchVersions" aria-label="버전 목록">
@@ -114,9 +123,11 @@ export function PatchNotesPanel({ onClose }: { onClose: () => void }) {
                   <VersionBadges note={selected} currentVersion={patchNotes.currentVersion} />
                 </h3>
                 {selected.summary && <p className="patchSummary">{selected.summary}</p>}
+                {selected.intro && <Paragraphs className="patchIntro" text={selected.intro} />}
                 {selected.sections.length > 0
                   ? <ReleaseNoteSections sections={selected.sections} />
-                  : <p className="emptyText">이 버전은 따로 적은 내용이 없어요.</p>}
+                  : <p className="emptyText">적힌 내용이 없어요.</p>}
+                {selected.outro && <Paragraphs className="patchOutro" text={selected.outro} />}
                 {selected.url && (
                   <button className="secondaryButton patchMore" onClick={() => void openDetails(selected.url!)}>자세히 보기</button>
                 )}

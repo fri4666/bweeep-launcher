@@ -20,7 +20,7 @@ export function describeGameExit(exit: {
   return {
     abnormal,
     message: abnormal
-      ? `게임이 예기치 않게 꺼졌습니다. 다시 시작해 보고, 계속되면 로그를 확인해 주세요. (${detail})`
+      ? `비정상 종료 (${detail})`
       : "Minecraft가 종료되었습니다.",
     code,
     signal,

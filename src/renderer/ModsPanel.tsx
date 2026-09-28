@@ -93,14 +93,14 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
           <div>
             <p className="eyebrow">편의 모드</p>
             <h2>{server.name}</h2>
-            <small>{loaderNames[server.loader.kind]} · Minecraft {server.minecraftVersion}용 · 서버 설치가 필요 없는 모드만 보여요</small>
+            <small>{loaderNames[server.loader.kind]} · Minecraft {server.minecraftVersion}용</small>
           </div>
           <button className="closeButton" onClick={onClose}>닫기</button>
         </header>
         <div className="modalBody">
           {notice && <p className={`noticeBar${notice.error ? "" : " isInfo"}`} role={notice.error ? "alert" : "status"}>{notice.text}</p>}
           {!moddable ? (
-            <p className="emptyText">이 서버는 모드 없이 바닐라로 실행돼서 편의 모드를 넣을 수 없어요.</p>
+            <p className="emptyText">바닐라 서버라 모드를 넣을 수 없어요.</p>
           ) : (
             <>
               <div className="modsToolbar">
@@ -118,7 +118,7 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
                 <div className="modList">
                   {modpacks.length > 0 && (
                     <p className="noticeBar isInfo" role="status">
-                      {modpacks.join(", ")}은(는) 모드팩이라 통째로 받을 수 없어요. 서버 팩은 서버가 정하고, 여기서는 편의 모드만 하나씩 설치할 수 있어요.
+                      {modpacks.join(", ")}은(는) 모드팩이라 받을 수 없어요.
                     </p>
                   )}
                   {hits.map((hit) => {
@@ -132,7 +132,7 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
                           <small>다운로드 {formatDownloads(hit.downloads)}</small>
                         </div>
                         {status === "available" ? (
-                          <button className="secondaryButton" disabled={busyId !== null} onClick={() => void act(hit.projectId, () => window.bweeep.installMod(target, hit.projectId), `${hit.title}을(를) 설치했어요. 다음 게임 시작부터 적용돼요.`, "모드를 설치하지 못했어요.")}>
+                          <button className="secondaryButton" disabled={busyId !== null} onClick={() => void act(hit.projectId, () => window.bweeep.installMod(target, hit.projectId), `${hit.title} 설치됨`, "모드를 설치하지 못했어요.")}>
                             {busyId === hit.projectId ? "설치 중…" : "설치"}
                           </button>
                         ) : (
@@ -155,16 +155,16 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
                       <span className="modIconFallback" aria-hidden="true">{mod.title.slice(0, 1)}</span>
                       <div className="modText">
                         <strong>{mod.title}</strong>
-                        <small>{mod.versionNumber}{mod.explicit ? "" : " · 다른 모드에 필요해서 함께 설치됨"}{mod.update ? ` · 새 버전 ${mod.update}` : ""}</small>
+                        <small>{mod.versionNumber}{mod.explicit ? "" : " · 함께 설치됨"}{mod.update ? ` · 새 버전 ${mod.update}` : ""}</small>
                       </div>
                       <div className="modActions">
                         {mod.update && (
-                          <button className="secondaryButton" disabled={busyId !== null} onClick={() => void act(mod.projectId, () => window.bweeep.updateMod(target, mod.projectId), `${mod.title}을(를) 업데이트했어요.`, "모드를 업데이트하지 못했어요.")}>
+                          <button className="secondaryButton" disabled={busyId !== null} onClick={() => void act(mod.projectId, () => window.bweeep.updateMod(target, mod.projectId), `${mod.title} 업데이트됨`, "모드를 업데이트하지 못했어요.")}>
                             업데이트
                           </button>
                         )}
                         {mod.explicit && (
-                          <button className="textButton dangerText" disabled={busyId !== null} onClick={() => void act(mod.projectId, () => window.bweeep.removeMod(target, mod.projectId), `${mod.title}을(를) 지웠어요.`, "모드를 지우지 못했어요.")}>
+                          <button className="textButton dangerText" disabled={busyId !== null} onClick={() => void act(mod.projectId, () => window.bweeep.removeMod(target, mod.projectId), `${mod.title} 지움`, "모드를 지우지 못했어요.")}>
                             삭제
                           </button>
                         )}
@@ -173,7 +173,7 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
                   ))}
                 </div>
               )}
-              <p className="mutedText">설치한 모드는 게임을 시작할 때 함께 들어가요. 게임이 켜지지 않으면 최근에 넣은 모드를 지워 보세요.</p>
+              <p className="mutedText">게임이 안 켜지면 최근에 넣은 모드를 지워 보세요.</p>
             </>
           )}
         </div>

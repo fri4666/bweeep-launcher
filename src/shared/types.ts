@@ -213,6 +213,9 @@ export interface ReleaseNoteSection {
 export interface ReleaseNotes {
   version: string;
   summary: string | null;
+  /** The developer's greeting above the list and sign-off below it; lines are separated by "\n". */
+  intro: string | null;
+  outro: string | null;
   sections: ReleaseNoteSection[];
 }
 

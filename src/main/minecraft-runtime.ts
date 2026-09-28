@@ -64,7 +64,7 @@ export async function installAndLaunch(
         progress({
           kind: phase === "start" ? "download" : "info",
           stage: batchStage,
-          message: `파일 받는 중 (${completed}/${total})`,
+          message: `받는 중 ${completed}/${total}`,
           completed,
           total,
           unit: "files",
@@ -90,7 +90,7 @@ export async function installAndLaunch(
   const remoteLock = manifest.clientFeatures?.connectionLock;
   if (typeof remoteLock === "object") {
     await verifyRemoteConnectionLock(instanceDir, manifest);
-    report({ kind: "info", stage: "서버 연결 보호", message: "연결 보호 모드 확인 완료" });
+    report({ kind: "info", stage: "서버 연결 보호", message: "확인됨" });
   }
   // The guard agent sets bweeep.targetServer itself; older lock mods read the same property.
   const legacyLockOnly = connectionGuardArgs.length === 0 && (remoteLock === true
@@ -100,7 +100,7 @@ export async function installAndLaunch(
   await fsp.mkdir(path.dirname(quickPlayPath), { recursive: true });
 
   const { identity, ticket: gameTicket, yggdrasil } = await runStage(report, "접속 인증", getLaunchAuthorization);
-  report({ kind: "info", stage: "게임 실행", message: "Minecraft 실행 명령을 준비하는 중" });
+  report({ kind: "info", stage: "게임 실행", message: "준비 중" });
   const gameProcess = await launch({
     gamePath: instanceDir,
     resourcePath: instanceDir,
@@ -123,19 +123,19 @@ export async function installAndLaunch(
     minMemory: 2048,
     maxMemory: 6144
   });
-  report({ kind: "info", stage: "게임 프로세스", message: "게임 창을 여는 중" });
+  report({ kind: "info", stage: "게임 프로세스", message: "창 여는 중" });
   gameProcess.stdout?.on("data", createGameOutputObserver(report));
   gameProcess.stderr?.on("data", createGameOutputObserver(report));
   const watcher = createMinecraftProcessWatcher(gameProcess);
   watcher.once("minecraft-window-ready", () => {
-    report({ kind: "info", stage: "게임 초기화", message: "게임 화면 준비 중" });
+    report({ kind: "info", stage: "게임 초기화", message: "화면 준비 중" });
   });
   // The caller reports the exit: only it knows whether the player asked to stop.
   watcher.once("minecraft-exit", ({ code, signal, crashReport, crashReportLocation }) => {
     onExit(describeGameExit({ code, signal, crashReport, crashReportLocation }));
   });
   watcher.once("error", (error) => {
-    const message = `Minecraft 프로세스를 시작하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
+    const message = `게임을 켜지 못했어요: ${error instanceof Error ? error.message : String(error)}`;
     report({ kind: "error", stage: "게임 실행", message });
     onExit({ abnormal: true, message, code: null, signal: null, crashReportLocation: null });
   });
@@ -148,7 +148,7 @@ async function installFabric(
   runtime: InstallRuntime,
   progress: ProgressSink
 ): Promise<string> {
-  progress({ kind: "info", stage: "Fabric", message: `Fabric ${manifest.loader.version} 설치 파일을 준비하는 중` });
+  progress({ kind: "info", stage: "Fabric", message: `Fabric ${manifest.loader.version}` });
   const loader = await getFabricLoaderArtifact(manifest.minecraftVersion, manifest.loader.version, { fetch: fetchWithSystemNetwork });
   const installed = await executeInstallWorkflow(createFabricInstallWorkflow({
     minecraftVersion: manifest.minecraftVersion,
@@ -172,7 +172,7 @@ async function installLaunchLibraries(
   const files = resolveLibraryInstallFiles(resolved.libraries, minecraft)
     .filter((file): file is NonNullable<typeof file> => Boolean(file));
   if (files.length === 0) return;
-  progress({ kind: "info", stage: "실행 라이브러리", message: `실행 라이브러리 ${files.length}개를 확인하는 중` });
+  progress({ kind: "info", stage: "실행 라이브러리", message: `${files.length}개 확인` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-launch-libraries", type: "files", files }] }, runtime, {
     onEvent: (event) => publishInstallerEvent(progress, "실행 라이브러리", event)
   });
@@ -207,7 +207,7 @@ async function resolveRuntime(
     if (java && java.majorVersion === requiredJava.majorVersion) return java.path;
   }
 
-  progress({ kind: "info", stage: "Java 런타임", message: `Minecraft용 Java ${requiredJava.majorVersion}을 찾지 못해 다운로드를 시작합니다.` });
+  progress({ kind: "info", stage: "Java 런타임", message: `Java ${requiredJava.majorVersion} 받는 중` });
   const platform = process.platform === "win32"
     ? process.arch === "arm64" ? "windows-arm64" : "windows-x64"
     : process.platform === "darwin" ? process.arch === "arm64" ? "mac-os-arm64" : "mac-os"
@@ -235,7 +235,7 @@ async function installMinecraftBase(
   runtime: InstallRuntime,
   progress: ProgressSink
 ): Promise<string> {
-  progress({ kind: "info", stage: "게임 정보", message: `Minecraft ${minecraftVersion} 버전 정보를 확인하는 중` });
+  progress({ kind: "info", stage: "게임 정보", message: `Minecraft ${minecraftVersion}` });
   const entry = (await getVersionList({ fetch: fetchWithSystemNetwork })).versions.find((item) => item.id === minecraftVersion);
   if (!entry) throw new Error(`Minecraft ${minecraftVersion} 정보를 찾지 못했습니다.`);
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-version", type: "files", files: [resolveMinecraftVersionJsonInstallFile(entry, minecraft)] }] }, runtime);
@@ -245,12 +245,12 @@ async function installMinecraftBase(
     ...resolveLibraryInstallFiles(resolved.libraries, minecraft),
     ...resolveAssetMetadataInstallFiles(resolved, minecraft)
   ].filter((file): file is NonNullable<typeof file> => Boolean(file));
-  progress({ kind: "info", stage: "라이브러리", message: `게임 파일과 라이브러리 ${baseFiles.length}개를 준비하는 중` });
+  progress({ kind: "info", stage: "라이브러리", message: `${baseFiles.length}개 준비` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-base", type: "files", files: baseFiles }] }, runtime, {
     onEvent: (event) => publishInstallerEvent(progress, "라이브러리", event)
   });
   const assetFiles = await resolveAssetObjectInstallFiles(resolved, minecraft);
-  progress({ kind: "info", stage: "게임 리소스", message: `게임 리소스 ${assetFiles.length}개를 준비하는 중` });
+  progress({ kind: "info", stage: "게임 리소스", message: `${assetFiles.length}개 준비` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-assets", type: "files", files: assetFiles }] }, runtime, {
     onEvent: (event) => publishInstallerEvent(progress, "게임 리소스", event)
   });
@@ -266,7 +266,7 @@ async function installForgeFamily(
 ): Promise<string> {
   const project = manifest.loader.kind === "forge" ? "forge" : "neoforge";
   const stage = project === "forge" ? "Forge" : "NeoForge";
-  progress({ kind: "info", stage, message: `${stage} ${manifest.loader.version} 설치 파일을 준비하는 중` });
+  progress({ kind: "info", stage, message: `${stage} ${manifest.loader.version}` });
   const forgeVersion = `${manifest.minecraftVersion}-${manifest.loader.version}`;
   const installer = project === "forge"
     ? await resolveForgeInstallerFile(minecraft, forgeVersion)
@@ -315,10 +315,10 @@ function publishInstallerEvent(progress: ProgressSink, stage: string, event: unk
 
 function installEventMessage(event: Record<string, unknown>): string | null {
   switch (event.type) {
-    case "task-end": return event.error ? "설치 작업 실패" : null;
-    case "file-retry": return `다운로드 재시도 중${typeof event.attempt === "number" ? ` (${event.attempt}회째)` : ""}`;
-    case "java-strategy-start": return "Java 설치 방법 확인 중";
-    case "java-strategy-failed": return "다른 Java 설치 방법으로 전환 중";
+    case "task-end": return event.error ? "설치 실패" : null;
+    case "file-retry": return `다시 받는 중${typeof event.attempt === "number" ? ` ${event.attempt}` : ""}`;
+    case "java-strategy-start": return "Java 설치 확인";
+    case "java-strategy-failed": return "다른 방법으로 Java 설치";
     default: return null;
   }
 }
