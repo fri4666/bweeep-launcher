@@ -16,7 +16,7 @@ import type {
   UserContentFolders,
   UserContentKind
 } from "../shared/types.js";
-import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
+import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
 
 const selectedPackStorageKey = "bweeep.selected-pack-id";
@@ -162,7 +162,6 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
-  const [connection, setConnection] = useState<ServerConnection | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [launcherVersion, setLauncherVersion] = useState("");
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
@@ -180,7 +179,6 @@ function App() {
       ?? serverList.find((server) => server.default)
       ?? serverList[0];
     setSelectedId(initial?.id ?? "");
-    setConnection(initial?.server ?? null);
     setServerStatus(null);
     setServerCheckedAt(null);
   }
@@ -324,23 +322,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!connection) return;
-    let checkInFlight = false;
-    const check = async () => {
-      if (checkInFlight) return;
-      checkInFlight = true;
-      try {
-        await refreshServerStatus(connection);
-      } finally {
-        checkInFlight = false;
-      }
-    };
-    void check();
-    const interval = window.setInterval(() => void check(), 5_000);
-    return () => window.clearInterval(interval);
-  }, [connection, refreshServerStatus]);
-
-  useEffect(() => {
     if (!settingsOpen || !user) return;
     setSettingsNotice("");
     void loadCatalog({ quiet: true });
@@ -359,6 +340,27 @@ function App() {
     () => availableServers.find((server) => server.id === selectedId) ?? availableServers[0],
     [availableServers, selectedId]
   );
+  const connection = useMemo<ServerConnection | null>(
+    () => selected ? { host: selected.server.host, port: selected.server.port } : null,
+    [selected?.server.host, selected?.server.port]
+  );
+
+  useEffect(() => {
+    if (!connection) return;
+    let checkInFlight = false;
+    const check = async () => {
+      if (checkInFlight) return;
+      checkInFlight = true;
+      try {
+        await refreshServerStatus(connection);
+      } finally {
+        checkInFlight = false;
+      }
+    };
+    void check();
+    const interval = window.setInterval(() => void check(), 5_000);
+    return () => window.clearInterval(interval);
+  }, [connection, refreshServerStatus]);
 
   const canUseLauncher = Boolean(access?.allowed);
   const gameBusy = gameStatus.state !== "idle";
@@ -515,12 +517,9 @@ function App() {
     }
   }
 
-  async function selectServer(nextId: string) {
-    const next = servers.find((server) => server.id === nextId);
-    if (!next) return;
+  function selectServer(nextId: string) {
     setSelectedId(nextId);
     writeStorage(selectedPackStorageKey, nextId);
-    setConnection(next.server);
   }
 
   async function logout() {
@@ -650,9 +649,7 @@ function App() {
       const root = await window.bweeep.defaultInstanceRoot();
       writeStorage(selectedPackStorageKey, null);
       writeStorage(instanceRootStorageKey, null);
-      const initial = servers.find((server) => server.default) ?? servers[0];
-      setSelectedId(initial?.id ?? "");
-      if (initial) setConnection(initial.server);
+      setSelectedId((servers.find((server) => server.default) ?? servers[0])?.id ?? "");
       setInstanceRoot(root);
       setLogs([]);
       setActionToast("런처 설정 초기화됨");
@@ -947,7 +944,7 @@ function App() {
                       className={`serverChoice${server.id === selected?.id ? " active" : ""}`}
                       key={server.id}
                       aria-pressed={server.id === selected?.id}
-                      onClick={() => void selectServer(server.id)}
+                      onClick={() => selectServer(server.id)}
                       type="button"
                     >
                       <span className={`serverBadge${server.environment === "test" ? " isTest" : ""}`}>{server.environment === "test" ? "테섭" : "본섭"}</span>
