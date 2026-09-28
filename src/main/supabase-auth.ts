@@ -366,6 +366,12 @@ export class SupabaseAuth {
     };
   }
 
+  /** Retires the game token once the game exits, so a copied token stops working. */
+  async revokeGameAuth(user: LauncherUser | null): Promise<void> {
+    if (!user) return;
+    await this.invokeFunction<{ ok: boolean }>({ action: "revokeGameAuth" }, "게임 접속 토큰을 폐기하지 못했습니다.");
+  }
+
   async listMembers(user: LauncherUser | null): Promise<MemberSummary[]> {
     if (!user) throw new Error("Discord 로그인이 필요합니다.");
     const data = await this.invokeFunction<{ members: MemberSummary[] }>({ action: "listMembers" }, "멤버 목록을 불러오지 못했습니다.");
@@ -492,7 +498,9 @@ async function postLauncherAccess<T>(config: Required<Pick<SupabaseConfig, "url"
       headers: {
         apikey: config.publishableKey,
         Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        // Lets the server tell launchers too old for a server to update first.
+        "x-bweeep-launcher-version": app.getVersion()
       },
       body: JSON.stringify(body)
     });

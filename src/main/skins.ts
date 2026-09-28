@@ -1,12 +1,13 @@
 import { nativeImage } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import * as yauzl from "yauzl";
 import type { SkinLibraryEntry, SkinModel } from "../shared/types.js";
 import { hashBytes } from "./hash.js";
+import { readZipEntries } from "./zip-entries.js";
 
 /** Same limit as the server and the storage bucket. */
 const MAX_SKIN_BYTES = 64 * 1024;
+const MAX_LIBRARY_SKINS = 100;
 const LIBRARY_FILE = "library.json";
 
 interface StoredEntry {
@@ -56,13 +57,20 @@ export class SkinLibrary {
     return listed.filter((entry): entry is SkinLibraryEntry => entry !== null);
   }
 
-  /** Adds a PNG; the id is its content hash, which is also the server's texture name. */
-  async add(png: Buffer, name: string, model?: SkinModel): Promise<StoredEntry> {
-    const inspected = inspectSkin(png);
+  /**
+   * Adds a PNG; the id is its content hash, which is also the server's texture
+   * name. The image is re-encoded first, so only its pixels are kept and
+   * uploaded, never text or other chunks the original file carried.
+   */
+  async add(original: Buffer, name: string, model?: SkinModel, options: { asStored?: boolean } = {}): Promise<StoredEntry> {
+    const inspected = inspectSkin(original);
+    // A skin downloaded from the server is kept byte for byte, so its id stays the server's hash.
+    const png = options.asStored ? original : nativeImage.createFromBuffer(original).toPNG();
     const id = hashBytes("sha256", png);
     const entries = await this.readIndex();
     const existing = entries.find((entry) => entry.id === id);
     if (existing) return existing;
+    if (entries.length >= MAX_LIBRARY_SKINS) throw new Error(`스킨은 ${MAX_LIBRARY_SKINS}개까지 저장할 수 있어요. 안 쓰는 스킨을 지운 뒤 추가해 주세요.`);
     await fsp.mkdir(this.root, { recursive: true });
     await fsp.writeFile(this.file(id), png);
     const entry: StoredEntry = { id, name: name.slice(0, 40) || "새 스킨", model: model ?? inspected.model, addedAt: new Date().toISOString() };
@@ -119,7 +127,7 @@ export async function findDefaultSkins(instanceRoot: string): Promise<DefaultSki
   ]);
   for (const jar of await clientJars(instanceRoot)) {
     try {
-      const found = await readZipEntries(jar, [...wanted.keys()]);
+      const found = await readZipEntries(jar, [...wanted.keys()], MAX_SKIN_BYTES);
       if (found.size === wanted.size) {
         return [...wanted].map(([entryPath, skin]) => ({ ...skin, dataUrl: toDataUrl(found.get(entryPath)!) }));
       }
@@ -152,37 +160,6 @@ async function readDirNames(directory: string): Promise<string[]> {
   } catch {
     return [];
   }
-}
-
-function readZipEntries(file: string, names: string[]): Promise<Map<string, Buffer>> {
-  const wanted = new Set(names);
-  return new Promise((resolve, reject) => {
-    yauzl.open(file, { lazyEntries: true, validateEntrySizes: true }, (openError, zip) => {
-      if (openError || !zip) return reject(openError ?? new Error("jar를 열지 못했습니다."));
-      const found = new Map<string, Buffer>();
-      zip.on("error", reject);
-      zip.on("entry", (entry: yauzl.Entry) => {
-        if (!wanted.has(entry.fileName) || entry.uncompressedSize > MAX_SKIN_BYTES) return zip.readEntry();
-        zip.openReadStream(entry, (streamError, stream) => {
-          if (streamError || !stream) return reject(streamError ?? new Error("jar 항목을 읽지 못했습니다."));
-          const chunks: Buffer[] = [];
-          stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-          stream.on("error", reject);
-          stream.on("end", () => {
-            found.set(entry.fileName, Buffer.concat(chunks));
-            if (found.size === wanted.size) {
-              zip.close();
-              resolve(found);
-            } else {
-              zip.readEntry();
-            }
-          });
-        });
-      });
-      zip.on("end", () => resolve(found));
-      zip.readEntry();
-    });
-  });
 }
 
 export function toDataUrl(png: Buffer): string {

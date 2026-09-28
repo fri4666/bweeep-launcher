@@ -22,7 +22,8 @@ import type {
   SyncProgress,
   UserContentFolders,
   UserContentKind,
-  UserContentFolderPickResult
+  UserContentFolderPickResult,
+  WhatsNew
 } from "../shared/types.js";
 
 /** Returns an unsubscribe function so React effects can clean up. */
@@ -59,7 +60,10 @@ const api = {
   checkLauncherUpdate: () => ipcRenderer.invoke("launcher:checkUpdate") as Promise<LauncherUpdateStatus>,
   launcherChannel: () => ipcRenderer.invoke("launcher:channel") as Promise<"production" | "test">,
   launcherVersion: () => ipcRenderer.invoke("launcher:version") as Promise<string>,
-  launchGame: (request: { packId: string; instanceDir: string }) => ipcRenderer.invoke("game:launch", request) as Promise<LaunchResult>,
+  launchGame: (request: { packId: string; instanceDir: string; withoutPersonalMods?: boolean }) => ipcRenderer.invoke("game:launch", request) as Promise<LaunchResult>,
+  whatsNew: () => ipcRenderer.invoke("launcher:whatsNew") as Promise<WhatsNew | null>,
+  markWhatsNewSeen: (version: string) => ipcRenderer.invoke("launcher:whatsNewSeen", version) as Promise<void>,
+  openStableDownload: () => ipcRenderer.invoke("launcher:openStableDownload") as Promise<void>,
   listMembers: () => ipcRenderer.invoke("access:listMembers") as Promise<MemberSummary[]>,
   setTester: (userId: string, tester: boolean) => ipcRenderer.invoke("access:setTester", userId, tester) as Promise<MemberSummary[]>,
   searchMods: (target: ModTarget, query: string, offset: number) => ipcRenderer.invoke("mods:search", target, query, offset) as Promise<ModSearchResult>,

@@ -29,7 +29,7 @@ interface ModrinthVersion {
   version_number: string;
   version_type: string;
   files: Array<{ url: string; filename: string; primary: boolean; size: number; hashes: { sha512?: string } }>;
-  dependencies: Array<{ project_id: string | null; dependency_type: string }>;
+  dependencies: Array<{ project_id: string | null; version_id?: string | null; dependency_type: string }>;
 }
 
 interface ModrinthProject {
@@ -134,21 +134,35 @@ export async function listPersonalMods(target: ModTarget, checkUpdates: boolean)
   }));
 }
 
-export async function installMod(target: ModTarget, projectId: string): Promise<PersonalMod[]> {
-  requireModdable(target);
-  const record = await readRecord(target);
-  const inPack = await packProjectIds(target);
-  // Without an installed pack we cannot tell which mods it already ships, and a
-  // second copy of the same mod stops the game from starting.
-  if (!inPack) throw new Error("이 서버로 게임을 한 번 시작한 뒤에 모드를 추가해 주세요. 서버 팩에 이미 있는 모드를 확인해야 해요.");
-  const blocked = new Set(target.blockedModrinthProjects);
-  const directory = personalModsDir(target.instanceRoot, target.loader, target.minecraftVersion);
+interface PlannedMod {
+  projectId: string;
+  title: string;
+  version: ModrinthVersion;
+  file: ModrinthVersion["files"][number];
+  explicit: boolean;
+}
 
-  const install = async (id: string, explicit: boolean, depth: number): Promise<void> => {
+/**
+ * Works out every file an install or update needs, with all checks, before
+ * anything is downloaded. A chain that cannot be completed is refused as a
+ * whole, so no half-installed mod is left to crash the game.
+ */
+async function planMods(
+  target: ModTarget,
+  record: InstalledRecord[],
+  inPack: Set<string>,
+  rootId: string,
+  options: { replacing?: string } = {}
+): Promise<PlannedMod[]> {
+  const blocked = new Set(target.blockedModrinthProjects);
+  const plan: PlannedMod[] = [];
+  const kept = record.filter((mod) => mod.projectId !== options.replacing);
+
+  const visit = async (id: string, explicit: boolean, depth: number): Promise<void> => {
     requireProjectId(id);
     if (blocked.has(id)) throw new Error("이 서버에서 쓰지 않기로 한 모드라 설치할 수 없어요.");
-    if (inPack.has(id)) return;
-    const existing = record.find((mod) => mod.projectId === id);
+    if (inPack.has(id) || plan.some((mod) => mod.projectId === id)) return;
+    const existing = kept.find((mod) => mod.projectId === id);
     if (existing) {
       if (explicit) existing.explicit = true;
       return;
@@ -162,48 +176,91 @@ export async function installMod(target: ModTarget, projectId: string): Promise<
     }
     const version = await latestVersion(id, target);
     if (!version) throw new Error(`${project.title}에는 ${loaderName(target)} ${target.minecraftVersion}용 파일이 없어요.`);
+    const present = (other: string) => inPack.has(other) || kept.some((mod) => mod.projectId === other) || plan.some((mod) => mod.projectId === other);
     for (const dependency of version.dependencies) {
-      const conflict = dependency.dependency_type === "incompatible" && dependency.project_id
-        && (inPack.has(dependency.project_id) || record.some((mod) => mod.projectId === dependency.project_id));
-      if (conflict) throw new Error(`${project.title}은(는) 이미 있는 다른 모드와 함께 쓸 수 없어요.`);
+      if (dependency.dependency_type === "incompatible" && dependency.project_id && present(dependency.project_id)) {
+        throw new Error(`${project.title}은(는) 이미 있는 다른 모드와 함께 쓸 수 없어요.`);
+      }
     }
-    const file = pickFile(version);
-    await downloadInstallFilesWithSystemNetwork([{
-      path: path.join(directory, file.filename),
-      urls: [file.url],
-      size: file.size,
-      checksum: { algorithm: "sha512", value: file.hashes.sha512! }
-    }]);
-    record.push({ projectId: id, versionId: version.id, versionNumber: version.version_number, title: project.title, fileName: file.filename, explicit });
-    await writeRecord(target, record);
+    plan.push({ projectId: id, title: project.title, version, file: pickFile(version), explicit });
     for (const dependency of version.dependencies) {
-      if (dependency.dependency_type === "required" && dependency.project_id) await install(dependency.project_id, false, depth + 1);
+      if (dependency.dependency_type !== "required") continue;
+      const dependencyId = dependency.project_id ?? (dependency.version_id ? (await api<ModrinthVersion>(`/version/${dependency.version_id}`)).project_id : null);
+      if (!dependencyId) throw new Error(`${project.title}에 필요한 모드를 Modrinth에서 찾지 못해 설치하지 않았어요.`);
+      await visit(dependencyId, false, depth + 1);
     }
   };
 
+  await visit(rootId, !options.replacing || record.find((mod) => mod.projectId === rootId)?.explicit !== false, 0);
+  // Mods already installed must not declare the new ones incompatible either.
+  for (const mod of kept) {
+    const version = await api<ModrinthVersion>(`/version/${mod.versionId}`).catch(() => null);
+    const clash = version?.dependencies.find((dependency) =>
+      dependency.dependency_type === "incompatible" && plan.some((planned) => planned.projectId === dependency.project_id));
+    if (clash) throw new Error(`이미 설치한 ${mod.title}와(과) 함께 쓸 수 없는 모드라 설치하지 않았어요.`);
+  }
+  return plan;
+}
+
+/** Downloads every planned file or none: files from a failed batch are deleted again. */
+async function downloadPlan(directory: string, plan: PlannedMod[]): Promise<void> {
   await fsp.mkdir(directory, { recursive: true });
-  await install(projectId, true, 0);
+  const files = plan.map((mod) => ({
+    path: path.join(directory, mod.file.filename),
+    urls: [mod.file.url],
+    size: mod.file.size,
+    checksum: { algorithm: "sha512" as const, value: mod.file.hashes.sha512! }
+  }));
+  const existing = new Set(await fsp.readdir(directory).catch(() => [] as string[]));
+  try {
+    await downloadInstallFilesWithSystemNetwork(files);
+  } catch (error) {
+    await Promise.all(plan
+      .filter((mod) => !existing.has(mod.file.filename))
+      .map((mod) => fsp.rm(path.join(directory, mod.file.filename), { force: true })));
+    throw error;
+  }
+}
+
+function toRecord(mod: PlannedMod): InstalledRecord {
+  return { projectId: mod.projectId, versionId: mod.version.id, versionNumber: mod.version.version_number, title: mod.title, fileName: mod.file.filename, explicit: mod.explicit };
+}
+
+async function requirePackProjects(target: ModTarget): Promise<Set<string>> {
+  const inPack = await packProjectIds(target);
+  // Without an installed pack we cannot tell which mods it already ships, and a
+  // second copy of the same mod stops the game from starting.
+  if (!inPack) throw new Error("이 서버로 게임을 한 번 시작한 뒤에 모드를 추가해 주세요. 서버 팩에 이미 있는 모드를 확인해야 해요.");
+  return inPack;
+}
+
+export async function installMod(target: ModTarget, projectId: string): Promise<PersonalMod[]> {
+  requireModdable(target);
+  const record = await readRecord(target);
+  const inPack = await requirePackProjects(target);
+  const directory = personalModsDir(target.instanceRoot, target.loader, target.minecraftVersion);
+  const plan = await planMods(target, record, inPack, projectId);
+  await downloadPlan(directory, plan);
+  await writeRecord(target, [...record, ...plan.map(toRecord)]);
   return listPersonalMods(target, false);
 }
 
+/** Updates run the same checks as installs, including new required mods. */
 export async function updateMod(target: ModTarget, projectId: string): Promise<PersonalMod[]> {
+  requireModdable(target);
   requireProjectId(projectId);
   const record = await readRecord(target);
   const current = record.find((mod) => mod.projectId === projectId);
   if (!current) throw new Error("설치된 모드가 아니에요.");
-  const version = await latestVersion(projectId, target);
-  if (!version || version.id === current.versionId) return listPersonalMods(target, false);
-  const file = pickFile(version);
+  const latest = await latestVersion(projectId, target);
+  if (!latest || latest.id === current.versionId) return listPersonalMods(target, false);
+  const inPack = await requirePackProjects(target);
   const directory = personalModsDir(target.instanceRoot, target.loader, target.minecraftVersion);
-  await downloadInstallFilesWithSystemNetwork([{
-    path: path.join(directory, file.filename),
-    urls: [file.url],
-    size: file.size,
-    checksum: { algorithm: "sha512", value: file.hashes.sha512! }
-  }]);
-  if (file.filename !== current.fileName) await fsp.rm(path.join(directory, current.fileName), { force: true });
-  Object.assign(current, { versionId: version.id, versionNumber: version.version_number, fileName: file.filename });
-  await writeRecord(target, record);
+  const plan = await planMods(target, record, inPack, projectId, { replacing: projectId });
+  await downloadPlan(directory, plan);
+  const updated = plan.find((mod) => mod.projectId === projectId);
+  if (updated && updated.file.filename !== current.fileName) await fsp.rm(path.join(directory, current.fileName), { force: true });
+  await writeRecord(target, [...record.filter((mod) => mod.projectId !== projectId), ...plan.map(toRecord)]);
   return listPersonalMods(target, false);
 }
 
@@ -217,14 +274,19 @@ export async function removeMod(target: ModTarget, projectId: string): Promise<P
   record = record.filter((mod) => mod !== removed);
   await fsp.rm(path.join(directory, removed.fileName), { force: true });
   // Dependencies are looked up again because the record does not keep the graph.
+  // If any lookup fails, every dependency stays: removing one still in use
+  // would stop the game from starting.
   const needed = new Set<string>();
+  let lookupFailed = false;
   for (const mod of record.filter((item) => item.explicit)) {
     needed.add(mod.projectId);
     const version = await api<ModrinthVersion>(`/version/${mod.versionId}`).catch(() => null);
+    if (!version) lookupFailed = true;
     for (const dependency of version?.dependencies ?? []) {
       if (dependency.dependency_type === "required" && dependency.project_id) needed.add(dependency.project_id);
     }
   }
+  if (lookupFailed) record.forEach((mod) => needed.add(mod.projectId));
   for (const orphan of record.filter((mod) => !mod.explicit && !needed.has(mod.projectId))) {
     await fsp.rm(path.join(directory, orphan.fileName), { force: true });
   }
@@ -275,6 +337,19 @@ async function packProjectIds(target: ModTarget): Promise<Set<string> | null> {
     body: JSON.stringify({ hashes, algorithm: "sha512" })
   });
   return new Set(Object.values(found).map((version) => version.project_id));
+}
+
+/** Personal jars whose Modrinth project the server blocks. Jars Modrinth does not know are not blocked. */
+export async function findBlockedJars(jars: string[], blockedProjects: string[]): Promise<Set<string>> {
+  if (blockedProjects.length === 0 || jars.length === 0) return new Set();
+  const hashes = await Promise.all(jars.map((jar) => hashFile(jar, "sha512")));
+  const found = await api<Record<string, { project_id: string }>>("/version_files", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hashes, algorithm: "sha512" })
+  });
+  const blocked = new Set(blockedProjects);
+  return new Set(jars.filter((_, index) => blocked.has(found[hashes[index]]?.project_id ?? "")));
 }
 
 async function readRecord(target: ModTarget): Promise<InstalledRecord[]> {

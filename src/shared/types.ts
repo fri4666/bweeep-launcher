@@ -193,9 +193,17 @@ export interface GameStatus {
   exitError?: boolean;
   /** Set when Minecraft wrote a crash report the player can open. */
   crashReport?: boolean;
+  /** Pack id of a crashed run that had personal mods, so it can be retried without them. */
+  retryWithoutPersonalMods?: string;
 }
 
 export type LogTarget = "game" | "launcher";
+
+/** Release notes shown once on the first start after an update. */
+export interface WhatsNew {
+  version: string;
+  notes: string[];
+}
 
 export interface LauncherUpdate {
   version: string;
@@ -216,6 +224,8 @@ export interface UserContentStatus {
   copiedMods: number;
   copiedShaders: number;
   removedManagedMods: number;
+  /** Personal jars left out of this launch and why. */
+  skippedMods: Array<{ name: string; reason: string }>;
 }
 
 export type UserContentKind = "mods" | "shaderpacks";

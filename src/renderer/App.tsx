@@ -15,7 +15,8 @@ import type {
   ServerStatus,
   SyncProgress,
   UserContentFolders,
-  UserContentKind
+  UserContentKind,
+  WhatsNew
 } from "../shared/types.js";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
@@ -29,7 +30,7 @@ const adminInviteSizes = [1, 5, 10, 20];
 
 type LogEntry = SyncProgress & { at: number };
 type CatalogState = "loading" | "ready" | "error";
-type DockError = { title: string; message: string };
+type DockError = { title: string; message: string; retryWithoutPersonalMods?: boolean };
 type ConfirmRequest = {
   title: string;
   body: string;
@@ -56,6 +57,16 @@ function writeStorage(key: string, value: string | null): void {
 }
 
 /** Electron prefixes rejected IPC calls with the channel name; players only need the reason. */
+function crashError(status: GameStatus): DockError {
+  return {
+    title: "게임이 비정상 종료됐어요",
+    message: status.retryWithoutPersonalMods
+      ? `${status.exitMessage ?? "Minecraft 실행 중 오류가 발생했습니다."} 개인 모드 때문일 수 있어요.`
+      : status.exitMessage ?? "Minecraft 실행 중 오류가 발생했습니다.",
+    retryWithoutPersonalMods: Boolean(status.retryWithoutPersonalMods)
+  };
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   const message = raw.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^Error:\s*/, "").trim();
@@ -132,6 +143,26 @@ function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; onClose:
   );
 }
 
+/** Shown once on the first start after an update, from the release notes. */
+function WhatsNewDialog({ whatsNew, onClose }: { whatsNew: WhatsNew; onClose: () => void }) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => confirmRef.current?.focus(), []);
+  return (
+    <div className="modalBackdrop confirmBackdrop" onClick={onClose}>
+      <section className="confirmDialog whatsNewDialog" role="dialog" aria-modal="true" aria-label="업데이트 소식" onClick={(event) => event.stopPropagation()}>
+        <p className="eyebrow">업데이트 완료 · v{whatsNew.version}</p>
+        <h2>이번 버전에서 바뀐 점</h2>
+        <ul className="whatsNewList">
+          {whatsNew.notes.map((note) => <li key={note}>{note}</li>)}
+        </ul>
+        <div className="confirmActions">
+          <button ref={confirmRef} className="primaryButton" onClick={onClose}>확인</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function App() {
   const [servers, setServers] = useState<ServerPreset[]>([]);
   const [catalogState, setCatalogState] = useState<CatalogState>("loading");
@@ -169,6 +200,7 @@ function App() {
   const [members, setMembers] = useState<MemberSummary[]>([]);
   const [testerBusyId, setTesterBusyId] = useState<string | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  const [whatsNew, setWhatsNew] = useState<WhatsNew | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
   const [launcherVersion, setLauncherVersion] = useState("");
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
@@ -253,9 +285,7 @@ function App() {
     const unsubscribeGameStatus = window.bweeep.onGameStatus((status) => {
       setGameStatus(status);
       if (status.state === "idle") setJoinedServer(false);
-      if (status.exitError && status.exitMessage) {
-        setDockError({ title: "게임이 비정상 종료됐어요", message: status.exitMessage });
-      }
+      if (status.exitError && status.exitMessage) setDockError(crashError(status));
     });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
@@ -385,6 +415,23 @@ function App() {
     const interval = window.setInterval(() => void check(), 5_000);
     return () => window.clearInterval(interval);
   }, [connection, refreshServerStatus]);
+
+  // After an update, the new version's notes are shown once members reach the main screen.
+  useEffect(() => {
+    if (!access?.allowed) return;
+    let active = true;
+    void window.bweeep.whatsNew().then((next) => {
+      if (active && next) setWhatsNew(next);
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [access?.allowed]);
+
+  function closeWhatsNew() {
+    if (whatsNew) void window.bweeep.markWhatsNewSeen(whatsNew.version);
+    setWhatsNew(null);
+  }
 
   const canUseLauncher = Boolean(access?.allowed);
   const gameBusy = gameStatus.state !== "idle";
@@ -702,19 +749,17 @@ function App() {
     setGameStatus((current) => ({ state: current.state, pid: current.pid, startedAt: current.startedAt }));
   }
 
-  async function launchSelected() {
+  async function launchSelected(options: { withoutPersonalMods?: boolean } = {}) {
     if (!selected || !instanceRoot.trim() || !canUseLauncher || gameBusy) return;
     setSyncing(true);
     setLogs([]);
     setDockError(null);
     setJoinedServer(false);
     try {
-      await window.bweeep.launchGame({ packId: selected.packId, instanceDir: instanceRoot.trim() });
+      await window.bweeep.launchGame({ packId: selected.packId, instanceDir: instanceRoot.trim(), withoutPersonalMods: options.withoutPersonalMods });
       const currentStatus = await window.bweeep.gameStatus();
       setGameStatus(currentStatus);
-      if (currentStatus.state === "idle" && currentStatus.exitError) {
-        setDockError({ title: "게임이 비정상 종료됐어요", message: currentStatus.exitMessage ?? "Minecraft 실행 중 오류가 발생했습니다." });
-      }
+      if (currentStatus.state === "idle" && currentStatus.exitError) setDockError(crashError(currentStatus));
     } catch (error) {
       const message = errorMessage(error, "게임을 시작하지 못했습니다.");
       setLogs((current) => [...current, { kind: "error", message, at: Date.now() }]);
@@ -804,6 +849,7 @@ function App() {
       <EntryLayout eyebrow="테스트 런처" title="지정된 테스터만 쓸 수 있어요">
         <p className="entryDescription">이 런처는 새 버전을 먼저 확인하는 테스트용이에요. 일반 붸에엡 런처를 설치해 주세요.</p>
         <div className="entryActions">
+          <button className="primaryButton entryPrimary" onClick={() => void window.bweeep.openStableDownload()}>일반 런처 받기</button>
           <button className="textButton" onClick={() => void logout()}>다른 계정으로 로그인</button>
         </div>
       </EntryLayout>
@@ -925,6 +971,9 @@ function App() {
                   <p>{dockError.message}</p>
                 </div>
                 <div className="dockErrorActions">
+                  {dockError.retryWithoutPersonalMods && (
+                    <button className="secondaryButton" onClick={() => void launchSelected({ withoutPersonalMods: true })}>개인 모드 빼고 시작</button>
+                  )}
                   <button className="secondaryButton" onClick={() => void window.bweeep.openLog("game")}>로그 열기</button>
                   <button className="iconOnly" aria-label="오류 닫기" onClick={dismissDockError}>×</button>
                 </div>
@@ -944,7 +993,7 @@ function App() {
               </div>
             )}
             <div className="launchRow">
-              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={showLaunchProgress} onClick={launchSelected}>
+              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={showLaunchProgress} onClick={() => void launchSelected()}>
                 {gameRunning ? "게임 실행 중" : showLaunchProgress ? <><Spinner />게임 시작 중</> : "게임 시작"}
               </button>
               {gameRunning && gameStatus.pid && (
@@ -1218,6 +1267,7 @@ function App() {
         />
       )}
 
+      {whatsNew && !confirmRequest && <WhatsNewDialog whatsNew={whatsNew} onClose={closeWhatsNew} />}
       {confirmDialog}
     </main>
   );
