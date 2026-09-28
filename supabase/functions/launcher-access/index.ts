@@ -1,6 +1,8 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
 import { getBearerToken, getLauncherVersion, getSessionId, isLauncherAtLeast, MIN_YGGDRASIL_LAUNCHER } from "./authorization.ts";
+import { isModpackManifest, type ModpackManifest, selectCatalog, usesBweeepAccounts } from "./catalog.ts";
+import { gameNameTakenMessage, isGameNameTaken, OFFLINE_SERVER } from "./game-name.ts";
 import { previousGameNames } from "./profile-history.ts";
 import {
   createDisplaySessionToken,
@@ -32,28 +34,6 @@ type RequestBody =
   | { action: "consumeGameTicket"; ticket: string; gameName: string }
   | { action: "setDisplayName"; sessionToken: string; displayName: string };
 
-interface ModpackFile {
-  path: string;
-  size: number;
-  sha256?: string;
-  sha512?: string;
-  url: string;
-}
-
-interface ModpackManifest {
-  schemaVersion: number;
-  id: string;
-  name: string;
-  audience?: "members" | "testers";
-  gameAuth?: "offline" | "yggdrasil";
-  version: string;
-  minecraftVersion: string;
-  java: { majorVersion: number; component: string };
-  loader: { kind: string; version: string };
-  server: { host: string; port: number };
-  files: ModpackFile[];
-}
-
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 
 /** Game tokens only matter when joining, so half a day covers any session. */
@@ -63,10 +43,6 @@ const OUTDATED_LAUNCHER = {
   code: "LAUNCHER_OUTDATED",
   message: "서버 접속 방식이 바뀌어서 런처를 업데이트해야 해요. 런처를 껐다 켜면 자동으로 업데이트돼요."
 };
-
-function gameNameTakenMessage(gameName: string): string {
-  return `'${gameName}'은(는) 다른 멤버가 쓰고 있거나 예전에 쓴 이름이라 쓸 수 없습니다.`;
-}
 
 /** Skin files are named by content hash and may be shared, so only unreferenced ones are deleted. */
 async function removeUnusedSkinFile(
@@ -287,21 +263,13 @@ async function handleRequest(request: Request): Promise<Response> {
       if (!isGameName(body.gameName)) {
         return json({ message: "인게임 이름은 영문·숫자·밑줄 3~16자로 입력해 주세요." }, 400);
       }
-      // Another member's current or earlier name would hand over their
-      // character on servers that keep data by name, so it is refused.
-      const { data: available, error: availableError } = await supabaseAdmin.rpc("launcher_game_name_available", {
+      // Another member's current name, or one they played under in the last
+      // day, is refused. Saving alone does not reserve the name for later.
+      const { error } = await supabaseAdmin.rpc("launcher_save_game_profile", {
         p_user_id: userId,
         p_game_name: body.gameName
       });
-      if (availableError) {
-        console.error("game name availability check failed", availableError);
-        return json({ message: "인게임 이름을 확인하지 못했습니다." }, 500);
-      }
-      if (available !== true) return json({ code: "GAME_NAME_TAKEN", message: gameNameTakenMessage(body.gameName) }, 409);
-      const { error } = await supabaseAdmin
-        .from("launcher_profiles")
-        .upsert({ user_id: userId, game_name: body.gameName }, { onConflict: "user_id" });
-      if (error?.code === "23505") return json({ code: "GAME_NAME_TAKEN", message: gameNameTakenMessage(body.gameName) }, 409);
+      if (isGameNameTaken(error)) return json({ code: "GAME_NAME_TAKEN", message: gameNameTakenMessage(body.gameName) }, 409);
       if (error) {
         console.error("launcher profile save failed", error);
         return json({ message: "인게임 이름을 저장하지 못했습니다." }, 500);
@@ -365,8 +333,8 @@ async function handleRequest(request: Request): Promise<Response> {
         p_user_id: userId,
         p_game_name: gameName
       });
-      if (accountError?.message === "GAME_NAME_TAKEN") {
-        return json({ code: "GAME_NAME_TAKEN", message: `${gameNameTakenMessage(gameName)} 계정 설정에서 인게임 이름을 바꿔 주세요.` }, 409);
+      if (isGameNameTaken(accountError)) {
+        return json({ code: "GAME_NAME_TAKEN", message: `${gameNameTakenMessage(gameName)} 이름을 바꿔 주세요.` }, 409);
       }
       const claimed = account?.[0];
       if (accountError || !claimed) {
@@ -529,7 +497,8 @@ async function handleRequest(request: Request): Promise<Response> {
       if (data.manifest.audience === "testers" && !testAllowed) {
         return json({ message: "테스트 서버는 지정된 테스터만 접속할 수 있습니다." }, 403);
       }
-      if (data.manifest.gameAuth === "yggdrasil" && !supportsYggdrasil) return json(OUTDATED_LAUNCHER, 426);
+      if (!usesBweeepAccounts(data.manifest)) return json(OFFLINE_SERVER, 409);
+      if (!supportsYggdrasil) return json(OUTDATED_LAUNCHER, 426);
       const manifest = await resolveManifestDownloads(supabaseAdmin, data.manifest);
       return json({ manifest, version: data.version });
     }
@@ -543,26 +512,13 @@ async function handleRequest(request: Request): Promise<Response> {
       if (error) return json({ message: "서버 모드팩 목록을 조회하지 못했습니다." }, 500);
 
       // Releases are append-only. Keep the most recent active manifest for
-      // each pack, so a pack update needs no launcher release.
-      const newestByPack = new Map<string, { manifest: unknown; version: string }>();
-      for (const row of data ?? []) {
-        if (!newestByPack.has(row.pack_id)) {
-          newestByPack.set(row.pack_id, { manifest: row.manifest, version: row.version });
-        }
-      }
-      const manifests = Array.from(newestByPack.values(), (release) => {
-        if (!isModpackManifest(release.manifest)) throw new Error("Stored launcher manifest has an invalid shape.");
-        return {
-          // Cards need metadata only. Download URLs are signed when a player
-          // actually launches the selected pack.
-          manifest: { ...release.manifest, files: [], clientFeatures: undefined, mrpack: undefined },
-          version: release.version
-        };
-      });
-      const visible = manifests.filter(({ manifest }) => manifest.audience !== "testers" || testAllowed);
+      // each pack, so a pack update needs no launcher release. A broken or
+      // offline-mode release is left out instead of hiding every server.
+      const { entries: visible, skipped } = selectCatalog(data ?? [], { testAllowed });
+      for (const release of skipped) console.error("catalog release skipped", release);
       // Older launchers ignore gameAuth and would be turned away by the server
       // with no explanation, so they are asked to update first.
-      if (!supportsYggdrasil && visible.some(({ manifest }) => manifest.gameAuth === "yggdrasil")) {
+      if (!supportsYggdrasil && visible.length > 0) {
         return json(OUTDATED_LAUNCHER, 426);
       }
       return json({ manifests: visible });
@@ -712,17 +668,4 @@ function parseStorageObjectUrl(value: string): { bucket: string; path: string } 
     throw new Error("Stored launcher manifest contains an invalid storage object URL.");
   }
   return { bucket, path };
-}
-
-function isModpackManifest(value: unknown): value is ModpackManifest {
-  if (!value || typeof value !== "object") return false;
-  const manifest = value as Partial<ModpackManifest>;
-  return typeof manifest.id === "string" && typeof manifest.minecraftVersion === "string" &&
-    typeof manifest.loader?.kind === "string" && typeof manifest.loader.version === "string" &&
-    manifest.java !== undefined && Number.isSafeInteger(manifest.java.majorVersion) && manifest.java.majorVersion >= 8 &&
-    typeof manifest.java.component === "string" && Array.isArray(manifest.files) && manifest.files.every((file) =>
-    file && typeof file.path === "string" && typeof file.url === "string" &&
-    Number.isSafeInteger(file.size) && file.size >= 0 &&
-    (typeof file.sha256 === "string" || typeof file.sha512 === "string")
-  );
 }
