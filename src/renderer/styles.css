@@ -1644,6 +1644,11 @@ input[aria-invalid="true"] {
   list-style: disc;
 }
 
+/* Older notes have no summary or headings, so their list follows the meta line. */
+.releaseMeta + .releaseSections > .releaseSection:first-child > .releaseList:first-child {
+  margin-top: 18px;
+}
+
 .releaseList li {
   color: var(--text);
   font-size: 14.5px;

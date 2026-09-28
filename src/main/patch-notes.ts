@@ -32,18 +32,27 @@ export async function loadPatchNotes(includePrereleases: boolean): Promise<Patch
   const currentVersion = app.getVersion();
   try {
     const releases = await fetchReleases();
-    return { currentVersion, source: "live", notes: patchNotesFromReleases(releases, includePrereleases) };
+    return { currentVersion, source: "live", notes: await withCurrent(patchNotesFromReleases(releases, includePrereleases), currentVersion) };
   } catch {
     const cached = await readCache();
     if (cached) {
       try {
-        return { currentVersion, source: "cache", notes: patchNotesFromReleases(cached, includePrereleases) };
+        return { currentVersion, source: "cache", notes: await withCurrent(patchNotesFromReleases(cached, includePrereleases), currentVersion) };
       } catch {
         // A damaged cache falls through to the notes inside this build.
       }
     }
     return { currentVersion, source: "bundled", notes: await bundledNotes(currentVersion) };
   }
+}
+
+// Right after an update the list may not have this version yet (an older
+// cache while offline, or GitHub still catching up), so this build's own
+// notes lead the list.
+async function withCurrent(notes: PatchNote[], currentVersion: string): Promise<PatchNote[]> {
+  const bare = (version: string) => version.replace(/^v/i, "");
+  if (notes.some((note) => bare(note.version) === bare(currentVersion))) return notes;
+  return [...await bundledNotes(currentVersion), ...notes];
 }
 
 async function fetchReleases(): Promise<StoredRelease[]> {
