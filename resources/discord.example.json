@@ -1,4 +1,0 @@
-{
-  "clientId": "YOUR_DISCORD_APPLICATION_CLIENT_ID",
-  "redirectUri": "http://127.0.0.1:46883/discord/callback"
-}
