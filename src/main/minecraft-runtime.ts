@@ -42,7 +42,6 @@ export async function installAndLaunch(
   }
 
   let activeStage = "게임 파일";
-  let downloadBatch = 0;
   const report: ProgressSink = (event) => {
     if (event.stage) activeStage = event.stage;
     progress(event);
@@ -50,15 +49,16 @@ export async function installAndLaunch(
   const runtime = createDefaultNodeInstallRuntime({
     maxConcurrency: 2,
     download: (files) => {
-      const batchStage = `${activeStage} · 다운로드 묶음 ${++downloadBatch}`;
+      const batchStage = activeStage;
       return downloadInstallFilesWithSystemNetwork(files, (completed, total, filePath, phase) => {
         progress({
           kind: phase === "start" ? "download" : "info",
           stage: batchStage,
-          message: `${path.basename(filePath)} ${phase === "start" ? "다운로드 중" : "다운로드 완료"}`,
+          message: `파일 받는 중 (${completed}/${total})`,
           completed,
           total,
-          unit: "files"
+          unit: "files",
+          filePath
         });
       });
     }
@@ -77,7 +77,7 @@ export async function installAndLaunch(
   const remoteLock = manifest.clientFeatures?.connectionLock;
   if (typeof remoteLock === "object") {
     await verifyRemoteConnectionLock(instanceDir, manifest);
-    report({ kind: "info", stage: "서버 연결 보호", message: `${manifest.minecraftVersion} ${manifest.loader.kind} 연결 보호 모드 검증 완료` });
+    report({ kind: "info", stage: "서버 연결 보호", message: "연결 보호 모드 확인 완료" });
   }
   const connectionLockEnabled = remoteLock === true
     || typeof remoteLock === "object"
@@ -105,12 +105,12 @@ export async function installAndLaunch(
     minMemory: 2048,
     maxMemory: 6144
   });
-  report({ kind: "info", stage: "게임 프로세스", message: `Minecraft 프로세스 실행 중${gameProcess.pid ? ` · PID ${gameProcess.pid}` : ""} · 서버 참가 확인 전` });
+  report({ kind: "info", stage: "게임 프로세스", message: "게임 창을 여는 중" });
   gameProcess.stdout?.on("data", createGameOutputObserver(report));
   gameProcess.stderr?.on("data", createGameOutputObserver(report));
   const watcher = createMinecraftProcessWatcher(gameProcess);
   watcher.once("minecraft-window-ready", () => {
-    report({ kind: "info", stage: "게임 초기화", message: "Minecraft 클라이언트 초기화 신호 감지 · 서버 참가 확인 전" });
+    report({ kind: "info", stage: "게임 초기화", message: "게임 화면 준비 중" });
   });
   watcher.once("minecraft-exit", ({ code, signal, crashReport, crashReportLocation }) => {
     const exit = describeGameExit({ code, signal, crashReport, crashReportLocation });
@@ -167,10 +167,10 @@ async function installLaunchLibraries(
 
 async function runStage<T>(progress: ProgressSink, stage: string, action: () => Promise<T>): Promise<T> {
   const startedAt = Date.now();
-  progress({ kind: "info", stage, message: `${stage} 시작` });
+  progress({ kind: "info", stage, message: "준비 중" });
   try {
     const result = await action();
-    progress({ kind: "info", stage, elapsedMs: Date.now() - startedAt, message: `${stage} 완료` });
+    progress({ kind: "info", stage, elapsedMs: Date.now() - startedAt, message: "완료" });
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -289,15 +289,21 @@ async function resolveForgeInstallerFile(minecraft: MinecraftFolder, version: st
   };
 }
 
+// Installer task ids and paths go to the launch log only; the UI gets a short sentence.
 function publishInstallerEvent(progress: ProgressSink, stage: string, event: unknown): void {
-  progress({ kind: "info", stage, message: `${stage}: ${installEventDetail(event)}` });
+  const record = event && typeof event === "object" ? event as Record<string, unknown> : {};
+  const task = record.task && typeof record.task === "object" ? record.task as Record<string, unknown> : {};
+  const taskId = typeof task.id === "string" ? task.id : undefined;
+  progress({ kind: "info", stage, message: installEventMessage(record), filePath: taskId });
 }
 
-function installEventDetail(event: unknown): string {
-  if (!event || typeof event !== "object") return "설치 작업 처리 중";
-  const record = event as Record<string, unknown>;
-  const type = typeof record.type === "string" ? record.type : "작업";
-  const target = [record.filePath, record.path, record.file, record.id, record.name]
-    .find((value): value is string => typeof value === "string" && value.length > 0);
-  return target ? `${type} · ${target}` : type;
+export function installEventMessage(event: Record<string, unknown>): string {
+  switch (event.type) {
+    case "task-start": return "설치 파일 확인 중";
+    case "task-end": return event.error ? "설치 작업 실패" : "설치 파일 확인 완료";
+    case "file-retry": return `다운로드 재시도 중${typeof event.attempt === "number" ? ` (${event.attempt}회째)` : ""}`;
+    case "java-strategy-start": return "Java 설치 방법 확인 중";
+    case "java-strategy-failed": return "다른 Java 설치 방법으로 전환 중";
+    default: return "설치 작업 처리 중";
+  }
 }

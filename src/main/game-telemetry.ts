@@ -22,38 +22,38 @@ export function createGameOutputObserver(progress: (event: SyncProgress) => void
 export function classifyGameLine(line: string): SyncProgress | null {
   const value = line.replace(/\u001b\[[0-9;]*m/g, "");
   if (value.includes("BWEEP_TARGET_JOINED")) {
-    return { kind: "info", stage: "선택 서버 입장", message: "Minecraft 클라이언트에서 선택 서버 입장 신호 확인" };
+    return { kind: "info", stage: "선택 서버 입장", message: "서버에 접속했습니다" };
   }
   if (value.includes("BWEEP_TARGET_LEFT")) {
-    return { kind: "info", stage: "서버 연결 종료", message: "Minecraft 클라이언트에서 선택 서버 이탈 신호 확인" };
+    return { kind: "info", stage: "서버 연결 종료", message: "서버에서 나왔습니다" };
   }
   if (value.includes("BWEEP_TARGET_REJECTED")) {
-    return { kind: "error", stage: "서버 접속 실패", message: "선택 서버가 연결을 거절했거나 연결에 실패했습니다. 서버 상태와 접속 인증을 확인해 주세요." };
+    return { kind: "error", stage: "서버 접속 실패", message: "서버가 연결을 거절했거나 연결에 실패했습니다. 서버 상태를 확인한 뒤 다시 시도해 주세요." };
   }
   const fabric = value.match(/Loading Minecraft ([\w.+-]+) with Fabric Loader ([\w.+-]+)/i);
-  if (fabric) return { kind: "info", stage: "로더 초기화", message: `Minecraft ${fabric[1]} · Fabric ${fabric[2]} 초기화 중` };
+  if (fabric) return { kind: "info", stage: "로더 초기화", message: `Fabric ${fabric[2]} 로더 준비 중` };
 
   const mods = value.match(/Loading (\d+) mods\b/i);
-  if (mods) return { kind: "info", stage: "모드 로딩", message: `Minecraft가 모드 ${mods[1]}개를 불러오는 중` };
+  if (mods) return { kind: "info", stage: "모드 로딩", message: `모드 ${mods[1]}개 불러오는 중` };
   const script = value.match(/Loaded script (?:startup_scripts|client_scripts):([^\s]+) in /i);
   if (script) return { kind: "info", stage: "모드팩 스크립트", message: `게임 규칙 적용: ${script[1].slice(0, 80)}` };
   if (/ModLauncher.*starting|Forge Mod Loader.*loading/i.test(value)) {
-    return { kind: "info", stage: "로더 초기화", message: "Forge 계열 모드 로더 초기화 중" };
+    return { kind: "info", stage: "로더 초기화", message: "Forge 로더 준비 중" };
   }
   if (/Reloading ResourceManager|Reloading resources/i.test(value)) {
-    return { kind: "info", stage: "리소스 로딩", message: "리소스팩과 텍스처를 적용하는 중" };
+    return { kind: "info", stage: "리소스 로딩", message: "리소스팩과 텍스처 적용 중" };
   }
   if (/LWJGL Version|OpenAL initialized|Sound engine started/i.test(value)) {
-    return { kind: "info", stage: "게임 초기화", message: "게임 창과 오디오 초기화 신호 감지" };
+    return { kind: "info", stage: "게임 초기화", message: "게임 창과 소리 준비 중" };
   }
   if (/Connecting to [^\s]+|Connecting to server/i.test(value)) {
-    return { kind: "info", stage: "서버 연결", message: "Minecraft에서 서버 연결 시도 감지 · 참가 확인 전" };
+    return { kind: "info", stage: "서버 연결", message: "서버에 연결하는 중" };
   }
   if (/Logged in with entity id|Joining world/i.test(value)) {
-    return { kind: "info", stage: "월드 로딩", message: "Minecraft에서 월드 입장 신호 감지 · 서버측 확인 전" };
+    return { kind: "info", stage: "월드 로딩", message: "월드를 불러오는 중" };
   }
   if (/Connection lost|Disconnected from server/i.test(value)) {
-    return { kind: "info", stage: "연결 종료", message: "Minecraft에서 서버 연결 종료 신호 감지" };
+    return { kind: "info", stage: "연결 종료", message: "서버 연결이 끊겼습니다" };
   }
   return null;
 }

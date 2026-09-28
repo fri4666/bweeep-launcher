@@ -82,6 +82,7 @@ export function installPendingLauncherUpdate(): void {
   if (status.state !== "ready" || installScheduled || !canInstallNow()) return;
   installScheduled = true;
   setStatus({ state: "installing", update: status.update });
+  // Leave the restart notice on screen long enough to read before the window closes.
   setTimeout(() => {
     try {
       autoUpdater.quitAndInstall(true, true);
@@ -89,7 +90,7 @@ export function installPendingLauncherUpdate(): void {
       installScheduled = false;
       setStatus({ state: "error", update: status.update, message: safeUpdateError(error) });
     }
-  }, 1_500);
+  }, 5_000);
 }
 
 async function checkForUpdates(): Promise<void> {
