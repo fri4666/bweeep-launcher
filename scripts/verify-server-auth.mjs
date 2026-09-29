@@ -213,7 +213,7 @@ async function main() {
   check("a member may go back to their own earlier name", ownerStill.status === 200, `${ownerStill.status}`);
   await callFunction(local, renamed, { action: "setGameProfile", gameName: newName });
 
-  // Reserved UUIDs from a server's usercache: nobody gets an unowned one, only the owner gets theirs.
+  // Reserved UUIDs from a server's usercache: the name of an unowned one is free, but its UUID is not; only the owner gets theirs.
   const unowned = `Rsv${randomBytes(3).toString("hex")}`;
   const owned = `Own${randomBytes(3).toString("hex")}`;
   const ownedPlayer = await createPlayer(local, { name: owned, body: [0, 0, 0], model: "default" });
@@ -225,7 +225,9 @@ async function main() {
   check("reservations can be recorded", !reservations.error, reservations.error?.message ?? "");
   const unownedPlayer = await createPlayer(local, { name: unowned, body: [0, 0, 0], model: "default" });
   const unownedAuth = await callFunction(local, unownedPlayer, { action: "gameAuth" });
-  check("a name reserved for nobody is refused", unownedAuth.status === 409, `${unownedAuth.status}`);
+  check("a name reserved for nobody is usable but keeps away from the reserved UUID",
+    unownedAuth.status === 200 && unownedAuth.body?.profile?.id !== String(await offlineUuid(unowned)).replaceAll("-", ""),
+    `${unownedAuth.status} ${unownedAuth.body?.profile?.id}`);
   const ownedAuth = await callFunction(local, ownedPlayer, { action: "gameAuth" });
   check("the owner of a reserved UUID receives exactly it", ownedAuth.body?.profile?.id === String(await offlineUuid(owned)).replaceAll("-", ""),
     `${ownedAuth.status} ${ownedAuth.body?.profile?.id}`);
