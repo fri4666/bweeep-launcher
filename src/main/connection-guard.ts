@@ -10,7 +10,7 @@ import { ensureVerifiedCopy } from "./verified-copy.js";
  */
 const GUARD = {
   fileName: "bweeep-guard-1.1.0.jar",
-  sha256: "ab632002889e8e14475bc974fffadf09a37531687501cce5473eb86e1e5069c0"
+  sha256: "d413afbed69c9204f6497f19c1f1e8ef2b29fcec35ac542e640948f2d070f71f"
 };
 
 /** On unless a manifest explicitly opts out. */
