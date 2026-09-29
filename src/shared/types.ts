@@ -60,6 +60,8 @@ export interface ModpackManifest {
   gameAuth?: "offline" | "yggdrasil";
   /** Modrinth project ids players may not add as personal mods on this server. */
   blockedModrinthProjects?: string[];
+  /** Java heap the pack needs, in MB; without it the launcher estimates one from the loader and mods. */
+  recommendedMemoryMb?: number;
   /** A pinned Modrinth .mrpack whose indexed files and overrides are installed safely. */
   mrpack?: MrpackSource;
   files: PackFile[];
@@ -80,6 +82,8 @@ export interface ServerPreset {
   environment: "production" | "test";
   gameAuth: "offline" | "yggdrasil";
   blockedModrinthProjects: string[];
+  /** The manifest's recommendedMemoryMb, or the launcher's estimate. */
+  recommendedMemoryMb: number;
 }
 
 export interface ServerStatus {
@@ -88,6 +92,9 @@ export interface ServerStatus {
   port: number;
   latencyMs?: number;
   message: string;
+  /** From the Minecraft status ping; missing when only a TCP connection answered. */
+  players?: { online: number; max: number };
+  version?: string;
 }
 
 export interface ServerConnection {
@@ -138,6 +145,9 @@ export interface LoginCancellationResult {
   message: string;
 }
 
+/** Why launcher-access cannot be reached: the service itself, or this PC's connection. */
+export type AuthOutage = "auth" | "network";
+
 export interface AccessStatus {
   loggedIn: boolean;
   allowed: boolean;
@@ -146,6 +156,8 @@ export interface AccessStatus {
   reason: string;
   user?: LauncherUser;
   unavailable?: boolean;
+  /** Set when launcher-access could not be reached and this is the last access seen on this PC. */
+  outage?: AuthOutage;
 }
 
 export interface InviteResult {
