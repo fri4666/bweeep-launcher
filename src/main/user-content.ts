@@ -7,6 +7,7 @@ import { fitsMinecraft, readModMetadata, runsOn, type ModMetadata } from "./mod-
 const USER_MODS_FILE = ".bweeep-user-mods.json";
 const USER_SHADERS_FILE = ".bweeep-user-shaders.json";
 const USER_FOLDERS_FILE = "folders.json";
+const PACK_TARGETS_FILE = "pack-targets.json";
 const GAME_OPTION_FILE = /^options(?:[a-z0-9_-]+)?\.txt$/i;
 
 interface UserContentPaths {
@@ -40,6 +41,9 @@ export async function prepareUserContent(
   // Key bindings, sensitivity, accessibility, chat, sound and video settings
   // are stored in options*.txt. Keep every such base-game file across servers.
   await restoreGameOptions(path.join(root, "settings"), instanceDir);
+  if (manifest.id) {
+    await rememberModCompatibility(instanceRoot, manifest.id, { loader: manifest.loader.kind, minecraftVersion: manifest.minecraftVersion }, { onlyIfMissing: true }).catch(() => undefined);
+  }
 
   const selectedFolders = await getUserContentFolders(instanceRoot);
   const candidates = await collectContentFiles([userModsDir, ...selectedFolders.mods], ".jar");
@@ -157,6 +161,59 @@ function userContentRoot(instanceRoot: string): string {
 /** Personal mods for one loader and version, which is where Modrinth installs go. */
 export function personalModsDir(instanceRoot: string, loaderKind: ModpackManifest["loader"]["kind"], minecraftVersion: string): string {
   return userContentPaths(instanceRoot, loaderKind, minecraftVersion).userModsDir;
+}
+
+export interface ModCompatibility {
+  loader: ModpackManifest["loader"]["kind"];
+  minecraftVersion: string;
+}
+
+const LOADERS = new Set<string>(["vanilla", "fabric", "forge", "neoforge"]);
+const VERSION_TEXT = /^[A-Za-z0-9._-]{1,32}$/;
+
+function packTargetsFile(instanceRoot: string): string {
+  return path.join(userContentRoot(instanceRoot), "mods", PACK_TARGETS_FILE);
+}
+
+async function readPackTargets(instanceRoot: string): Promise<Record<string, ModCompatibility>> {
+  try {
+    const value: unknown = JSON.parse(await fsp.readFile(packTargetsFile(instanceRoot), "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([, item]) => isCompatibility(item))) as Record<string, ModCompatibility>;
+  } catch { return {}; }
+}
+
+function isCompatibility(value: unknown): value is ModCompatibility {
+  const item = value as Partial<ModCompatibility> | null;
+  return Boolean(item) && typeof item!.loader === "string" && LOADERS.has(item!.loader) &&
+    typeof item!.minecraftVersion === "string" && VERSION_TEXT.test(item!.minecraftVersion);
+}
+
+/**
+ * The loader and Minecraft version a server had when its personal mods were
+ * last settled. After the server moves on, the mods for the old pair are still
+ * found through this. Before anything was recorded, the installed pack says.
+ */
+export async function lastModCompatibility(instanceRoot: string, packId: string): Promise<ModCompatibility | null> {
+  const recorded = (await readPackTargets(instanceRoot))[packId];
+  if (recorded) return recorded;
+  try {
+    const installed = JSON.parse(await fsp.readFile(path.join(instanceRoot, packId, "bweeep-manifest.json"), "utf8")) as Partial<ModpackManifest>;
+    const compatibility = { loader: installed.loader?.kind, minecraftVersion: installed.minecraftVersion };
+    return isCompatibility(compatibility) ? compatibility : null;
+  } catch { return null; }
+}
+
+/** `onlyIfMissing` keeps an older record, so a launch never hides mods still waiting to be fetched again. */
+export async function rememberModCompatibility(instanceRoot: string, packId: string, compatibility: ModCompatibility, options: { onlyIfMissing?: boolean } = {}): Promise<void> {
+  const targets = await readPackTargets(instanceRoot);
+  const current = targets[packId];
+  if (current && (options.onlyIfMissing || (current.loader === compatibility.loader && current.minecraftVersion === compatibility.minecraftVersion))) return;
+  targets[packId] = { loader: compatibility.loader, minecraftVersion: compatibility.minecraftVersion };
+  const file = packTargetsFile(instanceRoot);
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(`${file}.part`, JSON.stringify(targets, null, 2), "utf8");
+  await fsp.rename(`${file}.part`, file);
 }
 
 /** Names of the personal jars the last launch copied into an instance's mods folder. */

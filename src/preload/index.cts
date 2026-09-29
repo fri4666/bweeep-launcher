@@ -75,6 +75,7 @@ const api = {
   installMod: (target: ModTarget, projectId: string) => ipcRenderer.invoke("mods:install", target, projectId) as Promise<PersonalMod[]>,
   updateMod: (target: ModTarget, projectId: string) => ipcRenderer.invoke("mods:update", target, projectId) as Promise<PersonalMod[]>,
   removeMod: (target: ModTarget, projectId: string) => ipcRenderer.invoke("mods:remove", target, projectId) as Promise<PersonalMod[]>,
+  refetchMods: (target: ModTarget) => ipcRenderer.invoke("mods:refetch", target) as Promise<PersonalMod[]>,
   skinState: (instanceRoot: string) => ipcRenderer.invoke("skin:state", instanceRoot) as Promise<SkinState>,
   addSkin: (instanceRoot: string) => ipcRenderer.invoke("skin:add", instanceRoot) as Promise<SkinState>,
   applySkin: (instanceRoot: string, id: string, model: SkinModel) => ipcRenderer.invoke("skin:apply", instanceRoot, id, model) as Promise<SkinState>,

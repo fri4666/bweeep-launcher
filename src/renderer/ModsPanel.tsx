@@ -54,15 +54,24 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
 
   async function refreshInstalled(checkUpdates: boolean) {
     try {
-      setInstalled(await window.bweeep.personalMods(target, checkUpdates));
+      const mods = await window.bweeep.personalMods(target, checkUpdates);
+      setInstalled(mods);
+      return mods;
     } catch (error) {
       setNotice({ text: message(error, "설치한 모드 목록을 불러오지 못했어요."), error: true });
+      return [];
     }
   }
 
   useEffect(() => {
     void search("");
-    void refreshInstalled(false);
+    // Mods left behind by a server update are shown first, with what can be fetched again.
+    void refreshInstalled(false).then((mods) => {
+      if (mods.some((mod) => mod.previousTarget)) {
+        setTab("installed");
+        void refreshInstalled(true);
+      }
+    });
   }, [server.packId, instanceRoot]);
 
   useEffect(() => {
@@ -74,9 +83,14 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
     setBusyId(projectId);
     setNotice(null);
     try {
-      setInstalled(await action());
+      const mods = await action();
+      setInstalled(mods);
       setNotice({ text: done, error: false });
-      setHits((previous) => previous.map((hit) => hit.projectId === projectId && hit.status === "available" ? { ...hit, status: "installed" } : hit));
+      const ids = new Set(mods.filter((mod) => !mod.previousTarget).map((mod) => mod.projectId));
+      setHits((previous) => previous.map((hit) =>
+        hit.status === "available" && ids.has(hit.projectId) ? { ...hit, status: "installed" }
+          : hit.status === "installed" && !ids.has(hit.projectId) ? { ...hit, status: "available" }
+          : hit));
     } catch (error) {
       setNotice({ text: message(error, fallback), error: true });
     } finally {
@@ -84,7 +98,24 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
     }
   }
 
-  const installedIds = new Set(installed.map((mod) => mod.projectId));
+  const current = installed.filter((mod) => !mod.previousTarget);
+  const previous = installed.filter((mod) => mod.previousTarget);
+  const installedIds = new Set(current.map((mod) => mod.projectId));
+
+  async function refetch() {
+    setBusyId("refetch");
+    setNotice(null);
+    try {
+      const mods = await window.bweeep.refetchMods(target);
+      setInstalled(mods);
+      const left = mods.filter((mod) => mod.previousTarget).length;
+      setNotice({ text: left > 0 ? `다시 받음 · ${left}개는 못 받음` : "다시 받음", error: false });
+    } catch (error) {
+      setNotice({ text: message(error, "모드를 다시 받지 못했어요."), error: true });
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   return (
     <div className="modalBackdrop" onClick={onClose}>
@@ -107,7 +138,7 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
                 <div className="segmented" role="tablist">
                   <button role="tab" aria-selected={tab === "search"} className={tab === "search" ? "active" : ""} onClick={() => setTab("search")}>찾기</button>
                   <button role="tab" aria-selected={tab === "installed"} className={tab === "installed" ? "active" : ""} onClick={() => { setTab("installed"); void refreshInstalled(true); }}>
-                    설치됨 {installed.length > 0 ? installed.length : ""}
+                    설치됨 {current.length > 0 ? current.length : ""}
                   </button>
                 </div>
                 {tab === "search" && (
@@ -149,8 +180,34 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
                 </div>
               ) : (
                 <div className="modList">
+                  {previous.length > 0 && (
+                    <div className="modRefetch">
+                      <span>{previous[0].previousTarget}용 {previous.length}개</span>
+                      <button
+                        className="secondaryButton"
+                        disabled={busyId !== null || previous.every((mod) => mod.unavailable)}
+                        onClick={() => void refetch()}
+                      >
+                        {busyId === "refetch" ? "받는 중…" : "새 버전용으로 다시 받기"}
+                      </button>
+                    </div>
+                  )}
+                  {previous.map((mod) => (
+                    <article className="modItem isPrevious" key={`previous-${mod.projectId}`}>
+                      <span className="modIconFallback" aria-hidden="true">{mod.title.slice(0, 1)}</span>
+                      <div className="modText">
+                        <strong>{mod.title}</strong>
+                        <small>{mod.previousTarget}용{mod.unavailable ? ` · ${mod.unavailable}` : ""}</small>
+                      </div>
+                      <div className="modActions">
+                        <button className="textButton dangerText" disabled={busyId !== null} onClick={() => void act(mod.projectId, () => window.bweeep.removeMod(target, mod.projectId), `${mod.title} 지움`, "모드를 지우지 못했어요.")}>
+                          삭제
+                        </button>
+                      </div>
+                    </article>
+                  ))}
                   {installed.length === 0 && <p className="emptyText">아직 설치한 편의 모드가 없어요.</p>}
-                  {installed.map((mod) => (
+                  {current.map((mod) => (
                     <article className="modItem" key={mod.projectId}>
                       <span className="modIconFallback" aria-hidden="true">{mod.title.slice(0, 1)}</span>
                       <div className="modText">

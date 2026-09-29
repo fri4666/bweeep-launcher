@@ -2081,6 +2081,20 @@ input[aria-invalid="true"] {
   justify-self: center;
 }
 
+.modRefetch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.modItem.isPrevious {
+  opacity: 0.72;
+}
+
 @media (prefers-reduced-motion: reduce) {
   button {
     transition-duration: 0.01ms;

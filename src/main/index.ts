@@ -19,7 +19,7 @@ import { isReleasePageUrl } from "./release-notes.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
-import { findBlockedJars, installMod, listPersonalMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
+import { findBlockedJars, installMod, listPersonalMods, refetchPreviousMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
 import { bundledFeatureMods } from "./client-feature-mods.js";
 import { connectionGuardEnabled, connectionGuardJvmArgs, ensureConnectionGuard } from "./connection-guard.js";
 import { markWhatsNewSeen, pendingWhatsNew } from "./whats-new.js";
@@ -479,6 +479,11 @@ app.whenReady().then(async () => {
   ipcMain.handle("mods:install", async (_event, target: unknown, projectId: unknown) => installMod(await requireModTarget(target), String(projectId)));
   ipcMain.handle("mods:update", async (_event, target: unknown, projectId: unknown) => updateMod(await requireModTarget(target), String(projectId)));
   ipcMain.handle("mods:remove", async (_event, target: unknown, projectId: unknown) => removeMod(await requireModTarget(target), String(projectId)));
+  ipcMain.handle("mods:refetch", async (_event, target: unknown) => {
+    const modTarget = await requireModTarget(target);
+    const others = [...catalogPresets.values()].filter((preset) => preset.packId !== modTarget.packId);
+    return refetchPreviousMods(modTarget, others.map((preset) => ({ loader: preset.loader.kind, minecraftVersion: preset.minecraftVersion })));
+  });
   ipcMain.handle("skin:state", (_event, instanceRoot: unknown) => skinState(optionalInstanceRoot(instanceRoot)));
   ipcMain.handle("skin:add", async (event, instanceRoot: unknown) => {
     const owner = BrowserWindow.fromWebContents(event.sender);
