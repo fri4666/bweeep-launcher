@@ -9,8 +9,8 @@ import { ensureVerifiedCopy } from "./verified-copy.js";
  * included. Source: java-agent/.
  */
 const GUARD = {
-  fileName: "bweeep-guard-1.0.0.jar",
-  sha256: "0a4ac28a5353ddcff5e4b23b21ccadc69ff2dff3da6fc55dde1e317732c115bb"
+  fileName: "bweeep-guard-1.1.0.jar",
+  sha256: "ab632002889e8e14475bc974fffadf09a37531687501cce5473eb86e1e5069c0"
 };
 
 /** On unless a manifest explicitly opts out. */
@@ -27,6 +27,7 @@ export function ensureConnectionGuard(resourcesRoot: string, instanceDir: string
   );
 }
 
+/** The game also ends when its connection to the server closes, so no menu is left to play from. */
 export function connectionGuardJvmArgs(agentPath: string, manifest: ModpackManifest): string[] {
-  return [`-javaagent:${agentPath}`, `-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`];
+  return [`-javaagent:${agentPath}`, `-Dbweeep.targetServer=${manifest.server.host}:${manifest.server.port}`, "-Dbweeep.exitOnLeave=true"];
 }

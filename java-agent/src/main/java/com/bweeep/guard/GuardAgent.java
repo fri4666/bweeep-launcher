@@ -8,6 +8,8 @@ import java.security.Security;
  * Minecraft version and any loader. Every client since 1.7 opens server
  * connections through Netty's Bootstrap, so that one class is patched; the
  * patch only calls java.base, which every class loader and module can see.
+ * With -Dbweeep.exitOnLeave=true the game also ends when its connection to
+ * that server fails or closes.
  */
 public final class GuardAgent {
     private GuardAgent() {
@@ -23,8 +25,9 @@ public final class GuardAgent {
             System.out.println("BWEEP_GUARD_DISABLED invalid target");
             return;
         }
+        boolean exitOnLeave = Boolean.parseBoolean(System.getProperty("bweeep.exitOnLeave", "").trim());
         // Last in the list: it registers no algorithms, so no lookup ever lands on it.
-        Security.addProvider(new GuardProvider(policy));
+        Security.addProvider(new GuardProvider(policy, exitOnLeave ? LeaveWatch.exitingJvm() : null));
         instrumentation.addTransformer(new BootstrapTransformer(), true);
         for (Class<?> loaded : instrumentation.getAllLoadedClasses()) {
             if (BootstrapTransformer.TARGET.equals(loaded.getName().replace('.', '/'))) {
