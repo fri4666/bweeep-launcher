@@ -268,6 +268,20 @@ export interface UserContentStatus {
   skippedMods: Array<{ name: string; reason: string }>;
 }
 
+/** What moving the install location would carry over; `problem` says why it cannot. */
+export interface InstallMoveCheck {
+  /** Launcher folders (instances and personal content) found at the current location. */
+  entries: number;
+  bytes: number;
+  problem?: string;
+}
+
+/** available is false while the launcher has no Discord application id. */
+export interface DiscordPresenceSetting {
+  available: boolean;
+  enabled: boolean;
+}
+
 export type UserContentKind = "mods" | "shaderpacks";
 
 /** A member as the admin tester list shows it. Admins are always testers. */

@@ -24,6 +24,8 @@ import { bundledFeatureMods } from "./client-feature-mods.js";
 import { connectionGuardEnabled, connectionGuardJvmArgs, ensureConnectionGuard } from "./connection-guard.js";
 import { markWhatsNewSeen, pendingWhatsNew } from "./whats-new.js";
 import { findDefaultSkins, SkinLibrary } from "./skins.js";
+import { installMoveInProgress, registerInstallMove } from "./install-move-ipc.js";
+import { discordGameStarted, discordGameStopped, registerDiscordPresence } from "./discord-presence-ipc.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
@@ -61,6 +63,7 @@ function focusMainWindow(): void {
 function setGameStatus(status: GameStatus): void {
   gameStatus = status;
   broadcast("game:status", status);
+  if (status.state === "idle") discordGameStopped();
   if (status.state === "idle") installPendingLauncherUpdate();
 }
 
@@ -384,6 +387,8 @@ app.whenReady().then(async () => {
     return checkServer({ host: server.host, port: server.port });
   });
   ipcMain.handle("paths:defaultInstanceRoot", () => defaultInstanceRoot());
+  registerInstallMove(() => gameStatus.state !== "idle");
+  registerDiscordPresence();
   ipcMain.handle("content:folders", (_event, instanceRoot: unknown) => getUserContentFolders(requireInstanceRoot(instanceRoot)));
   ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: unknown) => {
     const root = requireInstanceRoot(instanceRoot);
@@ -564,6 +569,7 @@ app.whenReady().then(async () => {
     if (gameStatus.state !== "idle") {
       throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
     }
+    if (installMoveInProgress()) throw new Error("설치 위치를 옮기는 중이에요.");
     const runId = ++gameRunId;
     const startedAt = Date.now();
     lastGameLogFile = null;
@@ -657,6 +663,7 @@ app.whenReady().then(async () => {
       }, guardArgs);
       if (gameRunId === runId && gameIsStarting()) {
         setGameStatus({ state: "running", pid: launched.pid, startedAt });
+        discordGameStarted(manifest.name, startedAt);
         await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
       } else {
         await writeGameLog("launch.exited-before-return", { packId: request.packId, version: launched.version });
