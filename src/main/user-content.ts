@@ -2,7 +2,7 @@ import fsp from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { ModpackManifest, UserContentFolders, UserContentKind, UserContentStatus } from "../shared/types.js";
-import { readModMetadata, runsOn, type ModMetadata } from "./mod-metadata.js";
+import { fitsMinecraft, readModMetadata, runsOn, type ModMetadata } from "./mod-metadata.js";
 
 const USER_MODS_FILE = ".bweeep-user-mods.json";
 const USER_SHADERS_FILE = ".bweeep-user-shaders.json";
@@ -79,10 +79,10 @@ type ContentFile = { source: string; targetName: string };
 
 /**
  * Personal jars that would stop the game from starting are left out: a jar
- * for another loader, a mod the server pack already ships (two copies of one
- * mod id crash every loader), a second copy among the personal jars, or a
- * mod the server blocks. Mods are recognised by the ids in their own
- * metadata, so this needs no knowledge of the Minecraft version.
+ * for another loader or another Minecraft version, a mod the server pack
+ * already ships (two copies of one mod id crash every loader), a second copy
+ * among the personal jars, or a mod the server blocks. Mods are recognised by
+ * the ids and version ranges in their own metadata.
  */
 async function checkPersonalMods(
   candidates: ContentFile[],
@@ -113,6 +113,7 @@ async function checkPersonalMods(
     const reason = packNames.has(file.targetName.toLowerCase()) ? "서버 팩에 같은 이름의 파일이 있어요"
       : !metadata ? "모드 파일을 읽지 못했어요"
       : !runsOn(metadata, manifest.loader.kind) ? `${loaderLabel(manifest.loader.kind)}용 모드가 아니에요`
+      : !fitsMinecraft(metadata, manifest.loader.kind, manifest.minecraftVersion) ? `${manifest.minecraftVersion} 버전용 모드가 아니에요`
       : blocked.has(file.source) ? "이 서버에서 쓰지 않기로 한 모드예요"
       : [...metadata.ids].some((id) => packIds.has(id)) ? "서버 팩에 이미 있는 모드예요"
       : [...metadata.ids].some((id) => personalIds.has(id)) ? "같은 모드가 개인 모드에 두 번 들어 있어요"
