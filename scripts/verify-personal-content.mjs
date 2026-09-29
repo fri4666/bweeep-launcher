@@ -74,7 +74,7 @@ try {
   const guardJar = await fs.readFile(new URL("../resources/java-agent/bweeep-guard-1.1.0.jar", import.meta.url));
   assert.equal(
     crypto.createHash("sha256").update(guardJar).digest("hex"),
-    "ab632002889e8e14475bc974fffadf09a37531687501cce5473eb86e1e5069c0"
+    "57a2d566a946b86738d884c783795455ca52d5f9021c351adfe65341c30b55af"
   );
   const lockContents = Buffer.from("test remote bridge");
   const lockHash = crypto.createHash("sha256").update(lockContents).digest("hex");
