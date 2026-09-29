@@ -1,24 +1,6 @@
-export interface ModpackFile {
-  path: string;
-  size: number;
-  sha256?: string;
-  sha512?: string;
-  url: string;
-}
+import { isModpackManifest, type ModpackManifest } from "./manifest-shape.ts";
 
-export interface ModpackManifest {
-  schemaVersion: number;
-  id: string;
-  name: string;
-  audience?: "members" | "testers";
-  gameAuth?: "offline" | "yggdrasil";
-  version: string;
-  minecraftVersion: string;
-  java: { majorVersion: number; component: string };
-  loader: { kind: string; version: string };
-  server: { host: string; port: number };
-  files: ModpackFile[];
-}
+export { isModpackManifest, type ModpackFile, type ModpackManifest } from "./manifest-shape.ts";
 
 export interface CatalogRow {
   pack_id: string;
@@ -36,19 +18,6 @@ export interface SkippedRelease {
   packId: string;
   version: string;
   reason: "invalid" | "offline";
-}
-
-export function isModpackManifest(value: unknown): value is ModpackManifest {
-  if (!value || typeof value !== "object") return false;
-  const manifest = value as Partial<ModpackManifest>;
-  return typeof manifest.id === "string" && typeof manifest.minecraftVersion === "string" &&
-    typeof manifest.loader?.kind === "string" && typeof manifest.loader.version === "string" &&
-    manifest.java !== undefined && Number.isSafeInteger(manifest.java.majorVersion) && manifest.java.majorVersion >= 8 &&
-    typeof manifest.java.component === "string" && Array.isArray(manifest.files) && manifest.files.every((file) =>
-    file && typeof file.path === "string" && typeof file.url === "string" &&
-    Number.isSafeInteger(file.size) && file.size >= 0 &&
-    (typeof file.sha256 === "string" || typeof file.sha512 === "string")
-  );
 }
 
 /** Offline-mode servers are not allowed: every server checks players through the Bweeep account API. */

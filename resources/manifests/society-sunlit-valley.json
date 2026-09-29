@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "society-sunlit-valley",
   "name": "Society: Sunlit Valley",
-  "version": "4.1.5",
+  "version": "4.1.5-2026.09.28",
   "minecraftVersion": "1.20.1",
   "java": {
     "majorVersion": 17,
@@ -12,18 +12,13 @@
     "kind": "forge",
     "version": "47.4.0"
   },
+  "gameAuth": "yggdrasil",
   "clientFeatures": {
-    "connectionLock": {
-      "protocolVersion": 1,
-      "path": "mods/bweeep-connection-lock.jar",
-      "sha256": "809872ab73c1281d573ef10f57cb53cfb633f8093003dbf0784de9ae723d4d74",
-      "minecraftVersion": "1.20.1",
-      "loaderKind": "forge"
-    }
+    "connectionLock": true
   },
   "server": {
     "host": "server.fri4666.com",
-    "port": 25565
+    "port": 31234
   },
   "mrpack": {
     "url": "https://cdn.modrinth.com/data/FpghCeHO/versions/NGTq0O9V/Society-Sunlit-Valley-4.1.5.mrpack",
@@ -31,18 +26,6 @@
     "sha512": "52cc258b0442ec98ac993cf1257edae86569393caaa8ed140240351980e31334c445f21cda8118235fd3d0c8fe153c11275b58b1ab6468745895e2db34ab2171"
   },
   "files": [
-    {
-      "path": "mods/bweeep-connection-lock.jar",
-      "size": 8127,
-      "sha256": "809872ab73c1281d573ef10f57cb53cfb633f8093003dbf0784de9ae723d4d74",
-      "url": "storage://bweeep-packs/society-sunlit-valley/4.1.5/bweeep-connection-lock.jar"
-    },
-    {
-      "path": "mods/bweeep-server-auth.jar",
-      "size": 18965,
-      "sha256": "9ce1c0309d7081f31dbb7f7897e20cd881a21f3fbcd1477cbf129d988922517e",
-      "url": "storage://bweeep-packs/society-sunlit-valley/4.1.5/bweeep-server-auth.jar"
-    },
     {
       "path": "mods/BalloonBox1.20.1(Forge)vs.1.0.3.jar",
       "size": 95711,
@@ -189,7 +172,7 @@
     }
   ],
   "audience": "members",
-  "default": true,
+  "default": false,
   "serverLoader": {
     "kind": "forge",
     "version": "47.4.0"
