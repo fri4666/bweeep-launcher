@@ -926,6 +926,8 @@ if (catalogUnavailable) {
   await page.getByRole("radio", { name: "10명" }).click();
   await page.getByRole("button", { name: "10명용 초대 만들기" }).click();
   await page.getByText("BWEEP-123456789ABC-123456789ABC", { exact: true }).waitFor();
+  // Memory and Discord rows push the invite below the fold of the scrolling settings body.
+  await page.getByRole("button", { name: "코드 복사" }).scrollIntoViewIfNeeded();
   const copyButtonBox = await page.getByRole("button", { name: "코드 복사" }).boundingBox();
   if (!copyButtonBox || copyButtonBox.x + copyButtonBox.width > 1440) throw new Error("invite code copy action is not visible");
   const copyButtonCenter = await page.evaluate(({ x, y }) => {

@@ -5,9 +5,9 @@ import "./admin.css";
 /** What the player reads when the account API turned them away. */
 // One short line in the narrow dock; starting the game again is the fix for most.
 const playerText: Record<AuthFailureReason, string> = {
-  token_expired: "접속 토큰이 만료됐어요",
+  token_expired: "접속 시간이 지났어요. 게임을 다시 켜 주세요",
   token_revoked: "다른 곳에서 게임을 켜서 막혔어요",
-  unknown_token: "접속 토큰을 확인하지 못했어요",
+  unknown_token: "접속 확인에 실패했어요. 게임을 다시 켜 주세요",
   signed_out: "로그아웃돼서 막혔어요",
   not_member: "멤버가 아니라서 막혔어요",
   testers_only: "테스터 전용 서버예요",
