@@ -73,6 +73,11 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     listeners.forEach((listener) => listener({ kind: "error", stage: "서버 접속 실패", message: "선택 서버가 연결을 거절했습니다." }));
     emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
   };
+  // The guard ended the game after the server dropped it, with the reason the game logged.
+  window.__leaveServer = (reason) => {
+    listeners.forEach((listener) => listener({ kind: "error", stage: "서버 연결 끊김", message: reason }));
+    emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
+  };
   window.__exitBeforeLaunchResolves = false;
   window.__zeroFileSync = false;
   window.__copiedText = null;
@@ -1145,6 +1150,18 @@ if (catalogUnavailable) {
   await page.screenshot({ path: "previews/bweeep-launcher-auth-failure-narrow.png" });
   await page.setViewportSize({ width: 1440, height: 900 });
   interactionChecks.push("auth-failure-reason", "diagnostics-send");
+  // Dropped by the server (kick, shutdown): a title and the game's reason, nothing more.
+  await page.getByRole("button", { name: "게임 시작" }).click();
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
+  await page.evaluate(() => window.__leaveServer("서버가 닫혔습니다"));
+  await page.getByText("서버와 연결이 끊겼어요", { exact: true }).waitFor();
+  if ((await page.locator(".dockError p").innerText()).trim() !== "서버가 닫혔습니다") throw new Error("the disconnect reason is not the one line under the title");
+  await page.screenshot({ path: "previews/bweeep-launcher-server-left.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  await page.screenshot({ path: "previews/bweeep-launcher-server-left-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  interactionChecks.push("server-left-reason");
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
   await page.evaluate(() => window.__failGame());
