@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ModrinthHit, ModSearchResult, ModTarget, PersonalMod } from "../shared/types.js";
 import { hashFile } from "./hash.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
-import { copiedPersonalMods, personalModsDir } from "./user-content.js";
+import { copiedPersonalMods, lastModCompatibility, personalModsDir, rememberModCompatibility, type ModCompatibility } from "./user-content.js";
 
 // Personal convenience mods from Modrinth. Only mods that run on the client
 // without the server are offered, filtered to the selected server's loader
@@ -38,6 +38,22 @@ interface ModrinthProject {
   server_side: string;
   client_side: string;
   project_type: string;
+}
+
+/** A refusal that holds for this mod and server, as opposed to a network or Modrinth error. */
+class ModRefusal extends Error {
+  constructor(message: string, readonly short: string) {
+    super(message);
+  }
+}
+
+const NO_MATCHING_VERSION = "맞는 버전 없음";
+
+let network = { fetch: fetchWithSystemNetwork, download: downloadInstallFilesWithSystemNetwork };
+
+/** Verify scripts answer Modrinth requests and downloads themselves. */
+export function setModrinthNetwork(next: typeof network): void {
+  network = next;
 }
 
 let userAgent = "fri4666/bweeep-launcher (github.com/fri4666/bweeep-launcher)";
@@ -121,7 +137,11 @@ function searchKey(text: string): string {
 
 export async function listPersonalMods(target: ModTarget, checkUpdates: boolean): Promise<PersonalMod[]> {
   const record = await readRecord(target);
-  return Promise.all(record.map(async (mod) => {
+  const stale = await previousMods(target, record);
+  // Nothing is left behind for an older version, so this pair is now the one to remember.
+  if (!stale) await rememberModCompatibility(target.instanceRoot, target.packId, target).catch(() => undefined);
+  const blocked = new Set(target.blockedModrinthProjects);
+  const current = await Promise.all(record.map(async (mod): Promise<PersonalMod> => {
     const latest = checkUpdates ? await latestVersion(mod.projectId, target).catch(() => null) : null;
     return {
       projectId: mod.projectId,
@@ -132,6 +152,85 @@ export async function listPersonalMods(target: ModTarget, checkUpdates: boolean)
       ...(latest && latest.id !== mod.versionId ? { update: latest.version_number } : {})
     };
   }));
+  const previous = await Promise.all((stale?.mods ?? []).map(async (mod): Promise<PersonalMod> => {
+    // undefined: the lookup failed, which says nothing about the mod.
+    const latest = checkUpdates && !blocked.has(mod.projectId) ? await latestVersion(mod.projectId, target).catch(() => undefined) : undefined;
+    const unavailable = blocked.has(mod.projectId) ? "서버에서 막음" : latest === null ? NO_MATCHING_VERSION : undefined;
+    return {
+      projectId: mod.projectId,
+      title: mod.title,
+      versionNumber: mod.versionNumber,
+      fileName: mod.fileName,
+      explicit: true,
+      previousTarget: `${loaderName(stale!.previous)} ${stale!.previous.minecraftVersion}`,
+      ...(unavailable ? { unavailable } : {})
+    };
+  }));
+  return [...current, ...previous];
+}
+
+/**
+ * Mods chosen for this server's previous loader or Minecraft version that
+ * have no counterpart for the current one yet. Personal mods live per loader
+ * and version, so after a server update they would otherwise just vanish.
+ */
+async function previousMods(target: ModTarget, record: InstalledRecord[]): Promise<{ previous: ModTarget; mods: InstalledRecord[] } | null> {
+  const last = await lastModCompatibility(target.instanceRoot, target.packId);
+  if (!last || last.loader === "vanilla" || (last.loader === target.loader && last.minecraftVersion === target.minecraftVersion)) return null;
+  const previous: ModTarget = { ...target, loader: last.loader, minecraftVersion: last.minecraftVersion };
+  const mods = (await readRecord(previous)).filter((mod) => mod.explicit && !record.some((item) => item.projectId === mod.projectId));
+  return mods.length > 0 ? { previous, mods } : null;
+}
+
+/**
+ * Fetches every previous-version mod again for the server's current loader
+ * and Minecraft version. The files that can be fetched are downloaded all
+ * together or not at all, like an install. Mods with no matching version stay
+ * listed. The old files are removed only when no other server still uses the
+ * old loader and version.
+ */
+export async function refetchPreviousMods(target: ModTarget, otherServers: ModCompatibility[]): Promise<PersonalMod[]> {
+  requireModdable(target);
+  const record = await readRecord(target);
+  const stale = await previousMods(target, record);
+  if (!stale) return listPersonalMods(target, false);
+  const inPack = await requirePackProjects(target);
+  const planned: PlannedMod[] = [];
+  const refetched = new Set<string>();
+  const refused = new Map<string, string>();
+  for (const mod of stale.mods) {
+    const already = planned.find((item) => item.projectId === mod.projectId);
+    if (already || inPack.has(mod.projectId)) {
+      if (already) already.explicit = true;
+      refetched.add(mod.projectId);
+      continue;
+    }
+    try {
+      planned.push(...await planMods(target, [...record, ...planned.map(toRecord)], inPack, mod.projectId));
+      refetched.add(mod.projectId);
+    } catch (error) {
+      if (!(error instanceof ModRefusal)) throw error;
+      refused.set(mod.projectId, error.short);
+    }
+  }
+  const withReasons = (mods: PersonalMod[]) => mods.map((mod) => mod.previousTarget && refused.has(mod.projectId) ? { ...mod, unavailable: refused.get(mod.projectId) } : mod);
+  if (refetched.size === 0) return withReasons(await listPersonalMods(target, false));
+  const directory = personalModsDir(target.instanceRoot, target.loader, target.minecraftVersion);
+  await downloadPlan(directory, planned);
+  await writeRecord(target, [...record, ...planned.map(toRecord)]);
+
+  const { previous } = stale;
+  const stillUsed = otherServers.some((server) => server.loader === previous.loader && server.minecraftVersion === previous.minecraftVersion);
+  if (!stillUsed) {
+    const oldDirectory = personalModsDir(previous.instanceRoot, previous.loader, previous.minecraftVersion);
+    const oldRecord = await readRecord(previous);
+    const leftExplicit = oldRecord.filter((mod) => mod.explicit && !refetched.has(mod.projectId));
+    // Dependencies stay while an explicit mod that could not be fetched may still need them.
+    const removed = leftExplicit.length === 0 ? oldRecord : oldRecord.filter((mod) => refetched.has(mod.projectId));
+    await Promise.all(removed.map((mod) => fsp.rm(path.join(oldDirectory, mod.fileName), { force: true })));
+    await writeRecord(previous, oldRecord.filter((mod) => !removed.includes(mod)));
+  }
+  return withReasons(await listPersonalMods(target, false));
 }
 
 interface PlannedMod {
@@ -160,33 +259,33 @@ async function planMods(
 
   const visit = async (id: string, explicit: boolean, depth: number): Promise<void> => {
     requireProjectId(id);
-    if (blocked.has(id)) throw new Error("이 서버에서 쓰지 않기로 한 모드라 설치할 수 없어요.");
+    if (blocked.has(id)) throw new ModRefusal("이 서버에서 쓰지 않기로 한 모드라 설치할 수 없어요.", "서버에서 막음");
     if (inPack.has(id) || plan.some((mod) => mod.projectId === id)) return;
     const existing = kept.find((mod) => mod.projectId === id);
     if (existing) {
       if (explicit) existing.explicit = true;
       return;
     }
-    if (depth > MAX_DEPENDENCY_DEPTH) throw new Error("필요한 모드가 너무 많이 이어져 있어 설치를 멈췄어요.");
+    if (depth > MAX_DEPENDENCY_DEPTH) throw new ModRefusal("필요한 모드가 너무 많이 이어져 있어 설치를 멈췄어요.", "받을 수 없음");
     const project = await api<ModrinthProject>(`/project/${id}`);
-    if (project.project_type === "modpack") throw new Error(`${project.title}은(는) 모드팩이라 통째로 받을 수 없어요. 편의 모드만 하나씩 설치할 수 있어요.`);
-    if (project.project_type !== "mod") throw new Error(`${project.title}은(는) 모드가 아니에요.`);
+    if (project.project_type === "modpack") throw new ModRefusal(`${project.title}은(는) 모드팩이라 통째로 받을 수 없어요. 편의 모드만 하나씩 설치할 수 있어요.`, "받을 수 없음");
+    if (project.project_type !== "mod") throw new ModRefusal(`${project.title}은(는) 모드가 아니에요.`, "받을 수 없음");
     if (project.server_side === "required") {
-      throw new Error(`${project.title}은(는) 서버에도 설치해야 해서 개인 모드로 쓸 수 없어요.`);
+      throw new ModRefusal(`${project.title}은(는) 서버에도 설치해야 해서 개인 모드로 쓸 수 없어요.`, "받을 수 없음");
     }
     const version = await latestVersion(id, target);
-    if (!version) throw new Error(`${project.title}에는 ${loaderName(target)} ${target.minecraftVersion}용 파일이 없어요.`);
+    if (!version) throw new ModRefusal(`${project.title}에는 ${loaderName(target)} ${target.minecraftVersion}용 파일이 없어요.`, NO_MATCHING_VERSION);
     const present = (other: string) => inPack.has(other) || kept.some((mod) => mod.projectId === other) || plan.some((mod) => mod.projectId === other);
     for (const dependency of version.dependencies) {
       if (dependency.dependency_type === "incompatible" && dependency.project_id && present(dependency.project_id)) {
-        throw new Error(`${project.title}은(는) 이미 있는 다른 모드와 함께 쓸 수 없어요.`);
+        throw new ModRefusal(`${project.title}은(는) 이미 있는 다른 모드와 함께 쓸 수 없어요.`, "다른 모드와 충돌");
       }
     }
     plan.push({ projectId: id, title: project.title, version, file: pickFile(version), explicit });
     for (const dependency of version.dependencies) {
       if (dependency.dependency_type !== "required") continue;
       const dependencyId = dependency.project_id ?? (dependency.version_id ? (await api<ModrinthVersion>(`/version/${dependency.version_id}`)).project_id : null);
-      if (!dependencyId) throw new Error(`${project.title}에 필요한 모드를 Modrinth에서 찾지 못해 설치하지 않았어요.`);
+      if (!dependencyId) throw new ModRefusal(`${project.title}에 필요한 모드를 Modrinth에서 찾지 못해 설치하지 않았어요.`, "받을 수 없음");
       await visit(dependencyId, false, depth + 1);
     }
   };
@@ -197,7 +296,7 @@ async function planMods(
     const version = await api<ModrinthVersion>(`/version/${mod.versionId}`).catch(() => null);
     const clash = version?.dependencies.find((dependency) =>
       dependency.dependency_type === "incompatible" && plan.some((planned) => planned.projectId === dependency.project_id));
-    if (clash) throw new Error(`이미 설치한 ${mod.title}와(과) 함께 쓸 수 없는 모드라 설치하지 않았어요.`);
+    if (clash) throw new ModRefusal(`이미 설치한 ${mod.title}와(과) 함께 쓸 수 없는 모드라 설치하지 않았어요.`, "다른 모드와 충돌");
   }
   return plan;
 }
@@ -213,7 +312,7 @@ async function downloadPlan(directory: string, plan: PlannedMod[]): Promise<void
   }));
   const existing = new Set(await fsp.readdir(directory).catch(() => [] as string[]));
   try {
-    await downloadInstallFilesWithSystemNetwork(files);
+    await network.download(files);
   } catch (error) {
     await Promise.all(plan
       .filter((mod) => !existing.has(mod.file.filename))
@@ -270,7 +369,16 @@ export async function removeMod(target: ModTarget, projectId: string): Promise<P
   const directory = personalModsDir(target.instanceRoot, target.loader, target.minecraftVersion);
   let record = await readRecord(target);
   const removed = record.find((mod) => mod.projectId === projectId);
-  if (!removed) return listPersonalMods(target, false);
+  if (!removed) {
+    // A mod left behind for the previous version is removed from where it was installed.
+    const stale = await previousMods(target, record);
+    const old = stale?.mods.find((mod) => mod.projectId === projectId);
+    if (stale && old) {
+      await fsp.rm(path.join(personalModsDir(stale.previous.instanceRoot, stale.previous.loader, stale.previous.minecraftVersion), old.fileName), { force: true });
+      await writeRecord(stale.previous, (await readRecord(stale.previous)).filter((mod) => mod.projectId !== projectId));
+    }
+    return listPersonalMods(target, false);
+  }
   record = record.filter((mod) => mod !== removed);
   await fsp.rm(path.join(directory, removed.fileName), { force: true });
   // Dependencies are looked up again because the record does not keep the graph.
@@ -369,7 +477,7 @@ async function writeRecord(target: ModTarget, record: InstalledRecord[]): Promis
 }
 
 async function api<T>(pathname: string, init?: RequestInit): Promise<T> {
-  const response = await fetchWithSystemNetwork(`${API}${pathname}`, {
+  const response = await network.fetch(`${API}${pathname}`, {
     ...init,
     headers: { ...(init?.headers as Record<string, string> | undefined), "User-Agent": userAgent },
     signal: AbortSignal.timeout(20_000)

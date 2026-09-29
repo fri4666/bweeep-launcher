@@ -19,6 +19,8 @@ import type {
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
 import { ModsPanel } from "./ModsPanel.js";
+import { InstallMoveDialog } from "./InstallMoveDialog.js";
+import { DiscordPresencePanel } from "./DiscordPresencePanel.js";
 import { PatchNotesPanel, ReleaseMeta, ReleaseNoteSections, releaseTitle } from "./PatchNotesPanel.js";
 import { ServerOffIcon, ServerSwitcher, serverState as describeServerState } from "./ServerSwitcher.js";
 import { MemoryPanel, savedMemoryMb } from "./MemoryPanel.js";
@@ -211,6 +213,7 @@ function App() {
   const [gameNameInput, setGameNameInput] = useState("");
   const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
   const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
+  const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const createdInviteRef = useRef<HTMLDivElement>(null);
 
   function applyServerList(serverList: ServerPreset[]) {
@@ -633,13 +636,16 @@ function App() {
   async function chooseInstanceRoot() {
     try {
       const picked = await window.bweeep.chooseInstanceRoot(instanceRoot);
-      if (!picked) return;
-      setInstanceRoot(picked);
-      writeStorage(instanceRootStorageKey, picked);
-      setActionToast("설치 위치 바뀜");
+      if (picked && picked !== instanceRoot) setMoveTarget(picked);
     } catch (error) {
       setSettingsNotice(errorMessage(error, "설치 위치를 바꾸지 못했습니다."));
     }
+  }
+
+  function switchInstanceRoot(root: string, moved: boolean) {
+    setInstanceRoot(root);
+    writeStorage(instanceRootStorageKey, root);
+    setActionToast(moved ? "설치 위치 옮김" : "설치 위치 바뀜");
   }
 
   async function openInstanceRoot() {
@@ -1039,6 +1045,8 @@ function App() {
                 </div>
               </article>
 
+              <DiscordPresencePanel />
+
               <article className="panel">
                 <div className="panelHeader">
                   <h3>친구 초대</h3>
@@ -1247,6 +1255,9 @@ function App() {
 
       {patchNotesOpen && <PatchNotesPanel onClose={() => setPatchNotesOpen(false)} />}
 
+      {moveTarget && (
+        <InstallMoveDialog from={instanceRoot} to={moveTarget} onSwitch={switchInstanceRoot} onClose={() => setMoveTarget(null)} />
+      )}
       {whatsNew && !confirmRequest && <WhatsNewDialog whatsNew={whatsNew} onClose={closeWhatsNew} />}
       {confirmDialog}
     </main>

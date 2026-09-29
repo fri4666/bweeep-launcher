@@ -1586,6 +1586,49 @@ input[aria-invalid="true"] {
   margin-top: 20px;
 }
 
+.installMoveDialog .pathValue {
+  margin-top: 14px;
+  color: var(--text);
+}
+
+.installMoveDialog .fieldError {
+  color: var(--danger);
+}
+
+.installMoveDialog .fieldNote {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.installMoveProgress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.settingToggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.settingToggle input {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  accent-color: #e4af72;
+  cursor: pointer;
+}
+
 /* Release notes read like a patch notes article: title, meta line, bold
    summary, plain headings and bullets. Shared by the patch notes tab and the
    what's new dialog. */
@@ -2079,6 +2122,20 @@ input[aria-invalid="true"] {
 
 .modMore {
   justify-self: center;
+}
+
+.modRefetch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.modItem.isPrevious {
+  opacity: 0.72;
 }
 
 @media (prefers-reduced-motion: reduce) {

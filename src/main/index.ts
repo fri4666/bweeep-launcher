@@ -19,7 +19,7 @@ import { isReleasePageUrl } from "./release-notes.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
-import { findBlockedJars, installMod, listPersonalMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
+import { findBlockedJars, installMod, listPersonalMods, refetchPreviousMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
 import { bundledFeatureMods } from "./client-feature-mods.js";
 import { connectionGuardEnabled, connectionGuardJvmArgs, ensureConnectionGuard } from "./connection-guard.js";
 import { markWhatsNewSeen, pendingWhatsNew } from "./whats-new.js";
@@ -28,6 +28,8 @@ import { net as electronNet } from "electron";
 import os from "node:os";
 import { OfflineAccess } from "./offline-access.js";
 import { recommendedMemoryMb, resolveGameMemory } from "../shared/game-memory.js";
+import { installMoveInProgress, registerInstallMove } from "./install-move-ipc.js";
+import { discordGameStarted, discordGameStopped, registerDiscordPresence } from "./discord-presence-ipc.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
@@ -65,6 +67,7 @@ function focusMainWindow(): void {
 function setGameStatus(status: GameStatus): void {
   gameStatus = status;
   broadcast("game:status", status);
+  if (status.state === "idle") discordGameStopped();
   if (status.state === "idle") installPendingLauncherUpdate();
 }
 
@@ -406,6 +409,8 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("system:memory", () => ({ totalMb: totalMemoryMb() }));
   ipcMain.handle("paths:defaultInstanceRoot", () => defaultInstanceRoot());
+  registerInstallMove(() => gameStatus.state !== "idle");
+  registerDiscordPresence();
   ipcMain.handle("content:folders", (_event, instanceRoot: unknown) => getUserContentFolders(requireInstanceRoot(instanceRoot)));
   ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: unknown) => {
     const root = requireInstanceRoot(instanceRoot);
@@ -505,6 +510,11 @@ app.whenReady().then(async () => {
   ipcMain.handle("mods:install", async (_event, target: unknown, projectId: unknown) => installMod(await requireModTarget(target), String(projectId)));
   ipcMain.handle("mods:update", async (_event, target: unknown, projectId: unknown) => updateMod(await requireModTarget(target), String(projectId)));
   ipcMain.handle("mods:remove", async (_event, target: unknown, projectId: unknown) => removeMod(await requireModTarget(target), String(projectId)));
+  ipcMain.handle("mods:refetch", async (_event, target: unknown) => {
+    const modTarget = await requireModTarget(target);
+    const others = [...catalogPresets.values()].filter((preset) => preset.packId !== modTarget.packId);
+    return refetchPreviousMods(modTarget, others.map((preset) => ({ loader: preset.loader.kind, minecraftVersion: preset.minecraftVersion })));
+  });
   ipcMain.handle("skin:state", (_event, instanceRoot: unknown) => skinState(optionalInstanceRoot(instanceRoot)));
   ipcMain.handle("skin:add", async (event, instanceRoot: unknown) => {
     const owner = BrowserWindow.fromWebContents(event.sender);
@@ -585,6 +595,7 @@ app.whenReady().then(async () => {
     if (gameStatus.state !== "idle") {
       throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
     }
+    if (installMoveInProgress()) throw new Error("설치 위치를 옮기는 중이에요.");
     const runId = ++gameRunId;
     const startedAt = Date.now();
     lastGameLogFile = null;
@@ -687,6 +698,7 @@ app.whenReady().then(async () => {
       }, guardArgs, memory);
       if (gameRunId === runId && gameIsStarting()) {
         setGameStatus({ state: "running", pid: launched.pid, startedAt });
+        discordGameStarted(manifest.name, startedAt);
         await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
       } else {
         await writeGameLog("launch.exited-before-return", { packId: request.packId, version: launched.version });

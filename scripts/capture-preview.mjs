@@ -12,9 +12,10 @@ const whatsNewMode = process.env.BWEEP_PREVIEW_WHATS_NEW === "true";
 const patchNotesOffline = process.env.BWEEP_PREVIEW_PATCH_NOTES_OFFLINE === "true";
 const serverOffline = process.env.BWEEP_PREVIEW_SERVER_OFFLINE === "true";
 const authOutage = process.env.BWEEP_PREVIEW_AUTH_OUTAGE === "true";
+const moveAndModsMode = process.env.BWEEP_PREVIEW_MOVE_AND_MODS === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline, previewServerOffline, previewAuthOutage }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline, previewServerOffline, previewAuthOutage, previewMoveAndMods }) => {
   // A minimized window reports "hidden"; previews switch it with window.__setHidden.
   window.__hidden = false;
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => window.__hidden ? "hidden" : "visible" });
@@ -75,7 +76,14 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     { userId: "00000000-0000-0000-0000-000000000001", name: "붸에엡", gameName: "seos_py", role: "admin", tester: true },
     { userId: "00000000-0000-0000-0000-000000000002", name: "나원", gameName: null, role: "member", tester: false }
   ];
-  let personalMods = [];
+  // Mods installed for the server's previous version, waiting to be fetched again.
+  let personalMods = previewMoveAndMods ? [
+    { projectId: "AANobbMI", title: "Sodium", versionNumber: "mc1.20.6-0.5.11", fileName: "sodium.jar", explicit: true, previousTarget: "NeoForge 1.20.6" },
+    { projectId: "gvQqBUqZ", title: "Lithium", versionNumber: "mc1.20.6-0.12.7", fileName: "lithium.jar", explicit: true, previousTarget: "NeoForge 1.20.6" },
+    { projectId: "8shC1gFX", title: "Better F3", versionNumber: "7.0.2", fileName: "betterf3.jar", explicit: true, previousTarget: "NeoForge 1.20.6", unavailable: "맞는 버전 없음" }
+  ] : [];
+  const moveListeners = [];
+  window.__releaseMove = null;
   const modHits = [
     { projectId: "AANobbMI", slug: "sodium", title: "Sodium", description: "렌더링을 크게 빠르게 해 주는 최적화 모드", iconUrl: null, downloads: 71000000, status: "available" },
     { projectId: "P7dR8mSH", slug: "fabric-api", title: "Fabric API", description: "Fabric 모드용 공통 라이브러리", iconUrl: null, downloads: 110000000, status: "inPack" },
@@ -179,6 +187,35 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       personalMods = personalMods.filter((mod) => mod.projectId !== projectId);
       return personalMods;
     },
+    refetchMods: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      personalMods = personalMods.map((mod) => mod.previousTarget && !mod.unavailable
+        ? { projectId: mod.projectId, title: mod.title, versionNumber: "mc1.21.1-0.6.13", fileName: mod.fileName, explicit: true }
+        : mod);
+      return personalMods;
+    },
+    checkInstallMove: async (_from, to) => to.includes("instances")
+      ? { entries: 3, bytes: 3_650_000_000, problem: "지금 위치와 겹치는 폴더예요" }
+      : { entries: 3, bytes: 3_650_000_000 },
+    moveInstall: async () => {
+      for (const percent of [0, 12, 37]) moveListeners.forEach((listener) => listener(percent));
+      await new Promise((resolve) => { window.__releaseMove = resolve; });
+      for (const percent of [80, 100]) moveListeners.forEach((listener) => listener(percent));
+      return "move-1";
+    },
+    finishInstallMove: async (moveId) => { window.__finishedMove = moveId; },
+    onInstallMoveProgress: (listener) => {
+      moveListeners.push(listener);
+      return () => {
+        const index = moveListeners.indexOf(listener);
+        if (index >= 0) moveListeners.splice(index, 1);
+      };
+    },
+    discordPresence: async () => ({ available: true, enabled: window.__discordEnabled ?? true }),
+    setDiscordPresence: async (enabled) => {
+      window.__discordEnabled = enabled;
+      return { available: true, enabled };
+    },
     defaultInstanceRoot: async () => "C:\\Bweeep\\instances",
     userContentFolders: async () => ({ mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] }),
     chooseUserContentFolders: async (_root, kind) => ({ folders: kind === "mods" ? { mods: ["D:\\Minecraft\\my-mods", "D:\\Minecraft\\more-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] } : { mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders", "D:\\Minecraft\\more-shaders"] }, selected: 1 }),
@@ -228,7 +265,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     },
     listInvites: async () => ({ role: "admin", maxUsesLimit: 20, activeLimit: null, invites }),
     revokeInvite: async (inviteId) => { invites = invites.filter((invite) => invite.id !== inviteId); },
-    chooseInstanceRoot: async () => "D:\\Bweeep",
+    chooseInstanceRoot: async () => window.__nextInstanceRoot ?? "D:\\Bweeep",
     openLog: async () => undefined,
     stopGame: async () => { window.__stopRequests += 1; },
     setGameProfile: async (gameName) => {
@@ -368,7 +405,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewAuthOutage: authOutage });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewAuthOutage: authOutage, previewMoveAndMods: moveAndModsMode });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 if (testChannelDenied) {
@@ -455,6 +492,74 @@ if (serverOffline) {
   await page.waitForFunction((count) => window.__serverStatusCalls > count, hiddenCalls, { timeout: 2000 });
   await page.locator(".launchButton .launchOffIcon").waitFor({ state: "detached" });
   checks.push("polling-paused-while-hidden");
+    console.log(JSON.stringify({ interactionChecks: checks, errors }));
+    await browser.close();
+    process.exit(errors.length ? 1 : 0);
+  }
+if (moveAndModsMode) {
+  const checks = [];
+  const noSideways = async (selector, name) => {
+    if (await page.locator(selector).evaluate((element) => element.scrollWidth > element.clientWidth + 1)) throw new Error(`${name} overflows sideways`);
+  };
+  await page.locator(".launchButton").waitFor();
+  await page.getByRole("button", { name: "설정", exact: true }).click();
+  const discordToggle = page.getByRole("checkbox", { name: "디스코드에 플레이 중 표시" });
+  if (!(await discordToggle.isChecked())) throw new Error("Discord status is not on by default");
+  await discordToggle.click();
+  await page.waitForFunction(() => window.__discordEnabled === false);
+  if (await discordToggle.isChecked()) throw new Error("Discord status did not turn off");
+  checks.push("discord-presence-toggle");
+
+  // Moving: ask first, then show only the percent while it runs.
+  await page.locator(".settingsModal .pathRow").getByRole("button", { name: "변경" }).click();
+  const dialog = page.getByRole("alertdialog", { name: "설치 위치 바꾸기" });
+  await dialog.getByText("지금 파일 3.4GB를 새 위치로 옮길까요?").waitFor();
+  await page.screenshot({ path: "previews/bweeep-launcher-install-move-ask.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  await noSideways(".installMoveDialog", "move dialog");
+  await page.screenshot({ path: "previews/bweeep-launcher-install-move-ask-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await dialog.getByRole("button", { name: "옮기기" }).click();
+  await dialog.getByText("37%").waitFor();
+  await page.keyboard.press("Escape");
+  if (!(await dialog.isVisible()) || !(await page.locator(".settingsModal").isVisible())) throw new Error("Escape closed something while moving");
+  await page.screenshot({ path: "previews/bweeep-launcher-install-move-progress.png" });
+  await page.evaluate(() => window.__releaseMove());
+  await page.getByText("설치 위치 옮김", { exact: true }).waitFor();
+  await page.waitForFunction(() => window.__finishedMove === "move-1");
+  if ((await page.locator(".settingsModal .pathValue").innerText()) !== "D:\\Bweeep") throw new Error("the new location was not saved after moving");
+  checks.push("install-move-progress-and-switch");
+
+  // A refused move still offers downloading again at the new location.
+  await page.evaluate(() => { window.__nextInstanceRoot = "D:\\Bweeep\\instances"; });
+  await page.locator(".settingsModal .pathRow").getByRole("button", { name: "변경" }).click();
+  await dialog.getByText("지금 위치와 겹치는 폴더예요").waitFor();
+  if (!(await dialog.getByRole("button", { name: "옮기기" }).isDisabled())) throw new Error("move stayed enabled for an overlapping folder");
+  await page.screenshot({ path: "previews/bweeep-launcher-install-move-refused.png" });
+  await page.keyboard.press("Escape");
+  if (await dialog.count() || !(await page.locator(".settingsModal").isVisible())) throw new Error("Escape should close only the move dialog");
+  await page.locator(".settingsModal .pathRow").getByRole("button", { name: "변경" }).click();
+  await dialog.getByRole("button", { name: "새로 받기" }).click();
+  await page.getByText("설치 위치 바뀜", { exact: true }).waitFor();
+  checks.push("install-move-refused-download-again");
+  await page.locator(".settingsModal .closeButton").click();
+
+  // Mods left behind by a server update open first, ready to fetch again.
+  await page.getByRole("button", { name: "편의 모드", exact: true }).click();
+  const mods = page.locator(".modsModal");
+  await mods.getByText("NeoForge 1.20.6용 3개").waitFor();
+  if ((await mods.getByRole("tab", { name: /설치됨/ }).getAttribute("aria-selected")) !== "true") throw new Error("the installed tab did not open for previous-version mods");
+  if (!(await mods.locator(".modItem").filter({ hasText: "Better F3" }).innerText()).includes("맞는 버전 없음")) throw new Error("no-match mod is not marked");
+  await page.screenshot({ path: "previews/bweeep-launcher-mods-previous.png" });
+  await mods.getByRole("button", { name: "새 버전용으로 다시 받기" }).click();
+  await mods.getByText("다시 받음 · 1개는 못 받음").waitFor();
+  if (await mods.locator(".modItem.isPrevious").count() !== 1) throw new Error("refetched mods are still listed as previous");
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  await noSideways(".modsModal", "mods panel");
+  await page.screenshot({ path: "previews/bweeep-launcher-mods-refetched-narrow.png" });
+  checks.push("mods-refetch-for-new-version");
   console.log(JSON.stringify({ interactionChecks: checks, errors }));
   await browser.close();
   process.exit(errors.length ? 1 : 0);

@@ -280,6 +280,20 @@ export interface UserContentStatus {
   skippedMods: Array<{ name: string; reason: string }>;
 }
 
+/** What moving the install location would carry over; `problem` says why it cannot. */
+export interface InstallMoveCheck {
+  /** Launcher folders (instances and personal content) found at the current location. */
+  entries: number;
+  bytes: number;
+  problem?: string;
+}
+
+/** available is false while the launcher has no Discord application id. */
+export interface DiscordPresenceSetting {
+  available: boolean;
+  enabled: boolean;
+}
+
 export type UserContentKind = "mods" | "shaderpacks";
 
 /** A member as the admin tester list shows it. Admins are always testers. */
@@ -327,6 +341,14 @@ export interface PersonalMod {
   explicit: boolean;
   /** Newer version for this server's loader and Minecraft version, if any. */
   update?: string;
+  /**
+   * Set when the mod was installed for the server's previous loader or
+   * Minecraft version ("Fabric 1.21.4"). It stays out of the game until it is
+   * fetched again for the current one.
+   */
+  previousTarget?: string;
+  /** Why it cannot be fetched for this server, e.g. "맞는 버전 없음". */
+  unavailable?: string;
 }
 
 /** "default" is the classic 4px arm (Steve); "slim" the 3px arm (Alex). */
