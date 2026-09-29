@@ -1126,7 +1126,7 @@ if (catalogUnavailable) {
   const refusal = page.locator(".dockError .authFailureLine");
   await refusal.waitFor();
   const refusalText = (await refusal.innerText()).trim();
-  if (refusalText !== "접속 토큰이 만료됐어요" || await refusal.locator("svg").count() !== 1) {
+  if (refusalText !== "접속 시간이 지났어요. 게임을 다시 켜 주세요" || await refusal.locator("svg").count() !== 1) {
     throw new Error(`refusal reason is not an icon and one line: ${refusalText}`);
   }
   await page.screenshot({ path: "previews/bweeep-launcher-auth-failure.png" });
