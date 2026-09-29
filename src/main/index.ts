@@ -24,6 +24,7 @@ import { bundledFeatureMods } from "./client-feature-mods.js";
 import { connectionGuardEnabled, connectionGuardJvmArgs, ensureConnectionGuard } from "./connection-guard.js";
 import { markWhatsNewSeen, pendingWhatsNew } from "./whats-new.js";
 import { findDefaultSkins, SkinLibrary } from "./skins.js";
+import { registerAdminIpc } from "./admin-ipc.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
@@ -378,6 +379,7 @@ app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   await session.defaultSession.setProxy({ mode: "system" });
   setModrinthUserAgent(app.getVersion());
+  const gameSession = registerAdminIpc({ auth, user: () => sessionUser, lastGameLogFile: () => lastGameLogFile, broadcast });
   ipcMain.handle("catalog:list", () => loadCatalog());
   ipcMain.handle("server:status", (_event, server: unknown) => {
     if (!isCatalogServer(server, [...catalogPresets.values()].map((preset) => preset.server))) throw new Error("서버 목록에 없는 주소입니다.");
@@ -565,6 +567,7 @@ app.whenReady().then(async () => {
     setGameStatus({ state: "starting", startedAt });
     const progress = (payload: SyncProgress) => {
       if (!event.sender.isDestroyed()) event.sender.send("modpack:progress", payload);
+      gameSession.observe(payload);
       void writeGameLog("launch.progress", {
         kind: payload.kind,
         stage: payload.stage ?? null,
@@ -613,6 +616,7 @@ app.whenReady().then(async () => {
       const getLaunchAuthorization = async (): Promise<LaunchAuthorization> => {
         await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
         const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
+        gameSession.started(identity.accessToken, startedAt);
         const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
         await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
         return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
@@ -627,6 +631,7 @@ app.whenReady().then(async () => {
           ? { kind: "info", stage: "게임 종료", message: "직접 끔" }
           : { kind: exit.abnormal ? "error" : "info", stage: "게임 종료", message: exit.message });
         if (gameRunId === runId) {
+          gameSession.exited();
           setGameStatus(exit.abnormal && !stoppedByPlayer
             ? {
                 state: "idle",
@@ -658,7 +663,10 @@ app.whenReady().then(async () => {
       }
       return { ...launched, instanceDir: synced.instanceDir };
     } catch (error) {
-      if (gameRunId === runId) setGameStatus({ state: "idle" });
+      if (gameRunId === runId) {
+        gameSession.stop();
+        setGameStatus({ state: "idle" });
+      }
       const details = gameErrorDetails(error);
       await writeGameLog("launch.failed", details);
       throw new Error(details.message);

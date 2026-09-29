@@ -8,7 +8,6 @@ import type {
   LauncherUpdateStatus,
   LauncherUser,
   LoaderKind,
-  MemberSummary,
   ServerConnection,
   ServerPreset,
   ServerSoftwareKind,
@@ -20,6 +19,8 @@ import type {
 } from "../shared/types.js";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
+import { AdminPanel } from "./AdminPanel.js";
+import { AuthFailureLine, DiagnosticsButton } from "./AuthFailureNotice.js";
 import { ModsPanel } from "./ModsPanel.js";
 import { PatchNotesPanel, ReleaseMeta, ReleaseNoteSections, releaseTitle } from "./PatchNotesPanel.js";
 
@@ -33,7 +34,7 @@ const adminInviteSizes = [1, 5, 10, 20];
 
 type LogEntry = SyncProgress & { at: number };
 type CatalogState = "loading" | "ready" | "error";
-type DockError = { title: string; message: string; retryWithoutPersonalMods?: boolean };
+type DockError = { title: string; message: string; retryWithoutPersonalMods?: boolean; crash?: boolean; authFailure?: string };
 type ConfirmRequest = {
   title: string;
   body: string;
@@ -66,7 +67,8 @@ function crashError(status: GameStatus): DockError {
     message: status.retryWithoutPersonalMods
       ? `${status.exitMessage ?? "실행 중 오류"} · 개인 모드 때문일 수 있어요`
       : status.exitMessage ?? "실행 중 오류",
-    retryWithoutPersonalMods: Boolean(status.retryWithoutPersonalMods)
+    retryWithoutPersonalMods: Boolean(status.retryWithoutPersonalMods),
+    crash: true
   };
 }
 
@@ -200,8 +202,7 @@ function App() {
   const [skinOpen, setSkinOpen] = useState(false);
   const [modsOpen, setModsOpen] = useState(false);
   const [patchNotesOpen, setPatchNotesOpen] = useState(false);
-  const [members, setMembers] = useState<MemberSummary[]>([]);
-  const [testerBusyId, setTesterBusyId] = useState<string | null>(null);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [whatsNew, setWhatsNew] = useState<WhatsNew | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
@@ -290,6 +291,10 @@ function App() {
       if (status.state === "idle") setJoinedServer(false);
       if (status.exitError && status.exitMessage) setDockError(crashError(status));
     });
+    // Why the server turned the player away; a crash stays the headline.
+    const unsubscribeAuthFailure = window.bweeep.onAuthFailure((failure) => {
+      setDockError((current) => current?.crash ? current : { title: "서버에 접속하지 못했어요", message: "", authFailure: failure.reason });
+    });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
       setEntryError(message);
@@ -307,6 +312,7 @@ function App() {
       unsubscribeProgress();
       unsubscribeSession();
       unsubscribeGameStatus();
+      unsubscribeAuthFailure();
       unsubscribeError();
       unsubscribeUpdate();
       unsubscribeInvite();
@@ -342,10 +348,11 @@ function App() {
       else if (skinOpen) setSkinOpen(false);
       else if (modsOpen) setModsOpen(false);
       else if (patchNotesOpen) setPatchNotesOpen(false);
+      else if (adminOpen) setAdminOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmRequest, settingsOpen, profileOpen, skinOpen, modsOpen, patchNotesOpen]);
+  }, [confirmRequest, settingsOpen, profileOpen, skinOpen, modsOpen, patchNotesOpen, adminOpen]);
 
   const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
     setServerChecking(true);
@@ -369,22 +376,7 @@ function App() {
     setSettingsNotice("");
     void loadCatalog({ quiet: true });
     void refreshInvites();
-    if (access?.isAdmin) {
-      window.bweeep.listMembers().then(setMembers).catch((error) => setSettingsNotice(errorMessage(error, "멤버 목록을 불러오지 못했어요.")));
-    }
   }, [settingsOpen]);
-
-  async function toggleTester(member: MemberSummary) {
-    setTesterBusyId(member.userId);
-    setSettingsNotice("");
-    try {
-      setMembers(await window.bweeep.setTester(member.userId, !member.tester));
-    } catch (error) {
-      setSettingsNotice(errorMessage(error, "테스터 지정을 저장하지 못했어요."));
-    } finally {
-      setTesterBusyId(null);
-    }
-  }
 
   useEffect(() => {
     if (createdInvite) createdInviteRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -884,6 +876,12 @@ function App() {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
             <span>설정</span>
           </button>
+          {access.isAdmin && (
+            <button className="sideAction" onClick={() => setAdminOpen(true)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z" /><path d="M9 12l2 2 4-4" /></svg>
+              <span>관리</span>
+            </button>
+          )}
         </nav>
         <div className="supportPanel">
           <span className="accessStamp">멤버 전용</span>
@@ -964,7 +962,8 @@ function App() {
               <div className="dockError" role="alert">
                 <div>
                   <strong>{dockError.title}</strong>
-                  <p>{dockError.message}</p>
+                  {dockError.authFailure ? <AuthFailureLine reason={dockError.authFailure} /> : <p>{dockError.message}</p>}
+                  <DiagnosticsButton key={`${dockError.title}|${dockError.message}|${dockError.authFailure ?? ""}`} />
                 </div>
                 <div className="dockErrorActions">
                   {dockError.retryWithoutPersonalMods && (
@@ -1116,34 +1115,6 @@ function App() {
                 )}
               </article>
 
-              {access.isAdmin && (
-                <article className="panel">
-                  <div className="panelHeader">
-                    <h3>테스터</h3>
-                    <span>테스터는 테섭에 들어갈 수 있고, 런처 새 버전을 먼저 받아요.</span>
-                  </div>
-                  <div className="memberList">
-                    {members.length === 0 && <p className="emptyText">불러오는 중…</p>}
-                    {members.map((member) => (
-                      <div className="memberItem" key={member.userId}>
-                        <span>
-                          {member.name}
-                          {member.gameName ? ` · ${member.gameName}` : ""}
-                          {member.role === "admin" ? " · 관리자(항상 테스터)" : ""}
-                        </span>
-                        {member.role === "admin" ? (
-                          <span className="mutedText">테스터</span>
-                        ) : (
-                          <button className={member.tester ? "secondaryButton" : "textButton"} disabled={testerBusyId !== null} onClick={() => void toggleTester(member)}>
-                            {testerBusyId === member.userId ? "저장 중…" : member.tester ? "테스터 해제" : "테스터로 지정"}
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </article>
-              )}
-
               <section className="panel logPanel">
                 <div className="panelHeader">
                   <h3>설치 기록</h3>
@@ -1266,6 +1237,8 @@ function App() {
       )}
 
       {patchNotesOpen && <PatchNotesPanel onClose={() => setPatchNotesOpen(false)} />}
+
+      {adminOpen && access.isAdmin && <AdminPanel selfId={user.id} onClose={() => setAdminOpen(false)} confirm={setConfirmRequest} />}
 
       {whatsNew && !confirmRequest && <WhatsNewDialog whatsNew={whatsNew} onClose={closeWhatsNew} />}
       {confirmDialog}

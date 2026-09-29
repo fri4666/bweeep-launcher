@@ -1,0 +1,169 @@
+/* Admin tab */
+
+.adminModal {
+  width: min(820px, 100%);
+}
+
+.adminTabs {
+  justify-self: start;
+}
+
+.adminList {
+  display: grid;
+  gap: 4px;
+}
+
+.adminModal .modalBody > .adminList,
+.adminModal .modalBody > .emptyText {
+  padding: 0 2px;
+}
+
+.adminRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 6px 6px 6px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+}
+
+.adminRow.isActive {
+  background: rgba(217, 176, 114, 0.08);
+}
+
+.adminRowText {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.adminRowText strong {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.adminRowText small,
+.adminTime {
+  overflow: hidden;
+  color: var(--subtle);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.adminTime {
+  flex: 0 0 auto;
+}
+
+.adminRowActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.adminRow .secondaryButton,
+.adminRow .textButton,
+.adminToggle {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.adminRow > .secondaryButton,
+.adminRow > .textButton {
+  flex: 0 0 auto;
+}
+
+.adminToggle {
+  color: var(--muted);
+  font-weight: 800;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.adminToggle:hover:not(:disabled) {
+  color: var(--text-strong);
+  border-color: var(--line-strong);
+}
+
+.adminToggle.isOn {
+  color: var(--accent);
+  border-color: rgba(217, 176, 114, 0.55);
+}
+
+.adminToggle:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.adminActive {
+  flex: 0 0 auto;
+  padding-right: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* With the admin button there are six menu buttons; at the smallest window height they need the room. */
+@media (max-height: 700px) {
+  .sideActions:has(> :nth-child(6)) ~ .supportPanel {
+    display: none;
+  }
+}
+
+/* Join refusal in the dock */
+
+.authFailureLine {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.authFailureLine svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  fill: none;
+  stroke: var(--danger);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.diagnosticsButton {
+  margin-top: 6px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  background: transparent;
+  border: 0;
+}
+
+.diagnosticsButton:hover:not(:disabled) {
+  color: var(--text-strong);
+}
+
+.diagnosticsButton.is-sent {
+  color: var(--ok);
+  text-decoration: none;
+}
+
+.diagnosticsButton:disabled {
+  cursor: default;
+}
+
+.diagnosticsError {
+  display: block;
+  margin-top: 2px;
+  color: var(--danger);
+  font-size: 11px;
+}
