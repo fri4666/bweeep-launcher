@@ -124,7 +124,9 @@ export class SupabaseAuth {
         skipBrowserRedirect: true
       }
     });
-    if (error || !data.url) {
+    // Only a web address goes to the system browser, never a file or another app's link
+    // (plain http only for a local Supabase used in development).
+    if (error || !data.url || !/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])/i.test(data.url)) {
       this.loginInFlight = false;
       await writeAuthLog("login.start.failed", { provider: "discord", message: error?.message ?? "missing_oauth_url" });
       throw new Error(error?.message ?? "Discord 로그인 주소를 만들지 못했습니다.");

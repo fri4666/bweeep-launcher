@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -20,10 +22,13 @@ jobs:
       - run: npm run build
       - run: node scripts/verify-manifest.mjs
       - run: node scripts/verify-launcher-update.mjs
+      - run: node scripts/verify-release-notes.mjs
+      - run: node scripts/verify-client-feature-mods.mjs
       - run: node scripts/verify-game-exit.mjs
       - run: node scripts/verify-personal-content.mjs
       - run: node scripts/verify-server-status.mjs
       - run: node scripts/verify-launch-identity.mjs
+      - run: node scripts/verify-modpack-sync.mjs
       - run: npx playwright install --with-deps chromium
       - name: 홈 화면과 실행 흐름 확인
         shell: bash
@@ -38,6 +43,8 @@ jobs:
           done
           node scripts/capture-preview.mjs
           BWEEP_PREVIEW_CATALOG_UNAVAILABLE=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_WHATS_NEW=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_PATCH_NOTES_OFFLINE=true node scripts/capture-preview.mjs
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

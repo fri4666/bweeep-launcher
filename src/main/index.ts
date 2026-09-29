@@ -3,17 +3,19 @@ import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { toServerPreset } from "./catalog.js";
+import { presetsFromManifests, requireBweeepAccounts } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
 import { checkServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
-import { installAndLaunch, type LaunchAuthorization } from "./minecraft-runtime.js";
+import type { LaunchAuthorization } from "./minecraft-runtime.js";
 import { authlibInjectorJvmArgs, ensureAuthlibInjector } from "./authlib-injector.js";
 import { AuthCallbackError, isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "./deep-link.js";
 import { fingerprint } from "./hash.js";
 import { authLogPath, gameErrorDetails, gameLogPath, writeAuthLog, writeGameLog } from "./logs.js";
-import { getLauncherUpdateStatus, installPendingLauncherUpdate, startLauncherUpdates } from "./launcher-update.js";
-import { createOfflineLaunchIdentity } from "./launch-identity.js";
+import { getLauncherUpdateStatus, installPendingLauncherUpdate, setLauncherUpdateAudience, startLauncherUpdates } from "./launcher-update.js";
+import { isCatalogServer, isSameDocument } from "./navigation.js";
+import { loadPatchNotes } from "./patch-notes.js";
+import { isReleasePageUrl } from "./release-notes.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
@@ -38,6 +40,13 @@ let gameRunId = 0;
 let stopRequestedRunId = 0;
 // The most useful file to open after a failed or crashed run.
 let lastGameLogFile: string | null = null;
+// Testers and admins get beta launcher builds and see beta patch notes.
+let testerAudience = false;
+
+function setTesterAudience(tester: boolean): void {
+  testerAudience = tester;
+  setLauncherUpdateAudience(tester);
+}
 
 function broadcast(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, payload);
@@ -53,6 +62,15 @@ function setGameStatus(status: GameStatus): void {
   gameStatus = status;
   broadcast("game:status", status);
   if (status.state === "idle") installPendingLauncherUpdate();
+}
+
+/**
+ * A downloaded launcher update restarts the launcher only while no game is
+ * starting or running. After a crash the player is reading the error, so the
+ * restart waits for their click on the update icon (or the next start).
+ */
+function mayRestartForUpdate(playerAsked: boolean): boolean {
+  return gameStatus.state === "idle" && (playerAsked || gameStatus.exitError !== true);
 }
 
 // A function call keeps TypeScript from narrowing gameStatus across awaits,
@@ -74,19 +92,27 @@ const catalogPresets = new Map<string, ServerPreset>();
 
 async function loadCatalog(): Promise<ServerPreset[]> {
   if (!sessionUser) return [];
-  const presets = (await auth.listManifests(sessionUser)).map((manifest) => {
-    assertManifest(manifest);
-    return toServerPreset(manifest);
+  const presets = presetsFromManifests(await auth.listManifests(sessionUser), (manifest, reason) => {
+    const id = manifest && typeof manifest === "object" && "id" in manifest ? String(manifest.id) : null;
+    void writeGameLog("catalog.manifest.skipped", { packId: id, reason });
   });
   catalogPresets.clear();
   for (const preset of presets) catalogPresets.set(preset.packId, preset);
   return presets;
 }
 
+const PACK_ID = /^[a-z0-9][a-z0-9-]{1,62}$/;
+
+function requireLaunchRequest(value: unknown): { packId: string; instanceDir: string; withoutPersonalMods: boolean } {
+  const request = value as { packId?: unknown; instanceDir?: unknown; withoutPersonalMods?: unknown } | null;
+  if (typeof request?.packId !== "string" || !PACK_ID.test(request.packId)) throw new Error("서버 정보가 올바르지 않습니다.");
+  return { packId: request.packId, instanceDir: requireInstanceRoot(request.instanceDir), withoutPersonalMods: request.withoutPersonalMods === true };
+}
+
 async function requireModTarget(value: unknown): Promise<ModTarget> {
   const target = value as Partial<ModTarget> | null;
   const packId = target?.packId;
-  if (typeof packId !== "string" || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(packId)) throw new Error("서버 정보가 올바르지 않습니다.");
+  if (typeof packId !== "string" || !PACK_ID.test(packId)) throw new Error("서버 정보가 올바르지 않습니다.");
   if (!catalogPresets.has(packId)) await loadCatalog();
   const preset = catalogPresets.get(packId);
   if (!preset) throw new Error("서버 정보를 찾지 못했습니다. 서버 목록을 새로 불러와 주세요.");
@@ -153,6 +179,8 @@ async function pickFolders(event: IpcMainInvokeEvent, options: OpenDialogOptions
 // Windows has no default app for .log files, so openPath shows the
 // "choose an app" prompt there. Notepad ships with Windows and reads them.
 async function openLogFile(file: string): Promise<boolean> {
+  // The crash report path comes from the game's own output, so only text files are ever opened, never run.
+  if (![".log", ".txt"].includes(path.extname(file).toLowerCase())) return false;
   if (process.platform !== "win32" || path.extname(file).toLowerCase() !== ".log") {
     return !(await shell.openPath(file));
   }
@@ -202,9 +230,16 @@ function queueDeepLink(url: string, source: "argv" | "second-instance"): void {
       void writeAuthLog("callback.duplicate.ignored", { callbackId, source });
       return;
     }
+    // Any web page can open a bwe-e-ep:// link; one that is not even a URL must not crash the launcher at startup.
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      void writeAuthLog("callback.malformed.ignored", { callbackId, source });
+      return;
+    }
     queuedAuthCallbacks.add(callbackId);
     pendingAuthUrls.push(url);
-    const parsedUrl = new URL(url);
     const flowId = parsedUrl.searchParams.get("sb_flow_id");
     const state = parsedUrl.searchParams.get("state");
     void writeAuthLog("callback.queued", {
@@ -328,11 +363,26 @@ async function createWindow(): Promise<BrowserWindow> {
   return win;
 }
 
+// The preload bridge belongs to the launcher's own page only: no other page,
+// popup or embedded view may load in its place, and the page asks for no
+// browser permissions (camera, notifications, …).
+app.on("web-contents-created", (_event, contents) => {
+  contents.setWindowOpenHandler(() => ({ action: "deny" }));
+  contents.on("will-navigate", (navigation, url) => {
+    if (!isSameDocument(contents.getURL(), url)) navigation.preventDefault();
+  });
+  contents.on("will-attach-webview", (attach) => attach.preventDefault());
+});
+
 app.whenReady().then(async () => {
+  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   await session.defaultSession.setProxy({ mode: "system" });
   setModrinthUserAgent(app.getVersion());
   ipcMain.handle("catalog:list", () => loadCatalog());
-  ipcMain.handle("server:status", (_event, server: { host: string; port: number }) => checkServer(server));
+  ipcMain.handle("server:status", (_event, server: unknown) => {
+    if (!isCatalogServer(server, [...catalogPresets.values()].map((preset) => preset.server))) throw new Error("서버 목록에 없는 주소입니다.");
+    return checkServer({ host: server.host, port: server.port });
+  });
   ipcMain.handle("paths:defaultInstanceRoot", () => defaultInstanceRoot());
   ipcMain.handle("content:folders", (_event, instanceRoot: unknown) => getUserContentFolders(requireInstanceRoot(instanceRoot)));
   ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: unknown) => {
@@ -360,20 +410,26 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("launcher:channel", () => getLauncherChannel());
   ipcMain.handle("launcher:version", () => app.getVersion());
-  ipcMain.handle("clipboard:writeText", (_event, value: string) => clipboard.writeText(value));
+  ipcMain.handle("clipboard:writeText", (_event, value: unknown) => {
+    if (typeof value !== "string" || value.length > 200_000) throw new Error("복사할 내용이 올바르지 않습니다.");
+    clipboard.writeText(value);
+  });
   ipcMain.handle("account:login", () => auth.startLogin());
   ipcMain.handle("account:cancelLogin", () => auth.cancelPendingLogin("user_cancelled"));
   ipcMain.handle("account:logout", async () => {
     await auth.signOut();
     sessionUser = null;
+    setTesterAudience(false);
     return { loggedIn: false, allowed: false, isAdmin: false, reason: "런처 계정에서 로그아웃했습니다." };
   });
   ipcMain.handle("access:status", async () => {
     try {
       const status = await auth.getAccessStatus(sessionUser);
       if (!status.loggedIn) sessionUser = null;
+      setTesterAudience(status.loggedIn && status.allowed && status.testAllowed === true);
       return status;
     } catch (error) {
+      // An unreachable server says nothing new about who is signed in, so the update channel stays as it is.
       if (!sessionUser) throw error;
       return {
         loggedIn: true,
@@ -479,8 +535,14 @@ app.whenReady().then(async () => {
     return firstInvite;
   });
   ipcMain.handle("launcher:checkUpdate", () => getLauncherUpdateStatus());
+  ipcMain.handle("launcher:installUpdate", () => installPendingLauncherUpdate({ playerAsked: true }));
   ipcMain.handle("launcher:whatsNew", () => pendingWhatsNew());
   ipcMain.handle("launcher:whatsNewSeen", (_event, version: unknown) => markWhatsNewSeen(String(version)));
+  ipcMain.handle("launcher:patchNotes", () => loadPatchNotes(testerAudience));
+  ipcMain.handle("launcher:openReleasePage", (_event, url: unknown) => {
+    if (!isReleasePageUrl(url)) throw new Error("열 수 없는 주소입니다.");
+    return shell.openExternal(url);
+  });
   // Fixed address: the test build's non-tester screen points to the stable installer.
   ipcMain.handle("launcher:openStableDownload", () => shell.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest"));
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
@@ -492,7 +554,8 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.minecraft.stop-requested", { pid: gameStatus.pid });
     process.kill(gameStatus.pid);
   });
-  ipcMain.handle("game:launch", async (event, request: { packId: string; instanceDir: string; withoutPersonalMods?: boolean }) => {
+  ipcMain.handle("game:launch", async (event, raw: unknown) => {
+    const request = requireLaunchRequest(raw);
     if (gameStatus.state !== "idle") {
       throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
     }
@@ -516,10 +579,11 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.started", { packId: request.packId });
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
-      progress({ kind: "info", stage: "서버 목록", message: "선택한 서버 정보 요청" });
+      progress({ kind: "info", stage: "서버 목록", message: "받는 중" });
       const manifest = await auth.getManifest(sessionUser, request.packId);
       assertManifest(manifest);
       if (manifest.id !== request.packId) throw new Error("선택한 서버와 받은 모드팩 정보가 일치하지 않습니다.");
+      requireBweeepAccounts(manifest);
       const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), manifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: manifest.files.length });
       const synced = await syncModpack({ instanceDir: request.instanceDir, manifest }, progress);
@@ -533,8 +597,8 @@ app.whenReady().then(async () => {
         kind: "info",
         stage: "개인 파일",
         message: withoutPersonalMods
-          ? `개인 모드 없이 시작 · 셰이더 ${userContent.copiedShaders}개 적용`
-          : `내 모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개 적용 · 이전 개인 파일 ${userContent.removedManagedMods}개 정리`
+          ? `개인 모드 없이 · 셰이더 ${userContent.copiedShaders}개`
+          : `모드 ${userContent.copiedMods}개 · 셰이더 ${userContent.copiedShaders}개`
       });
       for (const skipped of userContent.skippedMods) {
         progress({ kind: "info", stage: "개인 모드 제외", message: `${skipped.name}: ${skipped.reason}`, filePath: skipped.name });
@@ -545,31 +609,22 @@ app.whenReady().then(async () => {
       if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
       const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: manifest.minecraftVersion, loader: manifest.loader.version });
+      // Every server checks players through the Bweeep account API (requireBweeepAccounts above).
       const getLaunchAuthorization = async (): Promise<LaunchAuthorization> => {
-        if (manifest.gameAuth === "yggdrasil") {
-          await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
-          const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
-          const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
-          await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
-          return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
-        }
-        if (manifest.loader.kind === "vanilla") {
-          return {
-            identity: createOfflineLaunchIdentity(launchUser.id, launchUser.gameName, launchUser.globalName, launchUser.username),
-            ticket: ""
-          };
-        }
-        await writeGameLog("launch.authorization.requested", { provider: "discord" });
-        const authorization = await auth.createGameLaunchAuthorization(launchUser);
-        await writeGameLog("launch.authorization.created", { provider: "discord" });
-        return authorization;
+        await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
+        const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
+        const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
+        await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
+        return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
       };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
+      // The Minecraft installer libraries are a large module graph, so they load on the first launch, not at startup.
+      const { installAndLaunch } = await import("./minecraft-runtime.js");
       const launched = await installAndLaunch(manifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
         if (exit.crashReportLocation) lastGameLogFile = path.resolve(synced.instanceDir, exit.crashReportLocation);
         const stoppedByPlayer = stopRequestedRunId === runId;
         progress(stoppedByPlayer
-          ? { kind: "info", stage: "게임 종료", message: "플레이어가 게임을 종료했습니다" }
+          ? { kind: "info", stage: "게임 종료", message: "직접 끔" }
           : { kind: exit.abnormal ? "error" : "info", stage: "게임 종료", message: exit.message });
         if (gameRunId === runId) {
           setGameStatus(exit.abnormal && !stoppedByPlayer
@@ -584,10 +639,8 @@ app.whenReady().then(async () => {
             : { state: "idle" });
         }
         // The game token only matters while joining; once the game is gone it is retired.
-        if (manifest.gameAuth === "yggdrasil") {
-          void auth.revokeGameAuth(launchUser).catch((error: unknown) =>
-            writeGameLog("launch.token.revoke-failed", { message: error instanceof Error ? error.message : String(error) }));
-        }
+        void auth.revokeGameAuth(launchUser).catch((error: unknown) =>
+          writeGameLog("launch.token.revoke-failed", { message: error instanceof Error ? error.message : String(error) }));
         void captureSharedOptions(request.instanceDir, synced.instanceDir);
         void writeGameLog("launch.minecraft.exited", {
           packId: request.packId,
@@ -619,7 +672,7 @@ app.whenReady().then(async () => {
       // The renderer will show its normal signed-out state when a persisted session cannot be restored.
     }
     await createWindow();
-    startLauncherUpdates((status) => broadcast("launcher:updateStatus", status), () => gameStatus.state === "idle");
+    startLauncherUpdates((status) => broadcast("launcher:updateStatus", status), mayRestartForUpdate);
     schedulePendingDeepLinks();
   })();
 });

@@ -375,6 +375,17 @@ h3 {
   line-height: 1.5;
 }
 
+/* At the smallest window height the five menu buttons need the room. */
+@media (max-height: 700px) {
+  .supportPanel {
+    min-height: 0;
+  }
+
+  .supportPanel p {
+    display: none;
+  }
+}
+
 .content {
   display: grid;
   grid-template-rows: 70px minmax(0, 1fr) auto;
@@ -467,19 +478,46 @@ h3 {
   to { opacity: 0.45; transform: scale(0.82); }
 }
 
-.updateBanner {
-  min-width: 0;
-  padding: 8px 12px;
-  overflow: hidden;
+/* Launcher self-update: an icon, plus the percent while downloading. */
+.updateIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
   color: var(--warn);
   font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
   background: rgba(217, 176, 114, 0.1);
   border: 1px solid rgba(217, 176, 114, 0.28);
   border-radius: 999px;
   -webkit-app-region: no-drag;
+}
+
+.updateIndicator svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.updateIndicator.is-ready {
+  color: var(--ok);
+  background: rgba(132, 173, 114, 0.1);
+  border-color: rgba(132, 173, 114, 0.3);
+  cursor: pointer;
+}
+
+.updateIndicator.is-ready:hover {
+  background: rgba(132, 173, 114, 0.22);
+}
+
+.updateIndicator.is-installing svg {
+  animation: spin 1200ms linear infinite;
 }
 
 .topbarActions {
@@ -594,10 +632,12 @@ h3 {
   border-radius: var(--surface-radius);
 }
 
+/* The copy stops short of the launch dock, so chips wrap instead of sliding under the button at narrow widths. */
 .heroCopy {
   position: absolute;
   z-index: 2;
   left: 40px;
+  right: calc(min(340px, 100% - 64px) + 32px + 24px);
   bottom: 40px;
   max-width: 400px;
 }
@@ -1004,15 +1044,11 @@ h3 {
   text-align: center;
 }
 
-.fieldWarning {
+.fieldNote {
   margin-top: 8px;
-  padding: 9px 11px;
-  color: var(--warn);
+  color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
-  background: rgba(217, 176, 114, 0.08);
-  border: 1px solid rgba(217, 176, 114, 0.25);
-  border-radius: 10px;
 }
 
 /* Inputs */
@@ -1550,38 +1586,227 @@ input[aria-invalid="true"] {
   margin-top: 20px;
 }
 
-/* What's new after an update */
-.whatsNewDialog p.eyebrow {
-  margin: 0 0 6px;
-  color: var(--accent);
-  font-size: 12px;
+/* Release notes read like a patch notes article: title, meta line, bold
+   summary, plain headings and bullets. Shared by the patch notes tab and the
+   what's new dialog. */
+
+.releaseTitle {
+  color: var(--text-strong);
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1.2;
 }
 
-.whatsNewList {
-  display: grid;
-  gap: 8px;
-  margin: 14px 0 0;
-  padding: 0;
-  list-style: none;
+.releaseMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 12px;
+  color: var(--subtle);
+  font-size: 12.5px;
 }
 
-.whatsNewList li {
-  position: relative;
-  padding-left: 16px;
-  color: #d9d5cc;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.whatsNewList li::before {
+.releaseMeta span + span::before {
+  display: inline-block;
+  width: 1px;
+  height: 11px;
+  margin: 0 10px;
+  vertical-align: -1px;
   content: "";
-  position: absolute;
-  left: 2px;
-  top: 0.62em;
-  width: 6px;
-  height: 6px;
-  border-radius: 2px;
-  background: var(--accent);
+  background: var(--line-strong);
+}
+
+.releaseCategory {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.releaseSummary {
+  margin-top: 18px;
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.releaseSection h3 {
+  margin: 24px 0 10px;
+  color: var(--text-strong);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.releaseList {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 22px;
+  list-style: disc;
+}
+
+/* Older notes have no summary or headings, so their list follows the meta line. */
+.releaseMeta + .releaseSections > .releaseSection:first-child > .releaseList:first-child {
+  margin-top: 18px;
+}
+
+.releaseList li {
+  color: var(--text);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+.releaseList li::marker {
+  color: var(--subtle);
+}
+
+/* "참고:" notes: a nested plain list, a little smaller than the item. */
+.releaseList .releaseSubNotes {
+  display: grid;
+  gap: 2px;
+  margin: 3px 0 2px;
+  padding-left: 20px;
+  list-style: circle;
+}
+
+.releaseList .releaseSubNotes li {
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+/* What's new after an update: the same article, compact. */
+.whatsNewDialog {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 56px);
+  padding: 24px 26px;
+  overflow-y: auto;
+  background: linear-gradient(180deg, #221f1b 0%, #1c1d21 120px);
+}
+
+.whatsNewDialog .releaseTitle {
+  font-size: 22px;
+}
+
+/* The dialog's generic paragraph style would otherwise win over these. */
+.whatsNewDialog .releaseMeta {
+  margin-top: 8px;
+  color: var(--subtle);
+  font-size: 12.5px;
+}
+
+.whatsNewDialog .releaseSummary {
+  margin-top: 14px;
+  color: var(--text-strong);
+  font-size: 14.5px;
+}
+
+.whatsNewDialog .releaseSection h3 {
+  margin: 16px 0 8px;
+  font-size: 15px;
+}
+
+.whatsNewDialog .releaseList li {
+  font-size: 14px;
+}
+
+/* Patch notes */
+
+.patchNotesModal {
+  width: min(900px, 100%);
+}
+
+.patchLayout {
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+}
+
+.patchVersions {
+  position: sticky;
+  top: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.patchVersion {
+  display: grid;
+  justify-items: start;
+  gap: 1px;
+  width: 100%;
+  padding: 8px 10px 8px 12px;
+  color: var(--muted);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0 8px 8px 0;
+}
+
+.patchVersion:hover {
+  color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.patchVersion.active {
+  color: var(--text-strong);
+  background: rgba(217, 176, 114, 0.06);
+  border-left-color: var(--accent);
+}
+
+.patchVersion strong {
+  font-size: 14px;
+}
+
+.patchVersion small {
+  color: var(--subtle);
+  font-size: 11.5px;
+}
+
+.patchTag {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.patchTag.isCurrent {
+  color: var(--accent);
+}
+
+.patchTag.isBeta {
+  color: var(--warn);
+}
+
+.patchDetail {
+  min-width: 0;
+  padding: 28px 32px 30px;
+  background: linear-gradient(180deg, rgba(217, 176, 114, 0.06) 0%, rgba(217, 176, 114, 0) 200px), var(--surface-2);
+  border-radius: 14px;
+}
+
+.patchHead {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.patchSubtitle {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+
+.patchIntro p,
+.patchOutro p {
+  margin-top: 14px;
+  color: var(--text);
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.patchOutro {
+  margin-top: 10px;
+}
+
+.patchMore {
+  margin: 20px 0 0 -10px;
 }
 
 /* Skins */

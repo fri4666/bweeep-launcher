@@ -69,8 +69,11 @@ for (const owner of owners) {
   const uuid = cached.get(owner.primary.toLowerCase());
   if (!uuid) throw new Error(`${owner.primary} has never played on this server; leave it out or add the name the member actually used`);
   lines.push(`insert into public.launcher_minecraft_accounts (user_id, minecraft_uuid, game_name) values (${sql(owner.userId)}, ${sql(uuid)}, ${sql(owner.primary)}) on conflict do nothing;`);
+  // Names from the usercache were played, so they count as used; all but the
+  // current one start their one-day hold now (see 20260929120000_relax_name_lock.sql).
   for (const name of owner.names) {
-    if (name.length >= 2) lines.push(`insert into public.launcher_game_name_history (user_id, game_name) values (${sql(owner.userId)}, ${sql(name)}) on conflict do nothing;`);
+    const released = name.toLowerCase() === owner.primary.toLowerCase() ? "null" : "now()";
+    if (name.length >= 2) lines.push(`insert into public.launcher_game_name_history (user_id, game_name, used_at, released_at) values (${sql(owner.userId)}, ${sql(name)}, now(), ${released}) on conflict (user_id, game_name) do update set used_at = coalesce(public.launcher_game_name_history.used_at, excluded.used_at);`);
   }
   if (owner.primary.length >= 3) {
     lines.push(`insert into public.launcher_profiles (user_id, game_name) values (${sql(owner.userId)}, ${sql(owner.primary)}) on conflict (user_id) do update set game_name = excluded.game_name, updated_at = now() where public.launcher_profiles.game_name is distinct from excluded.game_name;`);

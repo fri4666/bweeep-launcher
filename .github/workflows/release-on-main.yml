@@ -16,8 +16,12 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
+      # 쓰기 토큰을 .git/config에 남기지 않습니다. npm ci가 돌리는 패키지 스크립트가
+      # 읽어 갈 수 있기 때문이며, 게시는 GH_TOKEN을 받은 gh 명령만 합니다.
       - name: 소스 내려받기
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Node 설치
         uses: actions/setup-node@v4
@@ -26,7 +30,7 @@ jobs:
           cache: npm
 
       # 정식판이 이미 게시된 버전이면 아무것도 하지 않습니다. 초안만 있으면
-      # (테스트 중이면) 병합할 때마다 새 테스트판을 내고 초안도 새로 만듭니다.
+      # (테스트 중이면) 병합할 때마다 새 베타를 내고 초안도 새로 만듭니다.
       - name: 게시 상태 확인
         id: version
         shell: pwsh
@@ -34,17 +38,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "package.json 버전 형식이 올바르지 않습니다: $version" }
           $tag = "v$version"
           $PSNativeCommandUseErrorActionPreference = $false
           $draft = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft --jq .isDraft 2>$null
           $published = $LASTEXITCODE -eq 0 -and $draft -eq "false"
           $hasDraft = $LASTEXITCODE -eq 0 -and $draft -eq "true"
-          $tests = @(gh release list --repo $env:GITHUB_REPOSITORY --limit 200 --json tagName --jq ".[].tagName" | Where-Object { $_ -like "$tag-test.*" })
-          $next = 1 + ($tests | ForEach-Object { [int]($_ -replace "^.*-test\.", "") } | Measure-Object -Maximum).Maximum
+          $betas = @(gh release list --repo $env:GITHUB_REPOSITORY --limit 200 --json tagName --jq ".[].tagName" | Where-Object { $_ -like "$tag-beta.*" })
+          $next = 1 + ($betas | ForEach-Object { [int]($_ -replace "^.*-beta\.", "") } | Measure-Object -Maximum).Maximum
           "version=$version" >> $env:GITHUB_OUTPUT
           "tag=$tag" >> $env:GITHUB_OUTPUT
-          "test_build=$next" >> $env:GITHUB_OUTPUT
-          "test_tag=$tag-test.$next" >> $env:GITHUB_OUTPUT
+          "beta_build=$next" >> $env:GITHUB_OUTPUT
+          "beta_tag=$tag-beta.$next" >> $env:GITHUB_OUTPUT
           "published=$published" >> $env:GITHUB_OUTPUT
           "has_draft=$hasDraft" >> $env:GITHUB_OUTPUT
           exit 0
@@ -53,11 +58,12 @@ jobs:
       - name: 릴리스 노트 확인
         if: steps.version.outputs.published != 'True'
         shell: pwsh
+        env:
+          EXPECTED: v${{ steps.version.outputs.version }}
         run: |
-          $expected = 'v${{ steps.version.outputs.version }}'
           $first = (Get-Content build/release-notes.txt -TotalCount 1 -Encoding utf8).Trim()
-          if ($first -ne $expected) {
-            throw "build/release-notes.txt 첫 줄이 $expected 이어야 합니다. 지금은 '$first'입니다."
+          if ($first -ne $env:EXPECTED) {
+            throw "build/release-notes.txt 첫 줄이 $env:EXPECTED 이어야 합니다. 지금은 '$first'입니다."
           }
 
       - name: 의존성 및 회귀 검사
@@ -68,58 +74,64 @@ jobs:
           npm run typecheck
           npm run verify:deep-link
           npm run verify:launch-identity
+          node scripts/verify-launcher-update.mjs
+          node scripts/verify-release-notes.mjs
 
+      # 같은 정식 런처를 두 번 만듭니다. 베타(X.Y.Z-beta.N, beta.yml)는 테스터와
+      # 관리자가 일반 런처에서 먼저 받고, 정식판(X.Y.Z, latest.yml)은 초안으로 둡니다.
+      # 따로 설치하던 "Bweeep Test" 앱은 더 만들지 않습니다(설치본 코드는 그대로 둠).
       - name: Windows 설치본 만들기
         if: steps.version.outputs.published != 'True'
         shell: pwsh
         env:
-          BWEEP_TEST_BUILD: ${{ steps.version.outputs.test_build }}
+          BWEEP_BETA_BUILD: ${{ steps.version.outputs.beta_build }}
         run: |
           npm run package:win -- --publish never
-          npm run package:win:test -- --publish never
+          npm run package:win:beta -- --publish never
 
-      - name: GitHub 테스트 릴리스 게시
+      - name: GitHub 베타 릴리스 게시
         if: steps.version.outputs.published != 'True'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          BETA_VERSION: ${{ steps.version.outputs.version }}-beta.${{ steps.version.outputs.beta_build }}
+          BETA_TAG: ${{ steps.version.outputs.beta_tag }}
         run: |
-          $version = '${{ steps.version.outputs.version }}-test.${{ steps.version.outputs.test_build }}'
-          $tag = '${{ steps.version.outputs.test_tag }}'
           $assets = @(
-            "release-installer-test/Bweeep-Test-Setup-$version.exe",
-            "release-installer-test/Bweeep-Test-Setup-$version.exe.blockmap",
-            "release-installer-test/test.yml"
+            "release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe",
+            "release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe.blockmap",
+            "release-installer-beta/beta.yml"
           )
-          $notes = "지정 테스터용 테스트 런처입니다. 확인이 끝나면 같은 변경을 정식판으로 배포합니다.`n`n" + (Get-Content build/release-notes.txt -Raw -Encoding utf8)
-          $notesFile = Join-Path $env:RUNNER_TEMP "test-release-notes.txt"
+          $notes = "테스터와 관리자가 먼저 받는 테스트 버전이에요. 확인이 끝나면 같은 내용으로 정식 버전이 나와요.`n`n" + (Get-Content build/release-notes.txt -Raw -Encoding utf8)
+          $notesFile = Join-Path $env:RUNNER_TEMP "beta-release-notes.txt"
           Set-Content -Path $notesFile -Value $notes -Encoding utf8
-          gh release create $tag $assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --title "붸에엡 테스트 v$version" --notes-file $notesFile
+          gh release create $env:BETA_TAG $assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --title "붸에엡 v$env:BETA_VERSION (테스트)" --notes-file $notesFile
 
       # 정식판은 초안으로만 올립니다. 초안은 자동 업데이트에 보이지 않으므로,
-      # 테스터가 테스트판을 확인한 뒤 "정식 배포" 워크플로로 게시합니다.
+      # 테스터가 베타를 확인한 뒤 "정식 배포" 워크플로로 게시합니다.
       - name: GitHub 정식 릴리스 초안 올리기
         if: steps.version.outputs.published != 'True'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          HAS_DRAFT: ${{ steps.version.outputs.has_draft }}
         run: |
-          $version = '${{ steps.version.outputs.version }}'
-          $tag = '${{ steps.version.outputs.tag }}'
           $assets = @(
-            "release-installer/Bweeep-Setup-$version.exe",
-            "release-installer/Bweeep-Setup-$version.exe.blockmap",
+            "release-installer/Bweeep-Setup-$env:VERSION.exe",
+            "release-installer/Bweeep-Setup-$env:VERSION.exe.blockmap",
             "release-installer/latest.yml"
           )
-          if ('${{ steps.version.outputs.has_draft }}' -eq 'True') {
-            # 테스트 중 수정이 병합되면 초안도 마지막 테스트판과 같은 코드로 바꿉니다.
-            gh release upload $tag $assets --clobber --repo $env:GITHUB_REPOSITORY
-            gh release edit $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --notes-file build/release-notes.txt
+          if ($env:HAS_DRAFT -eq 'True') {
+            # 테스트 중 수정이 병합되면 초안도 마지막 베타와 같은 코드로 바꿉니다.
+            gh release upload $env:TAG $assets --clobber --repo $env:GITHUB_REPOSITORY
+            gh release edit $env:TAG --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --notes-file build/release-notes.txt
           } else {
-            gh release create $tag $assets `
+            gh release create $env:TAG $assets `
               --repo $env:GITHUB_REPOSITORY `
               --target $env:GITHUB_SHA `
               --draft `
-              --title "붸에엡 v$version" `
+              --title "붸에엡 v$env:VERSION" `
               --notes-file build/release-notes.txt
           }

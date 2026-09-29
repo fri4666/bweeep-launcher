@@ -1,4 +1,5 @@
 import { isLauncherActivationLink, parseAuthCallback, parseInviteLink } from "../dist/src/main/deep-link.js";
+import { isCatalogServer, isSameDocument } from "../dist/src/main/navigation.js";
 
 const valid = parseAuthCallback("bwe-e-ep://auth/callback?code=fresh-code");
 if (valid.code !== "fresh-code") throw new Error("Valid callback was rejected");
@@ -43,3 +44,25 @@ const parsedTestInvite = parseInviteLink("bwe-e-ep-test://invite/" + inviteCode,
 if (parsedTestInvite !== inviteCode) throw new Error("Test launcher invite link was not parsed");
 
 console.log("invite-deep-link-regression=passed");
+
+// The window never leaves its own page, and the status check only reaches catalog servers.
+const packaged = "file:///C:/Program%20Files/Bweeep/resources/app.asar/dist/renderer/index.html";
+if (!isSameDocument(packaged, packaged) || !isSameDocument("http://127.0.0.1:5173/", "http://127.0.0.1:5173/")) {
+  throw new Error("Reloading the launcher page must stay allowed");
+}
+for (const target of [
+  "https://evil.example/",
+  "file:///C:/Users/Public/evil.html",
+  "http://127.0.0.1:8080/",
+  "javascript:alert(1)",
+  "not a url"
+]) {
+  if (isSameDocument(packaged, target) || isSameDocument("http://127.0.0.1:5173/", target)) throw new Error(`Navigation to ${target} was allowed`);
+}
+const catalog = [{ host: "server.fri4666.com", port: 25565 }];
+if (!isCatalogServer({ host: "server.fri4666.com", port: 25565 }, catalog)) throw new Error("A catalog server was refused");
+for (const server of [{ host: "192.168.0.1", port: 22 }, { host: "server.fri4666.com", port: 22 }, { host: "server.fri4666.com" }, null, "server.fri4666.com:25565"]) {
+  if (isCatalogServer(server, catalog)) throw new Error(`Status check reached ${JSON.stringify(server)}`);
+}
+
+console.log("window-navigation-guard=passed");

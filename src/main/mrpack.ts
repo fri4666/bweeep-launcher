@@ -1,13 +1,11 @@
-import crypto from "node:crypto";
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import * as yauzl from "yauzl";
 import type { LoaderKind, MrpackSource, PackFile, SyncProgress } from "../shared/types.js";
 import { fetchWithSystemNetwork } from "./system-network.js";
-import { hashFile } from "./hash.js";
+import { hashBytes, hashFile } from "./hash.js";
+import { downloadVerified, type Fetcher } from "./download.js";
+import type { HashCache } from "./hash-cache.js";
 
 type ProgressSink = (event: SyncProgress) => void;
 
@@ -28,15 +26,38 @@ interface PreparedMrpack {
 }
 
 /** Downloads only a hash-pinned archive, then accepts only safe, indexed client files. */
-export async function prepareMrpack(source: MrpackSource, instanceDir: string, progress: ProgressSink, expected: { minecraftVersion: string; loader: { kind: LoaderKind; version: string } }): Promise<PreparedMrpack> {
+export async function prepareMrpack(
+  source: MrpackSource,
+  instanceDir: string,
+  progress: ProgressSink,
+  expected: { minecraftVersion: string; loader: { kind: LoaderKind; version: string } },
+  options: { fetch?: Fetcher; cache?: HashCache } = {}
+): Promise<PreparedMrpack> {
   if (!/^https:\/\//.test(source.url) || !Number.isSafeInteger(source.size) || source.size < 1 || !/^[a-f0-9]{128}$/i.test(source.sha512)) {
     throw new Error("Modrinth 모드팩 정보가 올바르지 않습니다.");
   }
   const archiveDir = path.join(instanceDir, ".bweeep", "mrpack");
-  const archivePath = path.join(archiveDir, `${source.sha512}.mrpack`);
+  const archiveName = `${source.sha512}.mrpack`;
+  const archivePath = path.join(archiveDir, archiveName);
+  const cacheKey = `.bweeep/mrpack/${archiveName}`;
   await fsp.mkdir(archiveDir, { recursive: true });
-  if (!(await matchesSha512(archivePath, source.sha512))) {
-    await downloadArchive(source, archivePath, progress);
+  const cached = options.cache
+    ? await options.cache.matches(cacheKey, archivePath, { size: source.size, sha512: source.sha512 })
+    : await matchesSha512(archivePath, source.sha512);
+  if (!cached) {
+    progress({ kind: "download", stage: "모드팩 목록", message: "받는 중", completed: 0, total: source.size, unit: "bytes" });
+    try {
+      await downloadVerified({ url: source.url, target: archivePath, size: source.size, sha512: source.sha512 }, {
+        fetch: options.fetch ?? fetchWithSystemNetwork,
+        onBytes: (received) => progress({ kind: "download", stage: "모드팩 목록", message: "받는 중", completed: received, total: source.size, unit: "bytes" })
+      });
+    } catch (error) {
+      throw new Error("모드팩을 내려받지 못했습니다.", { cause: error });
+    }
+    if (options.cache) {
+      await options.cache.remember(cacheKey, archivePath, "sha512", source.sha512);
+      await options.cache.save();
+    }
   }
 
   const entries = await readArchive(archivePath);
@@ -51,42 +72,6 @@ export async function prepareMrpack(source: MrpackSource, instanceDir: string, p
   }));
   const overrides = new Map([...entries].filter(([entryPath]) => entryPath.startsWith("overrides/") && !entryPath.endsWith("/")));
   return { files, applyOverrides: (root, sink) => applyOverrides(root, overrides, sink) };
-}
-
-async function downloadArchive(source: MrpackSource, archivePath: string, progress: ProgressSink): Promise<void> {
-  const response = await fetchWithSystemNetwork(source.url, { signal: AbortSignal.timeout(300_000) });
-  if (!response.ok || !response.body) throw new Error("모드팩을 내려받지 못했습니다.");
-  const temporary = `${archivePath}.part`;
-  const hash = crypto.createHash("sha512");
-  let received = 0;
-  let lastReport = 0;
-  progress({ kind: "download", stage: "모드팩 목록", message: "모드팩 목록 다운로드 중", completed: 0, total: source.size, unit: "bytes" });
-  await fsp.rm(temporary, { force: true });
-  try {
-    await pipeline(
-      Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream),
-      new Transform({
-        transform(chunk: Buffer, _encoding, callback) {
-          hash.update(chunk);
-          received += chunk.length;
-          const now = Date.now();
-          if (now - lastReport >= 250 || received === source.size) {
-            lastReport = now;
-            progress({ kind: "download", stage: "모드팩 목록", message: "모드팩 목록 다운로드 중", completed: received, total: source.size, unit: "bytes" });
-          }
-          callback(null, chunk);
-        }
-      }),
-      fs.createWriteStream(temporary)
-    );
-    if (received !== source.size || hash.digest("hex") !== source.sha512.toLowerCase()) {
-      throw new Error("모드팩 검증에 실패했습니다.");
-    }
-    await fsp.rename(temporary, archivePath);
-  } catch (error) {
-    await fsp.rm(temporary, { force: true });
-    throw error;
-  }
 }
 
 function parseIndex(bytes: Buffer, expected: { minecraftVersion: string; loader: { kind: LoaderKind; version: string } }): MrpackIndex {
@@ -108,36 +93,60 @@ function parseIndex(bytes: Buffer, expected: { minecraftVersion: string; loader:
   return value;
 }
 
+/**
+ * Pack defaults (mostly config files) are written as the pack ships them, but
+ * a file the player changed is never overwritten or removed. The record keeps
+ * the hash of what the launcher last wrote to each path: a file that still has
+ * that hash is untouched and follows pack updates; one that differs is the
+ * player's. Paths from an older launcher's record (no hashes) count as the
+ * player's unless they already equal the pack's copy.
+ */
 async function applyOverrides(instanceDir: string, entries: Map<string, Buffer>, progress: ProgressSink): Promise<void> {
   const recordPath = path.join(instanceDir, ".bweeep", "mrpack-overrides.json");
-  const next = new Set<string>();
+  const previous = await readOverrideRecord(recordPath);
+  const next = new Map<string, string | null>();
   const total = [...entries.keys()].filter((entryPath) => !isServerList(entryPath.slice("overrides/".length))).length;
   let completed = 0;
+  let written = 0;
+  let kept = 0;
   for (const [entryPath, bytes] of entries) {
     const relative = entryPath.slice("overrides/".length);
     if (!safeRelativePath(relative)) throw new Error("모드팩 override 경로가 안전하지 않습니다.");
     if (isServerList(relative)) continue;
     const target = path.resolve(instanceDir, relative);
-    next.add(relative);
+    const packHash = hashBytes("sha256", bytes);
+    const current = await sha256IfFile(target);
+    const lastWritten = previous.get(relative) ?? null;
+    completed += 1;
     // Never replace a player's controls and video preferences after first install.
-    if (relative === "options.txt" && await exists(target)) {
-      completed += 1;
+    if (relative === "options.txt" && current !== null) {
+      next.set(relative, lastWritten);
       continue;
     }
-    await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.writeFile(target, bytes);
-    completed += 1;
-    if (completed === 1 || completed % 25 === 0 || completed === total) {
-      progress({ kind: "info", stage: "모드팩 기본 설정", message: `기본 설정 적용: ${relative}`, completed, total, unit: "files", filePath: relative });
+    if (current === packHash) {
+      next.set(relative, packHash);
+    } else if (current === null || (lastWritten !== null && current === lastWritten)) {
+      await fsp.mkdir(path.dirname(target), { recursive: true });
+      await fsp.writeFile(target, bytes);
+      next.set(relative, packHash);
+      written += 1;
+      if (written === 1 || written % 25 === 0) {
+        progress({ kind: "info", stage: "모드팩 기본 설정", message: `적용: ${relative}`, completed, total, unit: "files", filePath: relative });
+      }
+    } else {
+      next.set(relative, lastWritten);
+      kept += 1;
     }
   }
-  const previous = await readPaths(recordPath);
-  for (const relative of previous) {
-    if (next.has(relative)) continue;
-    await fsp.rm(path.resolve(instanceDir, relative), { force: true });
+  // Defaults the pack dropped are removed only while nobody changed them.
+  for (const [relative, lastWritten] of previous) {
+    if (next.has(relative) || lastWritten === null) continue;
+    const target = path.resolve(instanceDir, relative);
+    if (await sha256IfFile(target) === lastWritten) await fsp.rm(target, { force: true });
   }
   await fsp.mkdir(path.dirname(recordPath), { recursive: true });
-  await fsp.writeFile(recordPath, JSON.stringify([...next].sort(), null, 2), "utf8");
+  await fsp.writeFile(recordPath, JSON.stringify({ version: 2, files: Object.fromEntries([...next].sort(([a], [b]) => a.localeCompare(b))) }, null, 2), "utf8");
+  progress({ kind: "info", stage: "모드팩 기본 설정", message: kept > 0 ? `적용 ${written}개 · 내 설정 ${kept}개 유지` : `적용 ${written}개`, completed: total, total, unit: "files" });
 }
 
 async function readArchive(archivePath: string): Promise<Map<string, Buffer>> {
@@ -175,13 +184,35 @@ async function matchesSha512(filePath: string, expected: string): Promise<boolea
   try { return await hashFile(filePath, "sha512") === expected.toLowerCase(); } catch { return false; }
 }
 
-async function exists(filePath: string): Promise<boolean> {
-  try { await fsp.access(filePath); return true; } catch { return false; }
+async function sha256IfFile(filePath: string): Promise<string | null> {
+  try {
+    return await hashFile(filePath, "sha256");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "EISDIR") return null;
+    throw error;
+  }
 }
 
-async function readPaths(filePath: string): Promise<string[]> {
+/** Path → hash the launcher last wrote there; null when not known (older record format). */
+async function readOverrideRecord(filePath: string): Promise<Map<string, string | null>> {
+  let value: unknown;
   try {
-    const value: unknown = JSON.parse(await fsp.readFile(filePath, "utf8"));
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && safeRelativePath(item)) : [];
-  } catch { return []; }
+    value = JSON.parse(await fsp.readFile(filePath, "utf8"));
+  } catch {
+    return new Map();
+  }
+  const record = new Map<string, string | null>();
+  if (Array.isArray(value)) {
+    for (const item of value) if (typeof item === "string" && safeRelativePath(item)) record.set(item, null);
+    return record;
+  }
+  const files = value && typeof value === "object" ? (value as { files?: unknown }).files : null;
+  if (files && typeof files === "object") {
+    for (const [item, hash] of Object.entries(files as Record<string, unknown>)) {
+      if (!safeRelativePath(item)) continue;
+      record.set(item, typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash) ? hash : null);
+    }
+  }
+  return record;
 }

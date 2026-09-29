@@ -199,11 +199,51 @@ export interface GameStatus {
 
 export type LogTarget = "game" | "launcher";
 
-/** Release notes shown once on the first start after an update. */
-export interface WhatsNew {
-  version: string;
-  notes: string[];
+/**
+ * Patch note groups, in the order players read them. "upcoming" is the
+ * next-patch preview (patch notes tab only). "other" is a plain list or an
+ * unknown heading.
+ */
+export type ReleaseNoteSectionKind = "new" | "changed" | "fixed" | "known" | "upcoming" | "other";
+
+export interface ReleaseNoteSection {
+  kind: ReleaseNoteSectionKind;
+  /** Heading as written; null for a list with no headings (0.1.35 and older). */
+  title: string | null;
+  items: string[];
+  /**
+   * Small notes under each item ("참고: …"), from indented bullets; details[i]
+   * belongs to items[i]. Missing in notes cached by older launchers.
+   */
+  details?: string[][];
 }
+
+/** One version's notes, from build/release-notes.txt or the same text on its GitHub release. */
+export interface ReleaseNotes {
+  version: string;
+  summary: string | null;
+  /** The developer's greeting above the list and sign-off below it; lines are separated by "\n". */
+  intro: string | null;
+  outro: string | null;
+  sections: ReleaseNoteSection[];
+}
+
+export interface PatchNote extends ReleaseNotes {
+  prerelease: boolean;
+  publishedAt: string | null;
+  /** The GitHub release page; only github.com/fri4666/bweeep-launcher/releases/… addresses. */
+  url: string | null;
+}
+
+export interface PatchNotes {
+  currentVersion: string;
+  /** live: fetched just now; cache: the last good fetch; bundled: only this build's own notes. */
+  source: "live" | "cache" | "bundled";
+  notes: PatchNote[];
+}
+
+/** Release notes shown once on the first start after an update. */
+export type WhatsNew = ReleaseNotes;
 
 export interface LauncherUpdate {
   version: string;

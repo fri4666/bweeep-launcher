@@ -35,6 +35,7 @@ Deno.test("routes authlib-injector paths below the function name", () => {
   assert(byName.kind === "profileByName" && byName.name === "Steve_01", "single lookup");
   assert(parseRoute("GET", "/yggdrasil/sessionserver/session/minecraft/join").kind === "notFound", "wrong method");
   assert(parseRoute("GET", "/yggdrasil/authserver/authenticate").kind === "notFound", "password login is not offered");
+  assert(parseRoute("GET", "/yggdrasil/api/users/profiles/minecraft/%E0%A4%A").kind === "notFound", "a malformed escape is not a server error");
 });
 
 Deno.test("a /testers root serves the same API for test servers", () => {
