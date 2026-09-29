@@ -24,6 +24,10 @@ import { bundledFeatureMods } from "./client-feature-mods.js";
 import { connectionGuardEnabled, connectionGuardJvmArgs, ensureConnectionGuard } from "./connection-guard.js";
 import { markWhatsNewSeen, pendingWhatsNew } from "./whats-new.js";
 import { findDefaultSkins, SkinLibrary } from "./skins.js";
+import { net as electronNet } from "electron";
+import os from "node:os";
+import { OfflineAccess } from "./offline-access.js";
+import { recommendedMemoryMb, resolveGameMemory } from "../shared/game-memory.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
@@ -89,10 +93,17 @@ function requireInstanceRoot(value: unknown): string {
 // Server presets from the last catalog load. Mod requests take the loader,
 // version and blocked mods from here, never from the renderer.
 const catalogPresets = new Map<string, ServerPreset>();
+// The last server list and access, used while launcher-access is down.
+const offlineAccess = new OfflineAccess(path.join(app.getPath("userData"), "offline-snapshot.json"), {
+  savedUserId: () => auth.savedUserId(),
+  gameServers: () => [...catalogPresets.values()].map((preset) => preset.server),
+  systemOnline: () => electronNet.isOnline()
+});
 
 async function loadCatalog(): Promise<ServerPreset[]> {
-  if (!sessionUser) return [];
-  const presets = presetsFromManifests(await auth.listManifests(sessionUser), (manifest, reason) => {
+  const user = sessionUser;
+  if (!user) return [];
+  const presets = presetsFromManifests(await offlineAccess.listManifests(user, () => auth.listManifests(user)), (manifest, reason) => {
     const id = manifest && typeof manifest === "object" && "id" in manifest ? String(manifest.id) : null;
     void writeGameLog("catalog.manifest.skipped", { packId: id, reason });
   });
@@ -103,10 +114,20 @@ async function loadCatalog(): Promise<ServerPreset[]> {
 
 const PACK_ID = /^[a-z0-9][a-z0-9-]{1,62}$/;
 
-function requireLaunchRequest(value: unknown): { packId: string; instanceDir: string; withoutPersonalMods: boolean } {
-  const request = value as { packId?: unknown; instanceDir?: unknown; withoutPersonalMods?: unknown } | null;
+function requireLaunchRequest(value: unknown): { packId: string; instanceDir: string; withoutPersonalMods: boolean; memoryMb: number | null } {
+  const request = value as { packId?: unknown; instanceDir?: unknown; withoutPersonalMods?: unknown; memoryMb?: unknown } | null;
   if (typeof request?.packId !== "string" || !PACK_ID.test(request.packId)) throw new Error("서버 정보가 올바르지 않습니다.");
-  return { packId: request.packId, instanceDir: requireInstanceRoot(request.instanceDir), withoutPersonalMods: request.withoutPersonalMods === true };
+  return {
+    packId: request.packId,
+    instanceDir: requireInstanceRoot(request.instanceDir),
+    withoutPersonalMods: request.withoutPersonalMods === true,
+    // resolveGameMemory snaps any number to a step this PC offers; anything else means automatic.
+    memoryMb: typeof request.memoryMb === "number" && Number.isFinite(request.memoryMb) ? request.memoryMb : null
+  };
+}
+
+function totalMemoryMb(): number {
+  return Math.floor(os.totalmem() / 1048576);
 }
 
 async function requireModTarget(value: unknown): Promise<ModTarget> {
@@ -383,6 +404,7 @@ app.whenReady().then(async () => {
     if (!isCatalogServer(server, [...catalogPresets.values()].map((preset) => preset.server))) throw new Error("서버 목록에 없는 주소입니다.");
     return checkServer({ host: server.host, port: server.port });
   });
+  ipcMain.handle("system:memory", () => ({ totalMb: totalMemoryMb() }));
   ipcMain.handle("paths:defaultInstanceRoot", () => defaultInstanceRoot());
   ipcMain.handle("content:folders", (_event, instanceRoot: unknown) => getUserContentFolders(requireInstanceRoot(instanceRoot)));
   ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: unknown) => {
@@ -418,6 +440,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("account:cancelLogin", () => auth.cancelPendingLogin("user_cancelled"));
   ipcMain.handle("account:logout", async () => {
     await auth.signOut();
+    await offlineAccess.clear();
     sessionUser = null;
     setTesterAudience(false);
     return { loggedIn: false, allowed: false, isAdmin: false, reason: "런처 계정에서 로그아웃했습니다." };
@@ -427,10 +450,13 @@ app.whenReady().then(async () => {
       const status = await auth.getAccessStatus(sessionUser);
       if (!status.loggedIn) sessionUser = null;
       setTesterAudience(status.loggedIn && status.allowed && status.testAllowed === true);
+      void offlineAccess.rememberAccess(status);
       return status;
     } catch (error) {
       // An unreachable server says nothing new about who is signed in, so the update channel stays as it is.
       if (!sessionUser) throw error;
+      const lastKnown = await offlineAccess.accessDuringOutage(sessionUser, error);
+      if (lastKnown) return lastKnown;
       return {
         loggedIn: true,
         allowed: false,
@@ -580,7 +606,9 @@ app.whenReady().then(async () => {
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
       progress({ kind: "info", stage: "서버 목록", message: "받는 중" });
-      const manifest = await auth.getManifest(sessionUser, request.packId);
+      const manifest = await auth.getManifest(sessionUser, request.packId).catch(async (error: unknown) => {
+        throw await offlineAccess.launchError(error);
+      });
       assertManifest(manifest);
       if (manifest.id !== request.packId) throw new Error("선택한 서버와 받은 모드팩 정보가 일치하지 않습니다.");
       requireBweeepAccounts(manifest);
@@ -618,6 +646,13 @@ app.whenReady().then(async () => {
         return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
       };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
+      // The recommendation shown in settings (from the server list) is the one used here.
+      const memory = resolveGameMemory({
+        recommendedMb: catalogPresets.get(request.packId)?.recommendedMemoryMb ?? recommendedMemoryMb(manifest),
+        totalMb: totalMemoryMb(),
+        requestedMb: request.memoryMb
+      });
+      await writeGameLog("launch.memory", { ...memory, totalMb: totalMemoryMb() });
       // The Minecraft installer libraries are a large module graph, so they load on the first launch, not at startup.
       const { installAndLaunch } = await import("./minecraft-runtime.js");
       const launched = await installAndLaunch(manifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
@@ -649,7 +684,7 @@ app.whenReady().then(async () => {
           abnormal: exit.abnormal,
           crashReportLocation: exit.crashReportLocation
         });
-      }, guardArgs);
+      }, guardArgs, memory);
       if (gameRunId === runId && gameIsStarting()) {
         setGameStatus({ state: "running", pid: launched.pid, startedAt });
         await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
@@ -667,7 +702,7 @@ app.whenReady().then(async () => {
 
   void (async () => {
     try {
-      sessionUser = await auth.restoreUser();
+      sessionUser = await offlineAccess.restoreUser(() => auth.restoreUser());
     } catch {
       // The renderer will show its normal signed-out state when a persisted session cannot be restored.
     }
