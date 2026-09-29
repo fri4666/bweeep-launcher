@@ -15,17 +15,16 @@ export interface GameMemory {
   auto: boolean;
 }
 
+/** Every pack got 6GB before packs could say what they need. */
+const DEFAULT_RECOMMENDED_MB = 6144;
+
 /**
- * The pack's own recommendation, or an estimate. The server list leaves out
- * file lists and .mrpack jars are only known after download, so Forge-family
- * and .mrpack packs keep the 6GB every pack used to get; the rest go by the
- * mod jars they list.
+ * The pack's own recommendation, or the old 6GB. There is no estimate from the
+ * mod count: the server list leaves out file lists, so the settings screen and
+ * the launch would disagree.
  */
-export function recommendedMemoryMb(manifest: Pick<ModpackManifest, "recommendedMemoryMb" | "loader" | "files" | "mrpack">): number {
-  if (isMemoryMb(manifest.recommendedMemoryMb)) return manifest.recommendedMemoryMb;
-  if (manifest.mrpack || manifest.loader.kind === "forge" || manifest.loader.kind === "neoforge") return 6144;
-  const mods = manifest.files.filter((file) => /^mods\/[^/]+\.jar$/i.test(file.path)).length;
-  return mods < 50 ? 3072 : mods < 150 ? 4096 : 6144;
+export function recommendedMemoryMb(manifest: Pick<ModpackManifest, "recommendedMemoryMb">): number {
+  return isMemoryMb(manifest.recommendedMemoryMb) ? manifest.recommendedMemoryMb : DEFAULT_RECOMMENDED_MB;
 }
 
 export function isMemoryMb(value: unknown): value is number {

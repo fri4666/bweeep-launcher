@@ -19,17 +19,13 @@ const manifest = (overrides = {}) => ({
 });
 const mods = (count) => Array.from({ length: count }, (_, index) => jar(`mod-${index}`));
 
-// Estimates: mod jars for Fabric, 6GB for Forge-family and .mrpack packs, and the pack's own value first.
-assert.equal(recommendedMemoryMb(manifest()), 3072);
-assert.equal(recommendedMemoryMb(manifest({ files: [...mods(49), { ...jar("x"), path: "config/x.jar" }] })), 3072);
-assert.equal(recommendedMemoryMb(manifest({ files: mods(50) })), 4096);
-assert.equal(recommendedMemoryMb(manifest({ files: mods(149) })), 4096);
-assert.equal(recommendedMemoryMb(manifest({ files: mods(150) })), 6144);
+// The pack's own value first; without one every pack keeps the old 6GB, whatever it lists.
+assert.equal(recommendedMemoryMb(manifest()), 6144);
+assert.equal(recommendedMemoryMb(manifest({ files: mods(10) })), 6144);
 assert.equal(recommendedMemoryMb(manifest({ loader: { kind: "forge", version: "47.4.0" } })), 6144);
-assert.equal(recommendedMemoryMb(manifest({ loader: { kind: "neoforge", version: "21.1.228" } })), 6144);
-assert.equal(recommendedMemoryMb(manifest({ mrpack: { url: "https://x", size: 1, sha512: "b".repeat(128) } })), 6144);
+assert.equal(recommendedMemoryMb(manifest({ recommendedMemoryMb: 4096 })), 4096);
 assert.equal(recommendedMemoryMb(manifest({ loader: { kind: "forge", version: "47.4.0" }, recommendedMemoryMb: 8192 })), 8192);
-assert.equal(recommendedMemoryMb(manifest({ recommendedMemoryMb: 12.5 })), 3072, "a broken value is ignored");
+assert.equal(recommendedMemoryMb(manifest({ recommendedMemoryMb: 12.5 })), 6144, "a broken value is ignored");
 assert.equal(toServerPreset(manifest({ recommendedMemoryMb: 5120 })).recommendedMemoryMb, 5120);
 
 // The manifest field is an optional whole number of MB.
