@@ -82,7 +82,14 @@ async function handleRequest(request: Request): Promise<Response> {
         console.error("yggdrasil join failed", error);
         return yggdrasilError(500, "InternalServerError", "Could not record the join.");
       }
-      if (data !== true) return yggdrasilError(403, "ForbiddenOperationException", "Invalid token.");
+      if (data !== true) {
+        await recordRefusal(admin, "launcher_record_join_failure", {
+          p_token_hash: await tokenHash(accessToken),
+          p_profile_id: toSignedUuid(selectedProfile),
+          p_audience: routeAudience(url.pathname)
+        });
+        return yggdrasilError(403, "ForbiddenOperationException", "Invalid token.");
+      }
       return new Response(null, { status: 204 });
     }
 
@@ -101,7 +108,14 @@ async function handleRequest(request: Request): Promise<Response> {
         return yggdrasilError(500, "InternalServerError", "Could not verify the join.");
       }
       const row = (data as ProfileRow[] | null)?.[0];
-      if (!row) return new Response(null, { status: 204 });
+      if (!row) {
+        await recordRefusal(admin, "launcher_record_has_joined_failure", {
+          p_game_name: username,
+          p_server_id: serverId,
+          p_testers_only: routeAudience(url.pathname) === "testers"
+        });
+        return new Response(null, { status: 204 });
+      }
       const { signingKey } = await signingKeys(admin);
       return Response.json(await serializeProfile(row, { publicUrl, signingKey, withProperties: true }));
     }
@@ -135,6 +149,19 @@ async function handleRequest(request: Request): Promise<Response> {
 
     case "notFound":
       return yggdrasilError(404, "NotFoundException", "Not found.");
+  }
+}
+
+/**
+ * Notes why a join or hasJoined was refused, for the player's launcher and
+ * the admin tab. It never changes the answer: a failure here is only logged.
+ */
+async function recordRefusal(admin: SupabaseClient, fn: string, args: Record<string, unknown>): Promise<void> {
+  try {
+    const { error } = await admin.rpc(fn, args);
+    if (error) console.error("yggdrasil refusal record failed", error);
+  } catch (error) {
+    console.error("yggdrasil refusal record failed", error);
   }
 }
 

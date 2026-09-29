@@ -13,9 +13,11 @@ const patchNotesOffline = process.env.BWEEP_PREVIEW_PATCH_NOTES_OFFLINE === "tru
 const serverOffline = process.env.BWEEP_PREVIEW_SERVER_OFFLINE === "true";
 const authOutage = process.env.BWEEP_PREVIEW_AUTH_OUTAGE === "true";
 const moveAndModsMode = process.env.BWEEP_PREVIEW_MOVE_AND_MODS === "true";
+const adminMode = process.env.BWEEP_PREVIEW_ADMIN === "true";
+const memberMode = process.env.BWEEP_PREVIEW_MEMBER === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline, previewServerOffline, previewAuthOutage, previewMoveAndMods }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline, previewServerOffline, previewAuthOutage, previewMoveAndMods, previewMember }) => {
   // A minimized window reports "hidden"; previews switch it with window.__setHidden.
   window.__hidden = false;
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => window.__hidden ? "hidden" : "visible" });
@@ -27,7 +29,38 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   const listeners = [];
   const gameStatusListeners = [];
   const updateListeners = [];
+  const authFailureListeners = [];
   window.__emitUpdate = (status) => updateListeners.forEach((listener) => listener(status));
+  window.__authFailure = (reason) => authFailureListeners.forEach((listener) => listener({ reason, at: new Date().toISOString() }));
+  window.__diagnosticsSent = 0;
+  window.__openedDiagnostics = null;
+  const hoursFromNow = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();
+  let adminNames = {
+    holds: [
+      { userId: "00000000-0000-0000-0000-000000000002", owner: "나원", gameName: "nawon_old", kind: "released", heldUntil: hoursFromNow(17) },
+      { userId: "00000000-0000-0000-0000-000000000003", owner: "떠난친구", gameName: "creeper_bye", kind: "removed", heldUntil: hoursFromNow(3) }
+    ],
+    reservations: [
+      { minecraftUuid: "32068d51-3b1c-3a2e-9c1f-6c8b2f9d0a11", gameName: "creeperppangchae", userId: "00000000-0000-0000-0000-000000000002", owner: "나원", source: "vanilla usercache", createdAt: "2026-09-28T13:00:00Z" },
+      { minecraftUuid: "5f1e2d3c-4b5a-3968-8776-a5b4c3d2e1f0", gameName: "PSH_1227", userId: null, owner: null, source: "vanilla usercache", createdAt: "2026-09-28T13:00:00Z" }
+    ]
+  };
+  let adminReleases = [
+    { id: "10000000-0000-0000-0000-000000000003", packId: "vanilla-survival", name: "Vanilla Survival", version: "2026.09.28", active: true, gameAuth: "yggdrasil", audience: "members", createdAt: "2026-09-28T13:07:00Z" },
+    { id: "10000000-0000-0000-0000-000000000002", packId: "vanilla-survival", name: "Vanilla Survival", version: "2026.09.20", active: false, gameAuth: "offline", audience: "members", createdAt: "2026-09-20T09:00:00Z" },
+    { id: "10000000-0000-0000-0000-000000000004", packId: "society-sunlit-valley", name: "Sunlit Valley", version: "4.1.5-2026.09.29", active: false, gameAuth: "yggdrasil", audience: "members", createdAt: "2026-09-29T02:00:00Z" },
+    { id: "10000000-0000-0000-0000-000000000005", packId: "society-sunlit-valley", name: "Sunlit Valley", version: "4.1.5-2026.09.28", active: true, gameAuth: "yggdrasil", audience: "members", createdAt: "2026-09-28T13:10:00Z" }
+  ];
+  const adminDiagnostics = {
+    failures: [
+      { id: "1", userId: "00000000-0000-0000-0000-000000000002", owner: "나원", gameName: "nawon", audience: "members", reason: "token_expired", at: hoursFromNow(-2) },
+      { id: "2", userId: null, owner: null, gameName: "seos_py", audience: "members", reason: "no_join", at: hoursFromNow(-30) },
+      { id: "3", userId: "00000000-0000-0000-0000-000000000002", owner: "나원", gameName: "nawon", audience: "testers", reason: "testers_only", at: hoursFromNow(-50) }
+    ],
+    uploads: [
+      { id: "20000000-0000-0000-0000-000000000001", userId: "00000000-0000-0000-0000-000000000002", owner: "나원", sizeBytes: 187_000, at: hoursFromNow(-1) }
+    ]
+  };
   let gameStatus = { state: "idle" };
   const emitGameStatus = (status) => {
     gameStatus = status;
@@ -73,8 +106,9 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     return skinState;
   };
   let members = [
-    { userId: "00000000-0000-0000-0000-000000000001", name: "붸에엡", gameName: "seos_py", role: "admin", tester: true },
-    { userId: "00000000-0000-0000-0000-000000000002", name: "나원", gameName: null, role: "member", tester: false }
+    { userId: "1", name: "붸에엡", gameName: "seos_py", role: "admin", tester: true, lastPlayedAt: new Date(Date.now() - 5 * 60_000).toISOString() },
+    { userId: "00000000-0000-0000-0000-000000000002", name: "나원", gameName: null, role: "member", tester: false, lastPlayedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() },
+    { userId: "00000000-0000-0000-0000-000000000004", name: "집가고싶다", gameName: "PSH_1227", role: "member", tester: true, lastPlayedAt: null }
   ];
   // Mods installed for the server's previous version, waiting to be fetched again.
   let personalMods = previewMoveAndMods ? [
@@ -143,6 +177,42 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     setTester: async (userId, tester) => {
       members = members.map((member) => member.userId === userId ? { ...member, tester } : member);
       return members;
+    },
+    setMemberRole: async (userId, role) => {
+      members = members.map((member) => member.userId === userId ? { ...member, role, tester: role === "admin" || member.tester } : member);
+      return members;
+    },
+    removeMember: async (userId) => {
+      members = members.filter((member) => member.userId !== userId);
+      return members;
+    },
+    adminNames: async () => adminNames,
+    releaseName: async (userId, gameName) => {
+      adminNames = { ...adminNames, holds: adminNames.holds.filter((hold) => hold.userId !== userId || hold.gameName !== gameName) };
+      return adminNames;
+    },
+    deleteReservation: async (uuid) => {
+      adminNames = { ...adminNames, reservations: adminNames.reservations.filter((item) => item.minecraftUuid !== uuid) };
+      return adminNames;
+    },
+    adminReleases: async () => adminReleases,
+    activateRelease: async (releaseId) => {
+      const target = adminReleases.find((release) => release.id === releaseId);
+      adminReleases = adminReleases.map((release) => release.packId === target.packId ? { ...release, active: release.id === releaseId } : release);
+      return adminReleases;
+    },
+    adminDiagnostics: async () => adminDiagnostics,
+    openDiagnostics: async (id) => { window.__openedDiagnostics = id; },
+    sendDiagnostics: async () => {
+      window.__diagnosticsSent += 1;
+      if (window.__diagnosticsSent > 1) throw new Error("Error invoking remote method 'diagnostics:send': Error: 진단 정보는 10분에 한 번만 보낼 수 있어요.");
+    },
+    onAuthFailure: (listener) => {
+      authFailureListeners.push(listener);
+      return () => {
+        const index = authFailureListeners.indexOf(listener);
+        if (index >= 0) authFailureListeners.splice(index, 1);
+      };
     },
     skinState: async () => skins(),
     addSkin: async () => {
@@ -240,7 +310,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       loggedIn: previewSignedIn,
       ...(previewAuthOutage ? { outage: "auth" } : {}),
       allowed: previewSignedIn && !previewAccessUnavailable && (!previewAccessDenied || inviteRedeemed),
-      isAdmin: !previewTestChannelDenied,
+      isAdmin: !previewTestChannelDenied && !previewMember,
       testAllowed: !previewTestChannelDenied,
       unavailable: previewAccessUnavailable,
       reason: previewAccessUnavailable ? "로그인 세션을 서버에서 인증하지 못했습니다. 다시 로그인해 주세요." : previewAccessDenied ? "초대 코드가 필요합니다." : previewSignedIn ? "초대 확인 완료" : "로그인이 필요합니다.",
@@ -405,7 +475,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewAuthOutage: authOutage, previewMoveAndMods: moveAndModsMode });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewAuthOutage: authOutage, previewMoveAndMods: moveAndModsMode, previewMember: memberMode });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 if (testChannelDenied) {
@@ -560,6 +630,105 @@ if (moveAndModsMode) {
   await noSideways(".modsModal", "mods panel");
   await page.screenshot({ path: "previews/bweeep-launcher-mods-refetched-narrow.png" });
   checks.push("mods-refetch-for-new-version");
+  console.log(JSON.stringify({ interactionChecks: checks, errors }));
+  await browser.close();
+  process.exit(errors.length ? 1 : 0);
+}
+if (memberMode) {
+  await page.locator(".launchButton").waitFor();
+  if (await page.getByRole("button", { name: "관리", exact: true }).count()) throw new Error("a member sees the admin tab");
+  console.log(JSON.stringify({ interactionChecks: ["admin-tab-hidden-from-members"], errors }));
+  await browser.close();
+  process.exit(errors.length ? 1 : 0);
+}
+if (adminMode) {
+  const checks = [];
+  await page.locator(".launchButton").waitFor();
+  const narrowOverflow = async (panel) => {
+    await page.setViewportSize({ width: 920, height: 620 });
+    await page.waitForTimeout(100);
+    const overflow = await panel.evaluate((element) => {
+      const body = element.querySelector(".modalBody");
+      const sideways = element.scrollWidth > element.clientWidth || body.scrollWidth > body.clientWidth;
+      const rows = [...element.querySelectorAll(".adminRow")].some((row) => row.scrollWidth > row.clientWidth + 1);
+      return sideways || rows;
+    });
+    return overflow;
+  };
+  await page.getByRole("button", { name: "관리", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "관리" });
+  await panel.locator(".adminRow").first().waitFor();
+  if (await page.locator(".settingsModal").count()) throw new Error("the admin tab opened settings");
+  const selfRow = panel.locator(".adminRow").filter({ hasText: "붸에엡" });
+  if (!(await selfRow.getByRole("button", { name: "관리자" }).isDisabled()) || !(await selfRow.getByRole("button", { name: "내보내기" }).isDisabled())) {
+    throw new Error("an admin can demote or remove themselves");
+  }
+  if (!(await panel.locator(".adminRow").filter({ hasText: "나원" }).innerText()).includes("3일 전 플레이")) throw new Error("last play time is missing");
+  checks.push("admin-self-protected", "admin-last-played");
+  const nawon = panel.locator(".adminRow").filter({ hasText: "나원" });
+  await nawon.getByRole("button", { name: "테스터" }).click();
+  await nawon.locator(".adminToggle.isOn").filter({ hasText: "테스터" }).waitFor();
+  checks.push("admin-designates-tester");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-members.png" });
+  if (await narrowOverflow(panel)) throw new Error("admin members overflow at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-members-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await nawon.getByRole("button", { name: "내보내기" }).click();
+  const confirm = page.getByRole("alertdialog");
+  if (!(await confirm.innerText()).includes("하루 뒤에 풀리고")) throw new Error("the removal confirmation does not explain what happens");
+  await confirm.getByRole("button", { name: "내보내기" }).click();
+  await panel.locator(".adminRow").filter({ hasText: "나원" }).waitFor({ state: "detached" });
+  checks.push("admin-remove-confirmed");
+
+  await panel.getByRole("tab", { name: "이름" }).click();
+  await panel.getByText("nawon_old").waitFor();
+  const reservation = panel.locator(".adminRow").filter({ hasText: "creeperppangchae" });
+  await reservation.getByRole("button", { name: "예약 해제" }).click();
+  const reservationConfirm = await page.getByRole("alertdialog").innerText();
+  if (!reservationConfirm.includes("인벤토리") || !reservationConfirm.includes("되돌릴 수 없어요")) throw new Error(`reservation confirmation is not explicit: ${reservationConfirm}`);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-reservation-confirm.png" });
+  await page.getByRole("alertdialog").getByRole("button", { name: "취소" }).click();
+  if (!(await reservation.count())) throw new Error("cancelling removed the reservation");
+  await panel.locator(".adminRow").filter({ hasText: "creeper_bye" }).getByRole("button", { name: "지금 풀기" }).click();
+  if (!(await page.getByRole("alertdialog").innerText()).includes("모두 풀려요")) throw new Error("releasing a removed member's name does not say all names go");
+  await page.getByRole("alertdialog").getByRole("button", { name: "지금 풀기" }).click();
+  await panel.locator(".adminRow").filter({ hasText: "creeper_bye" }).waitFor({ state: "detached" });
+  checks.push("admin-name-hold-release", "admin-reservation-confirm");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-names.png" });
+  if (await narrowOverflow(panel)) throw new Error("admin names overflow at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-names-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await panel.getByRole("tab", { name: "서버 팩" }).click();
+  await panel.getByText("4.1.5-2026.09.29").waitFor();
+  const offlineRow = panel.locator(".adminRow").filter({ hasText: "2026.09.20" });
+  if (!(await offlineRow.getByRole("button", { name: "이 버전으로" }).isDisabled())) throw new Error("an offline release can be switched on");
+  await panel.locator(".adminRow").filter({ hasText: "4.1.5-2026.09.29" }).getByRole("button", { name: "이 버전으로" }).click();
+  if (!(await page.getByRole("alertdialog").innerText()).includes("4.1.5-2026.09.28 → 4.1.5-2026.09.29")) throw new Error("the switch confirmation does not show both versions");
+  await page.getByRole("alertdialog").getByRole("button", { name: "바꾸기" }).click();
+  await panel.locator(".adminRow.isActive").filter({ hasText: "4.1.5-2026.09.29" }).waitFor();
+  if (await panel.locator(".adminRow.isActive").count() !== 2) throw new Error("each pack must keep exactly one active release");
+  checks.push("admin-release-switch", "admin-offline-release-locked");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-releases.png" });
+  if (await narrowOverflow(panel)) throw new Error("admin releases overflow at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-releases-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await panel.getByRole("tab", { name: "진단" }).click();
+  await panel.getByText("토큰 만료").waitFor();
+  if (!(await panel.innerText()).includes("접속 기록 없음")) throw new Error("an anonymous refusal is missing");
+  await panel.locator(".adminRow").filter({ hasText: "183KB" }).getByRole("button", { name: "열기" }).click();
+  await page.waitForFunction(() => window.__openedDiagnostics === "20000000-0000-0000-0000-000000000001");
+  checks.push("admin-diagnostics-open");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-diagnostics.png" });
+  if (await narrowOverflow(panel)) throw new Error("admin diagnostics overflow at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-diagnostics-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.keyboard.press("Escape");
+  if (await page.getByRole("dialog", { name: "관리" }).count()) throw new Error("Escape did not close the admin tab");
+  await page.getByRole("button", { name: "설정", exact: true }).click();
+  if ((await page.locator(".settingsModal").innerText()).includes("테스터로 지정")) throw new Error("the tester list is still in settings");
+  checks.push("tester-list-moved");
   console.log(JSON.stringify({ interactionChecks: checks, errors }));
   await browser.close();
   process.exit(errors.length ? 1 : 0);
@@ -782,9 +951,6 @@ if (catalogUnavailable) {
   if (await page.locator(".settingsModal").count()) throw new Error("Escape did not close the settings modal");
   await page.getByRole("button", { name: "설정", exact: true }).click();
   interactionChecks.push("escape-closes-modal");
-  await page.getByRole("button", { name: "테스터로 지정" }).click();
-  await page.getByRole("button", { name: "테스터 해제" }).waitFor();
-  interactionChecks.push("admin-designates-tester");
   await page.screenshot({ path: "previews/bweeep-launcher-settings-preview.png" });
   await page.locator(".settingsModal .closeButton").click();
 
@@ -953,11 +1119,39 @@ if (catalogUnavailable) {
   await page.getByText("선택 서버가 연결을 거절했습니다.").waitFor();
   if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after a rejected connection");
   interactionChecks.push("connection-rejection-visible");
+  // The account API's reason replaces the generic line: an icon and one sentence.
+  await page.evaluate(() => window.__authFailure("token_expired"));
+  const refusal = page.locator(".dockError .authFailureLine");
+  await refusal.waitFor();
+  const refusalText = (await refusal.innerText()).trim();
+  if (refusalText !== "접속 토큰이 만료됐어요" || await refusal.locator("svg").count() !== 1) {
+    throw new Error(`refusal reason is not an icon and one line: ${refusalText}`);
+  }
+  await page.screenshot({ path: "previews/bweeep-launcher-auth-failure.png" });
+  await page.getByRole("button", { name: "진단 정보 보내기" }).click();
+  await page.getByRole("button", { name: "진단 정보 보냄" }).waitFor();
+  if (await page.evaluate(() => window.__diagnosticsSent) !== 1) throw new Error("diagnostics were not sent");
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  const narrowRefusal = await refusal.evaluate((element) => {
+    const span = element.querySelector("span");
+    return span.getClientRects().length === 1 && span.getBoundingClientRect().height < parseFloat(getComputedStyle(span).fontSize) * 2;
+  });
+  if (!narrowRefusal) throw new Error("the refusal reason wraps at 920px");
+  const sidebarFits = await page.evaluate(() => [...document.querySelectorAll(".sideAction")].every((button) => button.getBoundingClientRect().bottom <= window.innerHeight));
+  if (!sidebarFits) throw new Error("menu buttons are cut off at 920x620");
+  await page.screenshot({ path: "previews/bweeep-launcher-auth-failure-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  interactionChecks.push("auth-failure-reason", "diagnostics-send");
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
   await page.evaluate(() => window.__failGame());
   await page.getByText("Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)").waitFor();
   if (await page.getByRole("button", { name: "게임 시작" }).isDisabled()) throw new Error("launch button did not unlock after a crash");
+  await page.evaluate(() => window.__authFailure("token_revoked"));
+  await page.waitForTimeout(50);
+  if (await page.locator(".dockError .authFailureLine").count()) throw new Error("a refusal replaced the crash message");
+  interactionChecks.push("crash-stays-over-refusal");
   await page.evaluate(() => { window.__exitBeforeLaunchResolves = true; });
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByText("Minecraft가 실행 직후 종료되었습니다. (신호 SIGSEGV)").waitFor();

@@ -296,13 +296,15 @@ export interface DiscordPresenceSetting {
 
 export type UserContentKind = "mods" | "shaderpacks";
 
-/** A member as the admin tester list shows it. Admins are always testers. */
+/** A member as the admin tab lists them. Admins are always testers. */
 export interface MemberSummary {
   userId: string;
   name: string;
   gameName: string | null;
   role: "admin" | "member";
   tester: boolean;
+  /** Last launch or server join; missing from servers before 0.1.37. */
+  lastPlayedAt?: string | null;
 }
 
 /** The server whose loader and Minecraft version personal mods must match. */

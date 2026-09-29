@@ -385,6 +385,12 @@ export class SupabaseAuth {
     await this.invokeFunction<{ ok: boolean }>({ action: "revokeGameAuth" }, "게임 접속 토큰을 폐기하지 못했습니다.");
   }
 
+  /** launcher-access actions owned by other modules (admin tab, diagnostics, game token upkeep). */
+  async call<T>(user: LauncherUser | null, body: Record<string, unknown>, fallbackMessage: string): Promise<T> {
+    if (!user) throw new Error("Discord 로그인이 필요합니다.");
+    return this.invokeFunction<T>(body, fallbackMessage);
+  }
+
   async listMembers(user: LauncherUser | null): Promise<MemberSummary[]> {
     if (!user) throw new Error("Discord 로그인이 필요합니다.");
     const data = await this.invokeFunction<{ members: MemberSummary[] }>({ action: "listMembers" }, "멤버 목록을 불러오지 못했습니다.");

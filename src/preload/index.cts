@@ -28,6 +28,7 @@ import type {
   UserContentFolderPickResult,
   WhatsNew
 } from "../shared/types.js";
+import type { AdminDiagnostics, AdminNames, AdminRelease, AuthFailure } from "../shared/admin-types.js";
 
 /** Returns an unsubscribe function so React effects can clean up. */
 function subscribe<T>(channel: string) {
@@ -79,6 +80,16 @@ const api = {
   openReleasePage: (url: string) => ipcRenderer.invoke("launcher:openReleasePage", url) as Promise<void>,
   listMembers: () => ipcRenderer.invoke("access:listMembers") as Promise<MemberSummary[]>,
   setTester: (userId: string, tester: boolean) => ipcRenderer.invoke("access:setTester", userId, tester) as Promise<MemberSummary[]>,
+  setMemberRole: (userId: string, role: "admin" | "member") => ipcRenderer.invoke("admin:setRole", userId, role) as Promise<MemberSummary[]>,
+  removeMember: (userId: string) => ipcRenderer.invoke("admin:removeMember", userId) as Promise<MemberSummary[]>,
+  adminNames: () => ipcRenderer.invoke("admin:names") as Promise<AdminNames>,
+  releaseName: (userId: string, gameName: string) => ipcRenderer.invoke("admin:releaseName", userId, gameName) as Promise<AdminNames>,
+  deleteReservation: (minecraftUuid: string) => ipcRenderer.invoke("admin:deleteReservation", minecraftUuid) as Promise<AdminNames>,
+  adminReleases: () => ipcRenderer.invoke("admin:releases") as Promise<AdminRelease[]>,
+  activateRelease: (releaseId: string) => ipcRenderer.invoke("admin:activateRelease", releaseId) as Promise<AdminRelease[]>,
+  adminDiagnostics: () => ipcRenderer.invoke("admin:diagnostics") as Promise<AdminDiagnostics>,
+  openDiagnostics: (diagnosticId: string) => ipcRenderer.invoke("admin:openDiagnostics", diagnosticId) as Promise<void>,
+  sendDiagnostics: () => ipcRenderer.invoke("diagnostics:send") as Promise<void>,
   searchMods: (target: ModTarget, query: string, offset: number) => ipcRenderer.invoke("mods:search", target, query, offset) as Promise<ModSearchResult>,
   personalMods: (target: ModTarget, checkUpdates: boolean) => ipcRenderer.invoke("mods:list", target, checkUpdates) as Promise<PersonalMod[]>,
   installMod: (target: ModTarget, projectId: string) => ipcRenderer.invoke("mods:install", target, projectId) as Promise<PersonalMod[]>,
@@ -99,6 +110,7 @@ const api = {
   closeWindow: () => ipcRenderer.send("window:close"),
   onProgress: subscribe<SyncProgress>("modpack:progress"),
   onGameStatus: subscribe<GameStatus>("game:status"),
+  onAuthFailure: subscribe<AuthFailure>("game:authFailure"),
   onLauncherUpdate: subscribe<LauncherUpdateStatus>("launcher:updateStatus"),
   onAuthSession: subscribe<LauncherUser>("auth:session"),
   onAuthError: subscribe<string>("auth:error"),
