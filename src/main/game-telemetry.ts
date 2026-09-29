@@ -6,18 +6,39 @@ export function createGameOutputObserver(progress: (event: SyncProgress) => void
   const decoder = new StringDecoder("utf8");
   let pending = "";
   let lastEvent = "";
+  let disconnectReason: string | null = null;
   return (chunk) => {
     pending += typeof chunk === "string" ? chunk : decoder.write(chunk);
     const lines = pending.split(/\r?\n/);
     pending = lines.pop()?.slice(-8192) ?? "";
     for (const line of lines) {
-      const event = classifyGameLine(line);
+      if (line.includes("BWEEP_TARGET_CONNECTED")) disconnectReason = null;
+      disconnectReason = parseDisconnectReason(line) ?? disconnectReason;
+      const event = line.includes("BWEEP_EXIT_ON_LEAVE") ? leaveEvent(disconnectReason) : classifyGameLine(line);
       const key = event ? `${event.stage}|${event.message}` : "";
       if (!event || key === lastEvent) continue;
       lastEvent = key;
       progress(event);
     }
   };
+}
+
+// Logged when the connection ends from the server's side or the network
+// (kick, shutdown, timeout), in the game's language. Older versions log nothing.
+const DISCONNECT_REASON = /Client disconnected with reason: (.+)$/;
+// Leaving by choice, in case a version logs it too.
+const QUIT_REASONS = new Set(["quitting", "종료 중", "multiplayer.status.quitting"]);
+
+function parseDisconnectReason(line: string): string | null {
+  const match = DISCONNECT_REASON.exec(line.replace(/\u001b\[[0-9;]*m/g, ""));
+  const reason = match?.[1].replace(/§./g, "").replace(/\s+/g, " ").trim();
+  return reason || null;
+}
+
+/** The guard ended the game after it left the server. Only a reason the game logged is shown. */
+function leaveEvent(reason: string | null): SyncProgress {
+  if (!reason || QUIT_REASONS.has(reason.toLowerCase())) return { kind: "info", stage: "서버 연결 종료", message: "게임 끔" };
+  return { kind: "error", stage: "서버 연결 끊김", message: reason.length > 60 ? `${reason.slice(0, 59)}…` : reason };
 }
 
 // The stage is the heading on screen, so each message only adds a word or two.

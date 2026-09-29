@@ -74,6 +74,20 @@ function harness({ failure = null, extendFails = 0 } = {}) {
   assert.equal(calls.reports.length, 0);
 }
 
+// The connection opened, then closed and the game ended: the login may have
+// been refused, so the run is asked once.
+{
+  const failure = { reason: "not_member", at: "2026-09-30T00:01:00Z" };
+  const { watch, calls } = harness({ failure });
+  watch.started("token-g");
+  watch.observe({ kind: "info", stage: "선택 서버 입장", message: "접속됨" });
+  watch.observe({ kind: "info", stage: "서버 연결 종료", message: "게임 끔" });
+  watch.exited();
+  await sleep(20);
+  assert.equal(calls.lastFailure.length, 1);
+  assert.deepEqual(calls.reports, [failure]);
+}
+
 // A launch that failed before the game ran stops the upkeep without asking.
 {
   const { watch, calls } = harness({ failure: { reason: "not_member", at: "x" } });

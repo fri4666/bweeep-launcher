@@ -25,6 +25,7 @@ export class GameSessionWatch {
   private token: string | null = null;
   private since = "";
   private joined = false;
+  private left = false;
   private run = 0;
   private reportedRun = 0;
 
@@ -37,6 +38,7 @@ export class GameSessionWatch {
     this.token = accessToken;
     this.since = new Date(startedAt).toISOString();
     this.joined = false;
+    this.left = false;
     this.timer = setInterval(() => void this.extend(), this.deps.intervalMs ?? HOUR_MS);
     this.timer.unref?.();
   }
@@ -45,12 +47,17 @@ export class GameSessionWatch {
   observe(event: SyncProgress): void {
     if (!this.token) return;
     if (event.stage === "선택 서버 입장") this.joined = true;
+    if (event.stage === "서버 연결 종료" || event.stage === "서버 연결 끊김") this.left = true;
     if (event.kind === "error" && event.stage === "서버 접속 실패") void this.checkFailure(this.deps.checkDelayMs ?? 1_500);
   }
 
-  /** The game is gone. Nothing is shown when the player got into the server. */
+  /**
+   * The game is gone. "Joined" only means the connection opened, and the
+   * game now ends when it closes, so a run that left the server is asked
+   * too: the server may have refused the login. Nothing recorded, nothing shown.
+   */
   exited(): void {
-    const checkNeeded = this.token !== null && !this.joined;
+    const checkNeeded = this.token !== null && (!this.joined || this.left);
     this.stop();
     if (checkNeeded) void this.checkFailure(0);
   }

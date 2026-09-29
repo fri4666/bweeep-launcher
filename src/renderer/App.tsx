@@ -271,11 +271,13 @@ function App() {
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
       setLogs((current) => [...current.slice(-199), { ...event, at: Date.now() }]);
       if (event.stage === "선택 서버 입장") setJoinedServer(true);
-      if (event.stage === "서버 연결 종료" || event.stage === "연결 종료") setJoinedServer(false);
+      if (event.stage === "서버 연결 종료" || event.stage === "서버 연결 끊김" || event.stage === "연결 종료") setJoinedServer(false);
       // Crashes arrive through the game status; progress errors cover install and connection failures.
       if (event.kind === "error" && event.stage !== "게임 종료") {
         setDockError({
-          title: event.stage === "서버 접속 실패" ? "서버에 접속하지 못했어요" : "게임을 시작하지 못했어요",
+          title: event.stage === "서버 접속 실패" ? "서버에 접속하지 못했어요"
+            : event.stage === "서버 연결 끊김" ? "서버와 연결이 끊겼어요"
+            : "게임을 시작하지 못했어요",
           message: event.message
         });
       }
