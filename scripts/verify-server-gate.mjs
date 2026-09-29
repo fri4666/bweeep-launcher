@@ -72,7 +72,8 @@ function fakeBackend(port, { players = 0 } = {}) {
       for (const join of joins) join.socket.destroy();
       server.close(() => resolve());
     }),
-    setPlayers: (count) => { players = count; }
+    setPlayers: (count) => { players = count; },
+    port
   };
 }
 
@@ -265,7 +266,76 @@ try {
   await gate2.close();
   pass("failed-start-tells-the-player");
 
-  // 9. Config checks.
+  // 9. With RCON the idle stop is the console "stop" first (it saves the world), systemd after;
+  //    when RCON does not answer, systemd alone.
+  for (const rconWorks of [true, false]) {
+    const order = [];
+    let active = true;
+    const backend3 = fakeBackend(await freePort());
+    await backend3.listen();
+    const gate3 = new ServerGate(
+      { name: "rcon", unit: "bweeep-rcon", listen: await freePort(), backend: 0, rcon: { port: 1, password: "secret-password" } },
+      {
+        stateDir, log: () => undefined,
+        control: {
+          start: async () => ({ ok: true }),
+          stop: async () => { order.push(`systemd stop (active ${active})`); await backend3.close(); active = false; return { ok: true }; },
+          isActive: async () => active
+        },
+        rcon: async (_port, password, command) => {
+          order.push(`rcon ${command}`);
+          assert.equal(password, "secret-password");
+          if (!rconWorks) return null;
+          await backend3.close();
+          active = false;
+          return "Stopping the server";
+        },
+        timing: { fastProbeMs: 50, slowProbeMs: 100, probeTimeoutMs: 300, idleMs: 300 }
+      }
+    );
+    gate3.entry.backend = backend3.port;
+    await gate3.listen();
+    await until(() => gate3.state === "down", "rcon idle stop");
+    assert.deepEqual(order, rconWorks ? ["rcon stop", "systemd stop (active false)"] : ["rcon stop", "systemd stop (active true)"]);
+    await gate3.close();
+  }
+  // The RCON client against a fake console: login, a command, a wrong password.
+  {
+    const rconPort = await freePort();
+    const console_ = net.createServer((socket) => {
+      let buffer = Buffer.alloc(0);
+      socket.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        while (buffer.length >= 4 && buffer.length >= 4 + buffer.readInt32LE(0)) {
+          const length = buffer.readInt32LE(0);
+          const id = buffer.readInt32LE(4);
+          const type = buffer.readInt32LE(8);
+          const body = buffer.subarray(12, 4 + length - 2).toString("utf8");
+          buffer = buffer.subarray(4 + length);
+          const reply = (replyId, text) => {
+            const bytes = Buffer.from(text);
+            const out = Buffer.alloc(14 + bytes.length);
+            out.writeInt32LE(10 + bytes.length, 0);
+            out.writeInt32LE(replyId, 4);
+            out.writeInt32LE(type === 3 ? 2 : 0, 8);
+            bytes.copy(out, 12);
+            socket.write(out);
+          };
+          if (type === 3) reply(body === "right-password" ? id : -1, "");
+          else reply(id, `ran ${body}`);
+        }
+      });
+    });
+    await new Promise((resolve) => console_.listen(rconPort, "127.0.0.1", resolve));
+    const { rconCommand } = await import("./server-gate.mjs");
+    assert.equal(await rconCommand(rconPort, "right-password", "list"), "ran list");
+    assert.equal(await rconCommand(rconPort, "wrong-password", "list"), null);
+    assert.equal(await rconCommand(1, "right-password", "list"), null, "nothing listening");
+    await new Promise((resolve) => console_.close(resolve));
+  }
+  pass("rcon-stop-then-systemd");
+
+  // 10. Config checks.
   const configFile = path.join(stateDir, "gate.json");
   fs.writeFileSync(configFile, JSON.stringify({ stateDir, servers: [{ unit: "a", listen: 1, backend: 1 }] }));
   assert.throws(() => readConfig(configFile), /두 번/);
@@ -273,6 +343,10 @@ try {
   assert.throws(() => readConfig(configFile), /unit/);
   fs.writeFileSync(configFile, JSON.stringify({ stateDir, servers: [{ unit: "bweeep-x", listen: 25565, backend: 35565, idleMinutes: 10 }] }));
   assert.equal(readConfig(configFile).servers.length, 1);
+  fs.writeFileSync(configFile, JSON.stringify({ stateDir, servers: [{ unit: "bweeep-x", listen: 25565, backend: 35565, rcon: { port: 35565, password: "long-enough" } }] }));
+  assert.throws(() => readConfig(configFile), /rcon 포트/);
+  fs.writeFileSync(configFile, JSON.stringify({ stateDir, servers: [{ unit: "bweeep-x", listen: 25565, backend: 35565, rcon: { port: 35566, password: "short" } }] }));
+  assert.throws(() => readConfig(configFile), /rcon 비밀번호/);
   pass("config-checks");
 } catch (error) {
   console.error(lines.join("\n"));

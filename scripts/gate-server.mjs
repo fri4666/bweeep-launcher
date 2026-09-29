@@ -6,6 +6,7 @@
 // on another. Default is a dry run; --apply refuses while anyone is on the
 // server. See --help.
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -25,7 +26,8 @@ const HELP = `사용법: node scripts/gate-server.mjs --dir <서버 폴더> --un
 
 --apply 가 하는 일 (접속자가 있으면 하지 않음)
   1) 서버 유닛을 멈춤 (월드 저장)
-  2) server.properties 백업 후 server-port/query.port=<공개 포트+${BACKEND_OFFSET}>, server-ip=127.0.0.1
+  2) server.properties 백업 후 server-port/query.port=<공개 포트+${BACKEND_OFFSET}>, server-ip=127.0.0.1,
+     RCON 켜기(포트 +1, 비밀번호 새로 만듦). 게이트는 콘솔 "stop"으로 꺼서 월드를 저장합니다
   3) <gate-dir>/server-gate.mjs 를 저장소 것으로 맞추고 <gate-dir>/<유닛>.json 작성
   4) ${TEMPLATE} 가 없으면 만들고, 서버 유닛은 부팅 때 켜지지 않게(disable), 게이트는 켜지게(enable)
   5) 게이트 시작 후 서버를 다시 켬. 이후 --idle-minutes 동안 아무도 없으면 게이트가 끔
@@ -34,7 +36,8 @@ const HELP = `사용법: node scripts/gate-server.mjs --dir <서버 폴더> --un
   --idle-minutes <n>   빈 채로 이만큼 지나면 끔 (기본 10)
   --name <이름>        잠든 동안 상태 응답에 쓸 이름 (기본 폴더 이름)
   --gate-dir <path>    게이트 파일 폴더 (기본 /home/dev/servers/bweeep-gate)
-  --update-gate        이미 게이트 뒤에 있는 서버: 게이트 코드만 새로 복사하고 게이트만 재시작 (접속자 없을 때)
+  --update-gate        이미 게이트 뒤에 있는 서버: 게이트 코드를 새로 복사하고 게이트를 재시작 (접속자 없을 때).
+                       RCON 이 없으면 서버를 한 번 멈췄다 켜서 추가
   --apply              실제로 바꿈
 
 되돌리기: systemctl --user disable --now bweeep-gate@<유닛>, 백업한 server.properties 복원,
@@ -95,24 +98,49 @@ async function main() {
   step(status ? `지금 접속자 ${online}명` : "지금 상태 응답 없음 (꺼져 있음)");
   if (args.apply && online > 0) throw new Error("접속자가 있어서 멈춥니다. 모두 나간 뒤 다시 실행하세요.");
 
+  // The gate stops the server with the console "stop" over RCON, which saves the
+  // world; RCON listens on server-ip, so only on this machine.
+  const rconPort = existing?.rcon?.port ?? backendPort + 1;
+  const rcon = existing?.rcon ?? { port: rconPort, password: randomBytes(18).toString("base64url") };
+  const rconProps = [["enable-rcon", "true"], ["rcon.port", rcon.port], ["rcon.password", rcon.password]];
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
+  const writeConfig = (entry) => {
+    const config = { stateDir: path.join(os.homedir(), ".local", "state", "bweeep-gate"), servers: [entry] };
+    fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+    fs.chmodSync(configFile, 0o600);
+    readConfig(configFile);
+  };
+
   if (args.updateGate) {
     if (!existing) throw new Error(`${configFile} 가 없습니다. 먼저 --update-gate 없이 게이트 뒤에 두세요.`);
+    const addRcon = !existing.rcon;
+    step(addRcon ? `RCON(127.0.0.1:${rcon.port}) 켜기: 서버 멈춤 → server.properties 백업 후 수정 → 서버 켬` : "RCON 이미 있음");
     step(`게이트 코드 갱신 후 ${gateUnit} 재시작`);
     if (!args.apply) return console.log("\ndry-run: 실제로 하려면 --apply");
+    if (addRcon) {
+      if (portBusy(rcon.port)) throw new Error(`포트 ${rcon.port} 를 이미 누가 쓰고 있습니다.`);
+      // The gate must not wake or stop the server meanwhile.
+      systemctl("stop", gateUnit);
+      if (isActive(args.unit)) systemctl("stop", args.unit);
+      fs.copyFileSync(propsFile, `${propsFile}.bak-gate-${stamp}`);
+      fs.writeFileSync(propsFile, rconProps.reduce((text, [key, value]) => writeProperty(text, key, value), fs.readFileSync(propsFile, "utf8")));
+      writeConfig({ ...existing, rcon });
+    }
     fs.copyFileSync(GATE_SOURCE, path.join(args.gateDir, "server-gate.mjs"));
     systemctl("restart", gateUnit);
-    return console.log("완료");
+    if (addRcon) systemctl("start", args.unit);
+    return console.log(`완료${addRcon ? `. 백업: ${propsFile}.bak-gate-${stamp}` : ""}`);
   }
   if (existing) {
     step(`이미 게이트 뒤에 있습니다 (${configFile}). 코드만 바꾸려면 --update-gate`);
     return;
   }
   if (portBusy(backendPort)) throw new Error(`포트 ${backendPort} 를 이미 누가 쓰고 있습니다.`);
+  if (portBusy(rcon.port)) throw new Error(`포트 ${rcon.port} 를 이미 누가 쓰고 있습니다.`);
 
-  const nextProps = [["server-port", backendPort], ["query.port", backendPort], ["server-ip", "127.0.0.1"]]
+  const nextProps = [["server-port", backendPort], ["query.port", backendPort], ["server-ip", "127.0.0.1"], ...rconProps]
     .reduce((text, [key, value]) => writeProperty(text, key, value), props);
-  const entry = { name: args.name ?? path.basename(args.dir), unit: args.unit, listen: publicPort, backend: backendPort, idleMinutes: args.idleMinutes };
-  const config = { stateDir: path.join(os.homedir(), ".local", "state", "bweeep-gate"), servers: [entry] };
+  const entry = { name: args.name ?? path.basename(args.dir), unit: args.unit, listen: publicPort, backend: backendPort, idleMinutes: args.idleMinutes, rcon };
   const template = `[Unit]
 Description=Bweeep server gate %i (sleeps the server when empty, wakes it on join)
 After=network-online.target
@@ -127,20 +155,17 @@ MemoryMax=256M
 [Install]
 WantedBy=default.target
 `;
-  step(`${args.unit} 멈춤 → server.properties 백업 후 포트 변경 → ${configFile} 작성`);
+  step(`${args.unit} 멈춤 → server.properties 백업 후 포트 변경, RCON 127.0.0.1:${rcon.port} → ${configFile} 작성`);
   step(`${TEMPLATE} ${fs.existsSync(path.join(SYSTEMD_DIR, TEMPLATE)) ? "유지" : "만듦"}, ${args.unit} disable, ${gateUnit} enable --now, ${args.unit} start`);
   step(`빈 채로 ${args.idleMinutes}분이면 끔`);
   if (!args.apply) return console.log("\ndry-run: 실제로 하려면 --apply");
 
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
-  const wasActive = isActive(args.unit);
-  if (wasActive) systemctl("stop", args.unit);
+  if (isActive(args.unit)) systemctl("stop", args.unit);
   fs.copyFileSync(propsFile, `${propsFile}.bak-gate-${stamp}`);
   fs.writeFileSync(propsFile, nextProps);
   fs.mkdirSync(args.gateDir, { recursive: true });
   fs.copyFileSync(GATE_SOURCE, path.join(args.gateDir, "server-gate.mjs"));
-  fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
-  readConfig(configFile);
+  writeConfig(entry);
   if (!fs.existsSync(path.join(SYSTEMD_DIR, TEMPLATE))) fs.writeFileSync(path.join(SYSTEMD_DIR, TEMPLATE), template);
   systemctl("daemon-reload");
   systemctl("disable", args.unit);

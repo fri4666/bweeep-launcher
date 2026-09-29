@@ -13,7 +13,8 @@
 //   are refused and status says "off".
 //
 // Usage: node scripts/server-gate.mjs --config <gate.json>
-// gate.json: { "stateDir": "...", "servers": [{ "name", "unit", "listen", "backend", "idleMinutes" }] }
+// gate.json: { "stateDir": "...", "servers": [{ "name", "unit", "listen", "backend", "idleMinutes", "rcon": { "port", "password" } }] }
+// With "rcon" the server is stopped with the console "stop" (saves the world), then systemd.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -37,7 +38,9 @@ export const DEFAULTS = {
   probeTimeoutMs: 2_000,
   // Faster while starting or holding a join, slower otherwise.
   fastProbeMs: 1_000,
-  slowProbeMs: 15_000
+  slowProbeMs: 15_000,
+  // How long a server may take to save and exit after the RCON "stop".
+  rconStopMs: 180_000
 };
 
 const TEXT = {
@@ -156,6 +159,55 @@ export function probeStatus(port, timeoutMs) {
   });
 }
 
+// ---- RCON
+
+/**
+ * Runs one console command over RCON and returns the reply, or null when the
+ * server cannot be reached or refuses the password.
+ */
+export function rconCommand(port, password, command, timeoutMs = 5_000) {
+  const packet = (id, type, body) => {
+    const text = Buffer.from(body, "utf8");
+    const out = Buffer.alloc(14 + text.length);
+    out.writeInt32LE(10 + text.length, 0);
+    out.writeInt32LE(id, 4);
+    out.writeInt32LE(type, 8);
+    text.copy(out, 12);
+    return out;
+  };
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: "127.0.0.1", port });
+    let buffer = Buffer.alloc(0);
+    let loggedIn = false;
+    const done = (value) => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    socket.on("connect", () => socket.write(packet(1, 3, password)));
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length >= 4 && buffer.length >= 4 + buffer.readInt32LE(0)) {
+        const length = buffer.readInt32LE(0);
+        const id = buffer.readInt32LE(4);
+        const body = buffer.subarray(12, 4 + length - 2).toString("utf8");
+        buffer = buffer.subarray(4 + length);
+        if (!loggedIn) {
+          if (id === -1) return done(null);
+          loggedIn = true;
+          socket.write(packet(2, 2, command));
+        } else {
+          return done(body);
+        }
+      }
+    });
+    // "stop" can close the connection before answering.
+    socket.on("close", () => done(loggedIn ? "" : null));
+    socket.on("error", () => done(null));
+  });
+}
+
 // ---- systemd
 
 function systemctl(...args) {
@@ -182,10 +234,11 @@ export class ServerGate {
    * @param {{ name: string, unit: string, listen: number, backend: number, idleMinutes?: number }} entry
    * @param {{ stateDir: string, control?: typeof systemdControl, log?: (line: string) => void, timing?: Partial<typeof DEFAULTS> }} options
    */
-  constructor(entry, { stateDir, control = systemdControl, log = console.log, timing = {} }) {
+  constructor(entry, { stateDir, control = systemdControl, rcon = rconCommand, log = console.log, timing = {} }) {
     this.entry = entry;
     this.stateDir = stateDir;
     this.control = control;
+    this.rcon = rcon;
     this.timing = { ...DEFAULTS, ...timing };
     this.idleMs = (entry.idleMinutes ?? this.timing.idleMinutes) * 60_000;
     if (timing.idleMs !== undefined) this.idleMs = timing.idleMs;
@@ -326,13 +379,32 @@ export class ServerGate {
     if (Date.now() - this.lastActivity < this.idleMs) return;
     this.setState("stopping");
     this.log(`nobody on for ${Math.round(this.idleMs / 1000)}s, stopping`);
-    const result = await this.control.stop(this.entry.unit);
-    if (!result.ok) this.log("stop reported an error");
+    await this.stopServer();
     this.setState("down");
     // Someone tried to join, or pressed Play, while it was stopping.
     const again = this.wakeAfterStop || this.holds.size > 0;
     this.wakeAfterStop = false;
     if (again) this.wake("asked while stopping");
+  }
+
+  /**
+   * The console "stop" over RCON, which saves the world before exiting; a
+   * signal from systemd does not always get that far. systemd stops what is
+   * left (no RCON, or the server did not exit in time).
+   */
+  async stopServer() {
+    const rcon = this.entry.rcon;
+    if (rcon) {
+      const reply = await this.rcon(rcon.port, rcon.password, "stop");
+      if (reply === null) {
+        this.log("rcon stop failed, stopping with systemd");
+      } else {
+        const end = Date.now() + this.timing.rconStopMs;
+        while (Date.now() < end && await this.control.isActive(this.entry.unit)) await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+    const result = await this.control.stop(this.entry.unit);
+    if (!result.ok) this.log("stop reported an error");
   }
 
   wake(reason) {
@@ -624,6 +696,12 @@ export function readConfig(file) {
       if (!Number.isInteger(server[key]) || server[key] < 1 || server[key] > 65535) throw new Error(`${server.unit}: ${key} 포트가 올바르지 않습니다.`);
       if (ports.has(server[key])) throw new Error(`포트 ${server[key]} 가 두 번 쓰였습니다.`);
       ports.add(server[key]);
+    }
+    if (server.rcon !== undefined) {
+      const { port, password } = server.rcon ?? {};
+      if (!Number.isInteger(port) || port < 1 || port > 65535 || ports.has(port)) throw new Error(`${server.unit}: rcon 포트가 올바르지 않습니다.`);
+      if (typeof password !== "string" || password.length < 8) throw new Error(`${server.unit}: rcon 비밀번호가 올바르지 않습니다.`);
+      ports.add(port);
     }
     if (typeof server.unit !== "string" || !/^[\w@.-]+$/.test(server.unit)) throw new Error("unit 이름이 올바르지 않습니다.");
     if (server.idleMinutes !== undefined && !(server.idleMinutes > 0)) throw new Error(`${server.unit}: idleMinutes 가 올바르지 않습니다.`);
