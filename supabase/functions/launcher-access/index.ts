@@ -1,8 +1,10 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
+import { ADMIN_ACTIONS, type AdminRequest, handleAdminRequest, isAdminRequest, parseAdminRequest } from "./admin.ts";
 import { getBearerToken, getLauncherVersion, getSessionId, isLauncherAtLeast, MIN_YGGDRASIL_LAUNCHER } from "./authorization.ts";
 import { isModpackManifest, type ModpackManifest, selectCatalog, usesBweeepAccounts } from "./catalog.ts";
 import { retryingFetch } from "./db-fetch.ts";
+import { isDiagnosticsLog, uploadDiagnostics } from "./diagnostics.ts";
 import { gameNameTakenMessage, isGameNameTaken, OFFLINE_SERVER } from "./game-name.ts";
 import { previousGameNames } from "./profile-history.ts";
 import {
@@ -17,10 +19,12 @@ import { parseStorageObjectUrl } from "./manifest-shape.ts";
 import { decodeBase64, isSkinModel, MAX_SKIN_BYTES, type SkinModel, validateSkinPng } from "./skin-image.ts";
 
 type RequestBody =
-  | { action: "listMembers" }
-  | { action: "setTester"; userId: string; tester: boolean }
+  | AdminRequest
   | { action: "gameAuth" }
   | { action: "revokeGameAuth" }
+  | { action: "extendGameAuth"; accessToken: string }
+  | { action: "lastAuthFailure"; since?: string }
+  | { action: "uploadDiagnostics"; gameLog: string; launcherLog: string }
   | { action: "skin" }
   | { action: "setSkin"; png: string; model: SkinModel }
   | { action: "clearSkin" }
@@ -280,46 +284,33 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ ok: true, gameName: body.gameName });
     }
 
-    if (body.action === "listMembers" || body.action === "setTester") {
-      if (membership.role !== "admin") return json({ message: "관리자만 테스터를 지정할 수 있습니다." }, 403);
-      if (body.action === "setTester") {
-        const { data: target } = await supabaseAdmin.from("launcher_members").select("user_id").eq("user_id", body.userId).maybeSingle();
-        if (!target) return json({ message: "멤버를 찾지 못했습니다." }, 404);
-        const { error } = body.tester
-          ? await supabaseAdmin.from("launcher_environment_access").upsert(
-            { user_id: body.userId, environment: "test", granted_by: userId },
-            { onConflict: "user_id,environment", ignoreDuplicates: true }
-          )
-          : await supabaseAdmin.from("launcher_environment_access").delete().eq("user_id", body.userId).eq("environment", "test");
-        if (error) {
-          console.error("tester update failed", error);
-          return json({ message: "테스터 지정을 저장하지 못했습니다." }, 500);
-        }
+    if (isAdminRequest(body)) {
+      if (membership.role !== "admin") return json({ code: "NOT_ADMIN", message: "관리자만 할 수 있어요." }, 403);
+      return handleAdminRequest(supabaseAdmin, userId, body, Deno.env.get("BWEEP_PUBLIC_SUPABASE_URL"));
+    }
+
+    if (body.action === "uploadDiagnostics") {
+      return uploadDiagnostics(supabaseAdmin, userId, getLauncherVersion(request), body);
+    }
+
+    if (body.action === "lastAuthFailure") {
+      // Only the last hour counts; a few minutes of slack cover a launcher clock that runs ahead.
+      const floor = Date.now() - 60 * 60_000;
+      const requested = body.since ? Date.parse(body.since) - 5 * 60_000 : floor;
+      const since = new Date(Math.max(floor, Number.isFinite(requested) ? requested : floor)).toISOString();
+      const { data, error } = await supabaseAdmin
+        .from("launcher_auth_failures")
+        .select("reason, created_at")
+        .eq("user_id", userId)
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) {
+        console.error("auth failure lookup failed", error);
+        return json({ message: "접속 실패 이유를 확인하지 못했습니다." }, 500);
       }
-      const [{ data: members, error: membersError }, { data: testers, error: testersError }, { data: profiles, error: profilesError }] = await Promise.all([
-        supabaseAdmin.from("launcher_members").select("user_id, role, invited_at").order("invited_at"),
-        supabaseAdmin.from("launcher_environment_access").select("user_id").eq("environment", "test"),
-        supabaseAdmin.from("launcher_profiles").select("user_id, game_name")
-      ]);
-      if (membersError || testersError || profilesError) {
-        console.error("member list failed", membersError ?? testersError ?? profilesError);
-        return json({ message: "멤버 목록을 불러오지 못했습니다." }, 500);
-      }
-      const testerIds = new Set((testers ?? []).map((row) => row.user_id));
-      const gameNames = new Map((profiles ?? []).map((row) => [row.user_id, row.game_name]));
-      const list = await Promise.all((members ?? []).map(async (member) => {
-        const { data } = await supabaseAdmin.auth.admin.getUserById(member.user_id);
-        const metadata = data.user?.user_metadata ?? {};
-        const name = [metadata.full_name, metadata.name, metadata.user_name].find((value) => typeof value === "string" && value.trim());
-        return {
-          userId: member.user_id,
-          name: typeof name === "string" ? name : "이름 없음",
-          gameName: gameNames.get(member.user_id) ?? null,
-          role: member.role,
-          tester: member.role === "admin" || testerIds.has(member.user_id)
-        };
-      }));
-      return json({ members: list });
+      return json({ failure: data ? { reason: data.reason, at: data.created_at } : null });
     }
 
     if (body.action === "gameAuth") {
@@ -381,6 +372,22 @@ async function handleRequest(request: Request): Promise<Response> {
         return json({ message: "게임 접속 토큰을 폐기하지 못했습니다." }, 500);
       }
       return json({ ok: true });
+    }
+
+    // While the game runs the launcher calls this every hour, so the token
+    // stays valid for a later rejoin. Only the caller's own live token moves.
+    if (body.action === "extendGameAuth") {
+      const { data, error } = await supabaseAdmin.rpc("launcher_extend_game_auth", {
+        p_user_id: userId,
+        p_token_hash: await sha256(body.accessToken),
+        p_hours: GAME_TOKEN_HOURS
+      });
+      if (error) {
+        console.error("game auth token extension failed", error);
+        return json({ message: "게임 접속 토큰을 연장하지 못했습니다." }, 500);
+      }
+      if (!data) return json({ code: "GAME_TOKEN_GONE", message: "연장할 게임 접속 토큰이 없습니다." }, 404);
+      return json({ expiresAt: data });
     }
 
     if (body.action === "skin" || body.action === "clearSkin" || body.action === "setSkin") {
@@ -592,10 +599,11 @@ function isRequestBody(value: unknown): value is RequestBody {
   if (!value || typeof value !== "object" || !("action" in value)) return false;
   const body = value as Record<string, unknown>;
   if (body.action === "status") return true;
-  if (["gameAuth", "revokeGameAuth", "skin", "clearSkin", "listMembers"].includes(String(body.action))) return true;
-  if (body.action === "setTester") {
-    return typeof body.userId === "string" && /^[0-9a-f-]{36}$/i.test(body.userId) && typeof body.tester === "boolean";
-  }
+  if (["gameAuth", "revokeGameAuth", "skin", "clearSkin"].includes(String(body.action))) return true;
+  if (ADMIN_ACTIONS.has(String(body.action))) return parseAdminRequest(body) !== null;
+  if (body.action === "extendGameAuth") return typeof body.accessToken === "string" && /^[A-Za-z0-9_-]{43}$/.test(body.accessToken);
+  if (body.action === "lastAuthFailure") return body.since === undefined || (typeof body.since === "string" && body.since.length <= 40);
+  if (body.action === "uploadDiagnostics") return isDiagnosticsLog(body.gameLog) && isDiagnosticsLog(body.launcherLog);
   if (body.action === "setSkin") {
     return typeof body.png === "string" && body.png.length <= Math.ceil(MAX_SKIN_BYTES / 3) * 4 && isSkinModel(body.model);
   }

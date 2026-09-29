@@ -171,6 +171,10 @@ async function main() {
     const clientLog = readIfExists(path.join(player.clientRoot, "client.log"));
     check(`${player.name}: connection guard reports the join`, clientLog.includes("STAGE 선택 서버 입장"), clientLog.includes("다른 서버 차단") ? "blocked" : "");
   }
+  // --- leaving the server ends the game, so there is no title screen to play from
+  if (scenario.leaveChecks !== false && players.length === 1 && logText().includes(`${players[0].name} joined the game`)) {
+    await checkLeaving(players[0], { apiRoot, metadata, server }, logText);
+  }
   // Clients are closed from here on; the remaining checks need the memory.
   for (const player of players) await stopClient(player);
 
@@ -209,7 +213,7 @@ async function main() {
   check("a member may go back to their own earlier name", ownerStill.status === 200, `${ownerStill.status}`);
   await callFunction(local, renamed, { action: "setGameProfile", gameName: newName });
 
-  // Reserved UUIDs from a server's usercache: nobody gets an unowned one, only the owner gets theirs.
+  // Reserved UUIDs from a server's usercache: the name of an unowned one is free, but its UUID is not; only the owner gets theirs.
   const unowned = `Rsv${randomBytes(3).toString("hex")}`;
   const owned = `Own${randomBytes(3).toString("hex")}`;
   const ownedPlayer = await createPlayer(local, { name: owned, body: [0, 0, 0], model: "default" });
@@ -221,7 +225,9 @@ async function main() {
   check("reservations can be recorded", !reservations.error, reservations.error?.message ?? "");
   const unownedPlayer = await createPlayer(local, { name: unowned, body: [0, 0, 0], model: "default" });
   const unownedAuth = await callFunction(local, unownedPlayer, { action: "gameAuth" });
-  check("a name reserved for nobody is refused", unownedAuth.status === 409, `${unownedAuth.status}`);
+  check("a name reserved for nobody is usable but keeps away from the reserved UUID",
+    unownedAuth.status === 200 && unownedAuth.body?.profile?.id !== String(await offlineUuid(unowned)).replaceAll("-", ""),
+    `${unownedAuth.status} ${unownedAuth.body?.profile?.id}`);
   const ownedAuth = await callFunction(local, ownedPlayer, { action: "gameAuth" });
   check("the owner of a reserved UUID receives exactly it", ownedAuth.body?.profile?.id === String(await offlineUuid(owned)).replaceAll("-", ""),
     `${ownedAuth.status} ${ownedAuth.body?.profile?.id}`);
@@ -312,6 +318,49 @@ async function main() {
   }
 }
 
+// One client at a time: the joined player leaves by choice, then a new game
+// is kicked, then one starts while nothing listens on the server's port.
+async function checkLeaving(player, context, logText) {
+  const logOf = (client) => readIfExists(path.join(client.clientRoot, "client.log"));
+  const ended = (client, timeoutMs) => waitFor(() => logOf(client).includes("GAME_EXIT"), timeoutMs);
+  const cleanExit = (client) => /GAME_EXIT .*"abnormal":false/.test(logOf(client));
+  const shown = (client) => logOf(client).split("\n").filter((line) => /^(STAGE 서버 (연결|접속)|ERROR |GAME_EXIT)/.test(line)).join(" | ");
+
+  // The pause menu's bottom button is Disconnect on every version.
+  await key(player, "Escape");
+  await sleep(1500);
+  execFileSync("import", ["-display", player.display, "-window", "root", path.join(WORK, "leave-pause-menu.png")]);
+  await key(player, ...Array(10).fill("Down"), "Return");
+  const byChoice = await ended(player, 60_000);
+  check("leaving the server by choice ends the game, with nothing shown",
+    byChoice && cleanExit(player) && logOf(player).includes("STAGE 서버 연결 종료: 게임 끔") && !/^ERROR /m.test(logOf(player)), shown(player));
+  await stopClient(player);
+
+  const joins = () => logText().split(`${player.name} joined the game`).length - 1;
+  const joinsBefore = joins();
+  const kicked = { ...player, display: ":172", clientRoot: path.join(WORK, "client-kick"), process: null };
+  await startClient(kicked, context);
+  if (await waitFor(() => joins() > joinsBefore, 600_000)) {
+    await sleep(3000);
+    const rcon = await connectRcon(context.server.rconPort, context.server.rconPassword);
+    await rcon.command(`kick ${player.name} Bweeep leave check`);
+    rcon.close();
+  }
+  const kickEnded = await ended(kicked, 60_000);
+  check("a kick ends the game", kickEnded && cleanExit(kicked), shown(kicked));
+  if (scenario.logsDisconnectReason !== false) {
+    check("the kick reason is the one line shown", /^ERROR Bweeep leave check$/m.test(logOf(kicked)), shown(kicked));
+  }
+  await stopClient(kicked);
+
+  const unreachable = { ...player, display: ":173", clientRoot: path.join(WORK, "client-unreachable"), serverPort: scenario.port + 7, process: null };
+  await startClient(unreachable, context);
+  const failedEnded = await ended(unreachable, 600_000);
+  check("with the server off the game ends instead of staying on the menu",
+    failedEnded && cleanExit(unreachable) && logOf(unreachable).includes("STAGE 서버 접속 실패"), shown(unreachable));
+  await stopClient(unreachable);
+}
+
 function localSupabase() {
   const status = JSON.parse(execFileSync("npx", ["-y", "supabase@2", "status", "-o", "json"], {
     cwd: SUPABASE_DIR, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
@@ -399,7 +448,7 @@ async function startClient(player, { apiRoot, metadata, server }) {
   await fsp.writeFile(path.join(instanceDir, "options.txt"),
     "onboardAccessibility:false\nskipMultiplayerWarning:true\njoinedFirstServer:true\ntutorialStep:none\npauseOnLostFocus:false\nnarrator:0\n");
   const config = {
-    manifest: { ...manifest, gameAuth: player.offline ? "offline" : "yggdrasil", server: { host: "127.0.0.1", port: server.port } },
+    manifest: { ...manifest, gameAuth: player.offline ? "offline" : "yggdrasil", server: { host: "127.0.0.1", port: player.serverPort ?? server.port } },
     manifestOverrides: scenario.manifestOverrides ?? {},
     clientSkipMods: scenario.clientSkipMods ?? [],
     instanceRoot,
@@ -462,7 +511,8 @@ async function runClient(config) {
   const mods = bundledFeatureMods(path.join(REPO, "resources", "client-mods"), manifest);
   let stage = "";
   const progress = (event) => {
-    if (event.stage && event.stage !== stage) { stage = event.stage; console.log(`STAGE ${event.stage}: ${event.message}`); }
+    // Connection stages repeat with new messages (connected, disconnected, game ended).
+    if (event.stage && (event.stage !== stage || event.stage.startsWith("서버 연결"))) { stage = event.stage; console.log(`STAGE ${event.stage}: ${event.message}`); }
     if (event.kind === "error") console.log(`ERROR ${event.message}`);
   };
   const synced = await syncModpack({ instanceDir: config.instanceRoot, manifest }, progress);

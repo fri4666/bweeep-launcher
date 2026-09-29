@@ -59,6 +59,39 @@ assert.deepEqual(milestones.map((event) => event.stage), ["로더 초기화", "�
 assert.doesNotMatch(milestones[1].message, /server\.fri4666\.com/);
 assert.equal(milestones[5].kind, "error");
 
+// The guard ends the game when it leaves the server; the one line shown is the reason the game logged.
+const leaveEvents = (text) => {
+  const events = [];
+  createGameOutputObserver((event) => events.push(event))(Buffer.from(text));
+  return events.filter((event) => event.stage === "서버 연결 끊김" || event.message === "게임 끔");
+};
+const kicked = leaveEvents([
+  "[12:00:00] [Netty Epoll IO #0/INFO]: [STDOUT]: BWEEP_TARGET_CONNECTED",
+  "[12:30:00] [Netty Epoll IO #0/INFO]: [STDOUT]: BWEEP_TARGET_DISCONNECTED",
+  "[12:30:00] [Render thread/WARN]: Client disconnected with reason: 서버가 닫혔습니다",
+  "[12:30:01] [Bweeep leave watch/INFO]: [STDOUT]: BWEEP_EXIT_ON_LEAVE",
+  ""
+].join("\n"));
+assert.deepEqual(kicked, [{ kind: "error", stage: "서버 연결 끊김", message: "서버가 닫혔습니다" }]);
+// Vanilla's launcher logging config prints XML to the console.
+const kickedXml = leaveEvents([
+  `<log4j:Event logger="net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl" timestamp="1790000000000" level="WARN" thread="Render thread">`,
+  `  <log4j:Message><![CDATA[Client disconnected with reason: Bweeep leave check]]></log4j:Message>`,
+  `</log4j:Event>`,
+  `  <log4j:Message><![CDATA[[STDOUT]: BWEEP_EXIT_ON_LEAVE]]></log4j:Message>`,
+  ""
+].join("\n"));
+assert.deepEqual(kickedXml, [{ kind: "error", stage: "서버 연결 끊김", message: "Bweeep leave check" }]);
+const quitByChoice = leaveEvents("BWEEP_TARGET_CONNECTED\nBWEEP_TARGET_DISCONNECTED\nBWEEP_EXIT_ON_LEAVE\n");
+assert.deepEqual(quitByChoice, [{ kind: "info", stage: "서버 연결 종료", message: "게임 끔" }], "leaving by choice shows nothing");
+assert.equal(leaveEvents("Client disconnected with reason: Quitting\nBWEEP_EXIT_ON_LEAVE\n")[0].kind, "info");
+assert.equal(leaveEvents("Client disconnected with reason: Timed out\nBWEEP_TARGET_CONNECTED\nBWEEP_EXIT_ON_LEAVE\n")[0].kind, "info",
+  "a reason from an earlier connection does not count");
+assert.equal(leaveEvents("Client disconnected with reason: Timed out\n").length, 0, "the reason alone shows nothing until the game ends");
+const [long] = leaveEvents(`Client disconnected with reason: §c§lBanned§r  for ${"x".repeat(80)}\nBWEEP_EXIT_ON_LEAVE\n`);
+assert.equal(long.message.length, 60);
+assert.ok(long.message.startsWith("Banned for x") && long.message.endsWith("…"));
+
 const readyChild = new EventEmitter();
 readyChild.stdout = new PassThrough();
 const readyWatcher = createMinecraftProcessWatcher(readyChild);

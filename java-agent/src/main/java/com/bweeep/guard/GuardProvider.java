@@ -17,13 +17,16 @@ final class GuardProvider extends Provider {
     private static final long serialVersionUID = 1L;
 
     private final transient TargetPolicy policy;
+    /** Null when the game may stay open after leaving the selected server. */
+    private final transient LeaveWatch leave;
     /** Whether the connect call on this thread is to the selected server. */
     private final transient ThreadLocal<Boolean> targetConnect = new ThreadLocal<Boolean>();
 
     @SuppressWarnings("deprecation")
-    GuardProvider(TargetPolicy policy) {
+    GuardProvider(TargetPolicy policy, LeaveWatch leave) {
         super(NAME, 1.0, "Bweeep connection guard");
         this.policy = policy;
+        this.leave = leave;
     }
 
     @Override
@@ -53,18 +56,25 @@ final class GuardProvider extends Provider {
         if (decision == TargetPolicy.Decision.TARGET) targetConnect.set(Boolean.TRUE);
     }
 
-    /** Prints the outcome of a connection to the selected server for the launcher to show. */
-    private static void report(Object future) {
+    /**
+     * Prints the outcome of a connection to the selected server for the
+     * launcher to show, and tells the leave watch when it fails or closes.
+     * If anything here goes wrong the connection is left uncounted, so the
+     * game stays open rather than closing under the player.
+     */
+    private void report(Object future) {
         try {
             ClassLoader loader = future.getClass().getClassLoader();
             final Class<?> listenerType = Class.forName("io.netty.util.concurrent.GenericFutureListener", false, loader);
             final Method addListener = future.getClass().getMethod("addListener", listenerType);
+            if (leave != null) leave.opening();
             addListener.invoke(future, listener(listenerType, new Outcome() {
                 @Override
                 public void done(Object connectFuture) throws Exception {
                     boolean success = (Boolean) connectFuture.getClass().getMethod("isSuccess").invoke(connectFuture);
                     if (!success) {
                         System.out.println("BWEEP_TARGET_UNREACHABLE");
+                        if (leave != null) leave.ended();
                         return;
                     }
                     System.out.println("BWEEP_TARGET_CONNECTED");
@@ -74,6 +84,7 @@ final class GuardProvider extends Provider {
                         @Override
                         public void done(Object ignored) {
                             System.out.println("BWEEP_TARGET_DISCONNECTED");
+                            if (leave != null) leave.ended();
                         }
                     }));
                 }

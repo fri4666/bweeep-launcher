@@ -36,7 +36,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink, 
   const mrpack = manifest.mrpack
     ? await prepareMrpack(manifest.mrpack, instanceDir, progress, { minecraftVersion: manifest.minecraftVersion, loader: manifest.loader }, { fetch: fetcher, cache })
     : null;
-  const files = [...manifest.files, ...(mrpack?.files ?? [])];
+  const files = [...manifest.files, ...(mrpack?.files ?? [])].filter((file) => !replacedByLauncher(file.path));
   const total = files.length;
 
   const managedFilesPath = path.join(instanceDir, ".bweeep", "managed-files.json");
@@ -136,6 +136,16 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink, 
 
   progress({ kind: "done", stage: STAGE, message: `완료 · 새로 ${downloaded}개`, completed: total, total, unit: "files" });
   return { manifest, instanceDir, downloaded, skipped };
+}
+
+/**
+ * Pack files the launcher leaves out because it does their job itself. Crash
+ * Assistant takes the game closing when the player leaves the server for a
+ * crash and opens its crash window; the launcher already reports real crashes.
+ * A copy installed earlier is removed as an obsolete managed file.
+ */
+export function replacedByLauncher(filePath: string): boolean {
+  return /^mods\/CrashAssistant-[^/]*\.jar$/i.test(filePath);
 }
 
 /** Fails before downloading anything when the disk cannot hold the missing files. */

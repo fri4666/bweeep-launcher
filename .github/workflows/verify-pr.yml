@@ -59,6 +59,11 @@ jobs:
           java-version: '25'
       - run: bash gradlew --no-daemon build
         working-directory: fabric-connection-lock-263
+      - name: 연결 보호 에이전트 검사, 런처에 든 jar와 같은지 확인
+        working-directory: java-agent
+        run: |
+          bash gradlew --no-daemon build
+          cmp build/libs/bweeep-guard-*.jar ../resources/java-agent/bweeep-guard-*.jar
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.5.3

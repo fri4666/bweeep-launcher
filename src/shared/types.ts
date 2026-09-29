@@ -60,6 +60,8 @@ export interface ModpackManifest {
   gameAuth?: "offline" | "yggdrasil";
   /** Modrinth project ids players may not add as personal mods on this server. */
   blockedModrinthProjects?: string[];
+  /** Java heap the pack needs, in MB; without it the launcher estimates one from the loader and mods. */
+  recommendedMemoryMb?: number;
   /** A pinned Modrinth .mrpack whose indexed files and overrides are installed safely. */
   mrpack?: MrpackSource;
   files: PackFile[];
@@ -80,6 +82,8 @@ export interface ServerPreset {
   environment: "production" | "test";
   gameAuth: "offline" | "yggdrasil";
   blockedModrinthProjects: string[];
+  /** The manifest's recommendedMemoryMb, or the launcher's estimate. */
+  recommendedMemoryMb: number;
 }
 
 export interface ServerStatus {
@@ -88,6 +92,9 @@ export interface ServerStatus {
   port: number;
   latencyMs?: number;
   message: string;
+  /** From the Minecraft status ping; missing when only a TCP connection answered. */
+  players?: { online: number; max: number };
+  version?: string;
 }
 
 export interface ServerConnection {
@@ -138,6 +145,9 @@ export interface LoginCancellationResult {
   message: string;
 }
 
+/** Why launcher-access cannot be reached: the service itself, or this PC's connection. */
+export type AuthOutage = "auth" | "network";
+
 export interface AccessStatus {
   loggedIn: boolean;
   allowed: boolean;
@@ -146,6 +156,8 @@ export interface AccessStatus {
   reason: string;
   user?: LauncherUser;
   unavailable?: boolean;
+  /** Set when launcher-access could not be reached and this is the last access seen on this PC. */
+  outage?: AuthOutage;
 }
 
 export interface InviteResult {
@@ -268,15 +280,31 @@ export interface UserContentStatus {
   skippedMods: Array<{ name: string; reason: string }>;
 }
 
+/** What moving the install location would carry over; `problem` says why it cannot. */
+export interface InstallMoveCheck {
+  /** Launcher folders (instances and personal content) found at the current location. */
+  entries: number;
+  bytes: number;
+  problem?: string;
+}
+
+/** available is false while the launcher has no Discord application id. */
+export interface DiscordPresenceSetting {
+  available: boolean;
+  enabled: boolean;
+}
+
 export type UserContentKind = "mods" | "shaderpacks";
 
-/** A member as the admin tester list shows it. Admins are always testers. */
+/** A member as the admin tab lists them. Admins are always testers. */
 export interface MemberSummary {
   userId: string;
   name: string;
   gameName: string | null;
   role: "admin" | "member";
   tester: boolean;
+  /** Last launch or server join; missing from servers before 0.1.37. */
+  lastPlayedAt?: string | null;
 }
 
 /** The server whose loader and Minecraft version personal mods must match. */
@@ -315,6 +343,14 @@ export interface PersonalMod {
   explicit: boolean;
   /** Newer version for this server's loader and Minecraft version, if any. */
   update?: string;
+  /**
+   * Set when the mod was installed for the server's previous loader or
+   * Minecraft version ("Fabric 1.21.4"). It stays out of the game until it is
+   * fetched again for the current one.
+   */
+  previousTarget?: string;
+  /** Why it cannot be fetched for this server, e.g. "맞는 버전 없음". */
+  unavailable?: string;
 }
 
 /** "default" is the classic 4px arm (Steve); "slim" the 3px arm (Alex). */

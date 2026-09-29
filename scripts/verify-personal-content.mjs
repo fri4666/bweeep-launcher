@@ -70,11 +70,11 @@ try {
   assert.equal(bundledFeatureMods("/resources", { ...manifest, gameAuth: "yggdrasil", clientFeatures: { connectionLock: true } }).length, 0);
   assert.equal(connectionGuardEnabled(manifest), true);
   assert.equal(connectionGuardEnabled({ ...manifest, clientFeatures: { connectionLock: false } }), false);
-  assert.deepEqual(connectionGuardJvmArgs("/agent.jar", manifest), ["-javaagent:/agent.jar", "-Dbweeep.targetServer=example.test:25565"]);
-  const guardJar = await fs.readFile(new URL("../resources/java-agent/bweeep-guard-1.0.0.jar", import.meta.url));
+  assert.deepEqual(connectionGuardJvmArgs("/agent.jar", manifest), ["-javaagent:/agent.jar", "-Dbweeep.targetServer=example.test:25565", "-Dbweeep.exitOnLeave=true"]);
+  const guardJar = await fs.readFile(new URL("../resources/java-agent/bweeep-guard-1.1.0.jar", import.meta.url));
   assert.equal(
     crypto.createHash("sha256").update(guardJar).digest("hex"),
-    "0a4ac28a5353ddcff5e4b23b21ccadc69ff2dff3da6fc55dde1e317732c115bb"
+    "57a2d566a946b86738d884c783795455ca52d5f9021c351adfe65341c30b55af"
   );
   const lockContents = Buffer.from("test remote bridge");
   const lockHash = crypto.createHash("sha256").update(lockContents).digest("hex");

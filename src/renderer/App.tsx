@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   AccessStatus,
@@ -8,11 +8,8 @@ import type {
   LauncherUpdateStatus,
   LauncherUser,
   LoaderKind,
-  MemberSummary,
-  ServerConnection,
   ServerPreset,
   ServerSoftwareKind,
-  ServerStatus,
   SyncProgress,
   UserContentFolders,
   UserContentKind,
@@ -20,8 +17,16 @@ import type {
 } from "../shared/types.js";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
+import { AdminPanel } from "./AdminPanel.js";
+import { AuthFailureLine, DiagnosticsButton } from "./AuthFailureNotice.js";
 import { ModsPanel } from "./ModsPanel.js";
+import { InstallMoveDialog } from "./InstallMoveDialog.js";
+import { DiscordPresencePanel } from "./DiscordPresencePanel.js";
 import { PatchNotesPanel, ReleaseMeta, ReleaseNoteSections, releaseTitle } from "./PatchNotesPanel.js";
+import { ServerOffIcon, ServerSwitcher, serverState as describeServerState } from "./ServerSwitcher.js";
+import { MemoryPanel, savedMemoryMb } from "./MemoryPanel.js";
+import { useOfflineLaunchConsent, useServerStatuses } from "./useServerStatuses.js";
+import { authOutageFromMessage, authOutageMessages } from "../shared/auth-outage.js";
 
 // The 3D skin preview brings in three.js, so it loads when the skin tab first opens.
 const SkinPanel = lazy(() => import("./SkinPanel.js").then((module) => ({ default: module.SkinPanel })));
@@ -33,7 +38,8 @@ const adminInviteSizes = [1, 5, 10, 20];
 
 type LogEntry = SyncProgress & { at: number };
 type CatalogState = "loading" | "ready" | "error";
-type DockError = { title: string; message: string; retryWithoutPersonalMods?: boolean };
+/** `outage`: the auth server is down, so there is nowhere to send diagnostics. */
+type DockError = { title: string; message: string; retryWithoutPersonalMods?: boolean; crash?: boolean; authFailure?: string; outage?: boolean };
 type ConfirmRequest = {
   title: string;
   body: string;
@@ -66,7 +72,8 @@ function crashError(status: GameStatus): DockError {
     message: status.retryWithoutPersonalMods
       ? `${status.exitMessage ?? "실행 중 오류"} · 개인 모드 때문일 수 있어요`
       : status.exitMessage ?? "실행 중 오류",
-    retryWithoutPersonalMods: Boolean(status.retryWithoutPersonalMods)
+    retryWithoutPersonalMods: Boolean(status.retryWithoutPersonalMods),
+    crash: true
   };
 }
 
@@ -170,9 +177,6 @@ function App() {
   const [catalogState, setCatalogState] = useState<CatalogState>("loading");
   const [catalogError, setCatalogError] = useState("");
   const [selectedId, setSelectedId] = useState<string>("");
-  const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
-  const [serverChecking, setServerChecking] = useState(false);
-  const [serverCheckedAt, setServerCheckedAt] = useState<number | null>(null);
   const [instanceRoot, setInstanceRoot] = useState("");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [syncing, setSyncing] = useState(false);
@@ -200,8 +204,7 @@ function App() {
   const [skinOpen, setSkinOpen] = useState(false);
   const [modsOpen, setModsOpen] = useState(false);
   const [patchNotesOpen, setPatchNotesOpen] = useState(false);
-  const [members, setMembers] = useState<MemberSummary[]>([]);
-  const [testerBusyId, setTesterBusyId] = useState<string | null>(null);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [whatsNew, setWhatsNew] = useState<WhatsNew | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
@@ -212,6 +215,7 @@ function App() {
   const [gameNameInput, setGameNameInput] = useState("");
   const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
   const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
+  const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const createdInviteRef = useRef<HTMLDivElement>(null);
 
   function applyServerList(serverList: ServerPreset[]) {
@@ -221,8 +225,6 @@ function App() {
       ?? serverList.find((server) => server.default)
       ?? serverList[0];
     setSelectedId(initial?.id ?? "");
-    setServerStatus(null);
-    setServerCheckedAt(null);
   }
 
   async function loadCatalog(options: { quiet?: boolean } = {}) {
@@ -269,11 +271,13 @@ function App() {
     const unsubscribeProgress = window.bweeep.onProgress((event: SyncProgress) => {
       setLogs((current) => [...current.slice(-199), { ...event, at: Date.now() }]);
       if (event.stage === "선택 서버 입장") setJoinedServer(true);
-      if (event.stage === "서버 연결 종료" || event.stage === "연결 종료") setJoinedServer(false);
+      if (event.stage === "서버 연결 종료" || event.stage === "서버 연결 끊김" || event.stage === "연결 종료") setJoinedServer(false);
       // Crashes arrive through the game status; progress errors cover install and connection failures.
       if (event.kind === "error" && event.stage !== "게임 종료") {
         setDockError({
-          title: event.stage === "서버 접속 실패" ? "서버에 접속하지 못했어요" : "게임을 시작하지 못했어요",
+          title: event.stage === "서버 접속 실패" ? "서버에 접속하지 못했어요"
+            : event.stage === "서버 연결 끊김" ? "서버와 연결이 끊겼어요"
+            : "게임을 시작하지 못했어요",
           message: event.message
         });
       }
@@ -289,6 +293,10 @@ function App() {
       setGameStatus(status);
       if (status.state === "idle") setJoinedServer(false);
       if (status.exitError && status.exitMessage) setDockError(crashError(status));
+    });
+    // Why the server turned the player away; a crash stays the headline.
+    const unsubscribeAuthFailure = window.bweeep.onAuthFailure((failure) => {
+      setDockError((current) => current?.crash ? current : { title: "서버에 접속하지 못했어요", message: "", authFailure: failure.reason });
     });
     const unsubscribeError = window.bweeep.onAuthError((message) => {
       setLoginPending(false);
@@ -307,6 +315,7 @@ function App() {
       unsubscribeProgress();
       unsubscribeSession();
       unsubscribeGameStatus();
+      unsubscribeAuthFailure();
       unsubscribeError();
       unsubscribeUpdate();
       unsubscribeInvite();
@@ -342,49 +351,18 @@ function App() {
       else if (skinOpen) setSkinOpen(false);
       else if (modsOpen) setModsOpen(false);
       else if (patchNotesOpen) setPatchNotesOpen(false);
+      else if (adminOpen) setAdminOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmRequest, settingsOpen, profileOpen, skinOpen, modsOpen, patchNotesOpen]);
-
-  const refreshServerStatus = useCallback(async (nextConnection: ServerConnection) => {
-    setServerChecking(true);
-    try {
-      setServerStatus(await window.bweeep.serverStatus(nextConnection));
-    } catch {
-      setServerStatus({
-        online: false,
-        host: nextConnection.host,
-        port: nextConnection.port,
-        message: "연결 끊김"
-      });
-    } finally {
-      setServerCheckedAt(Date.now());
-      setServerChecking(false);
-    }
-  }, []);
+  }, [confirmRequest, settingsOpen, profileOpen, skinOpen, modsOpen, patchNotesOpen, adminOpen]);
 
   useEffect(() => {
     if (!settingsOpen || !user) return;
     setSettingsNotice("");
     void loadCatalog({ quiet: true });
     void refreshInvites();
-    if (access?.isAdmin) {
-      window.bweeep.listMembers().then(setMembers).catch((error) => setSettingsNotice(errorMessage(error, "멤버 목록을 불러오지 못했어요.")));
-    }
   }, [settingsOpen]);
-
-  async function toggleTester(member: MemberSummary) {
-    setTesterBusyId(member.userId);
-    setSettingsNotice("");
-    try {
-      setMembers(await window.bweeep.setTester(member.userId, !member.tester));
-    } catch (error) {
-      setSettingsNotice(errorMessage(error, "테스터 지정을 저장하지 못했어요."));
-    } finally {
-      setTesterBusyId(null);
-    }
-  }
 
   useEffect(() => {
     if (createdInvite) createdInviteRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -398,27 +376,8 @@ function App() {
     () => availableServers.find((server) => server.id === selectedId) ?? availableServers[0],
     [availableServers, selectedId]
   );
-  const connection = useMemo<ServerConnection | null>(
-    () => selected ? { host: selected.server.host, port: selected.server.port } : null,
-    [selected?.server.host, selected?.server.port]
-  );
-
-  useEffect(() => {
-    if (!connection) return;
-    let checkInFlight = false;
-    const check = async () => {
-      if (checkInFlight) return;
-      checkInFlight = true;
-      try {
-        await refreshServerStatus(connection);
-      } finally {
-        checkInFlight = false;
-      }
-    };
-    void check();
-    const interval = window.setInterval(() => void check(), 5_000);
-    return () => window.clearInterval(interval);
-  }, [connection, refreshServerStatus]);
+  const serverStatuses = useServerStatuses(availableServers);
+  const offlineLaunchConsent = useOfflineLaunchConsent(serverStatuses.byId);
 
   // After an update, the new version's notes are shown once members reach the main screen.
   useEffect(() => {
@@ -460,13 +419,7 @@ function App() {
     : stripStage(displayProgress?.stage, displayProgress?.message);
   // With the Bweeep login server the UUID belongs to the account, so renaming keeps the character.
   const savedGameName = user?.gameName ?? "";
-  const serverState = catalogState === "error"
-    ? "catalogError"
-    : catalogState === "loading" || !connection
-      ? "loading"
-      : serverStatus
-        ? serverStatus.online ? "online" : "offline"
-        : "checking";
+  const serverState = describeServerState(catalogState, selected, selected ? serverStatuses.byId[selected.id] : undefined);
 
   async function refreshAccessStatus(fallbackUser: LauncherUser | null = user) {
     setAccessChecking(true);
@@ -678,13 +631,16 @@ function App() {
   async function chooseInstanceRoot() {
     try {
       const picked = await window.bweeep.chooseInstanceRoot(instanceRoot);
-      if (!picked) return;
-      setInstanceRoot(picked);
-      writeStorage(instanceRootStorageKey, picked);
-      setActionToast("설치 위치 바뀜");
+      if (picked && picked !== instanceRoot) setMoveTarget(picked);
     } catch (error) {
       setSettingsNotice(errorMessage(error, "설치 위치를 바꾸지 못했습니다."));
     }
+  }
+
+  function switchInstanceRoot(root: string, moved: boolean) {
+    setInstanceRoot(root);
+    writeStorage(instanceRootStorageKey, root);
+    setActionToast(moved ? "설치 위치 옮김" : "설치 위치 바뀜");
   }
 
   async function openInstanceRoot() {
@@ -743,6 +699,37 @@ function App() {
     setGameStatus((current) => ({ state: current.state, pid: current.pid, startedAt: current.startedAt }));
   }
 
+  /**
+   * While the auth server is down nothing is installed or started: joining
+   * needs it, so the player gets one line instead. An off server is started
+   * only after one confirmation.
+   */
+  async function requestLaunch() {
+    if (!selected || gameBusy || syncing) return;
+    if (access?.outage) {
+      const status = await window.bweeep.accessStatus().catch(() => null);
+      if (status) setAccess(status);
+      if (!status || status.outage) {
+        setDockError({ title: authOutageMessages[status?.outage ?? access.outage], message: "", outage: true });
+        return;
+      }
+    }
+    if (serverState === "offline" && !offlineLaunchConsent.given(selected.id)) {
+      const serverId = selected.id;
+      setConfirmRequest({
+        title: "서버가 꺼져 있어요",
+        body: "그래도 시작할까요?",
+        confirmLabel: "시작",
+        onConfirm: () => {
+          offlineLaunchConsent.give(serverId);
+          void launchSelected();
+        }
+      });
+      return;
+    }
+    void launchSelected();
+  }
+
   async function launchSelected(options: { withoutPersonalMods?: boolean } = {}) {
     if (!selected || !instanceRoot.trim() || !canUseLauncher || gameBusy) return;
     setSyncing(true);
@@ -750,14 +737,21 @@ function App() {
     setDockError(null);
     setJoinedServer(false);
     try {
-      await window.bweeep.launchGame({ packId: selected.packId, instanceDir: instanceRoot.trim(), withoutPersonalMods: options.withoutPersonalMods });
+      await window.bweeep.launchGame({
+        packId: selected.packId,
+        instanceDir: instanceRoot.trim(),
+        withoutPersonalMods: options.withoutPersonalMods,
+        memoryMb: savedMemoryMb(selected.packId)
+      });
       const currentStatus = await window.bweeep.gameStatus();
       setGameStatus(currentStatus);
       if (currentStatus.state === "idle" && currentStatus.exitError) setDockError(crashError(currentStatus));
     } catch (error) {
       const message = errorMessage(error, "게임을 시작하지 못했습니다.");
       setLogs((current) => [...current, { kind: "error", message, at: Date.now() }]);
-      setDockError((current) => current ?? { title: "게임을 시작하지 못했어요", message });
+      setDockError((current) => current ?? (authOutageFromMessage(message)
+        ? { title: message, message: "" }
+        : { title: "게임을 시작하지 못했어요", message }));
     } finally {
       setSyncing(false);
     }
@@ -884,6 +878,12 @@ function App() {
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
             <span>설정</span>
           </button>
+          {access.isAdmin && (
+            <button className="sideAction" onClick={() => setAdminOpen(true)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z" /><path d="M9 12l2 2 4-4" /></svg>
+              <span>관리</span>
+            </button>
+          )}
         </nav>
         <div className="supportPanel">
           <span className="accessStamp">멤버 전용</span>
@@ -894,30 +894,15 @@ function App() {
 
       <section className="content">
         <header className="topbar">
-          <div className={`serverPill is-${serverState}`}>
-            <span className="statusDot" />
-            <div>
-              <strong>{serverStateLabel(serverState)}</strong>
-              <small>
-                {serverState === "online" && serverCheckedAt
-                  ? `${serverStatus?.latencyMs ?? "-"}ms · ${formatRelativeTime(serverCheckedAt, clockNow)} 확인`
-                  : serverState === "offline"
-                    ? "연결 안 됨"
-                    : serverState === "catalogError"
-                      ? "목록을 못 받았어요"
-                      : "잠시만요"}
-              </small>
-            </div>
-            {(serverState === "offline" || serverState === "catalogError") && (
-              <button
-                className="pillAction"
-                disabled={serverChecking}
-                onClick={() => serverState === "catalogError" ? void loadCatalog() : connection && void refreshServerStatus(connection)}
-              >
-                {serverChecking ? "확인 중" : "다시 확인"}
-              </button>
-            )}
-          </div>
+          <ServerSwitcher
+            servers={availableServers}
+            selected={selected}
+            statuses={serverStatuses}
+            catalogState={catalogState}
+            locked={gameBusy || syncing}
+            onSelect={selectServer}
+            onReloadCatalog={() => void loadCatalog()}
+          />
           <UpdateIndicator status={launcherUpdate} />
           <div className="topbarActions">
             <button className="profileBox" onClick={() => setProfileOpen(true)}>
@@ -964,19 +949,20 @@ function App() {
               <div className="dockError" role="alert">
                 <div>
                   <strong>{dockError.title}</strong>
-                  <p>{dockError.message}</p>
+                  {dockError.authFailure ? <AuthFailureLine reason={dockError.authFailure} /> : dockError.message && <p>{dockError.message}</p>}
+                  {!dockError.outage && <DiagnosticsButton key={`${dockError.title}|${dockError.message}|${dockError.authFailure ?? ""}`} />}
                 </div>
                 <div className="dockErrorActions">
                   {dockError.retryWithoutPersonalMods && (
                     <button className="secondaryButton" onClick={() => void launchSelected({ withoutPersonalMods: true })}>개인 모드 빼고 시작</button>
                   )}
-                  <button className="secondaryButton" onClick={() => void window.bweeep.openLog("game")}>로그 열기</button>
+                  {dockError.message && <button className="secondaryButton" onClick={() => void window.bweeep.openLog("game")}>로그 열기</button>}
                   <button className="iconOnly" aria-label="오류 닫기" onClick={dismissDockError}>×</button>
                 </div>
               </div>
             )}
-            {!dockError && !gameBusy && !syncing && serverState === "offline" && (
-              <p className="dockHint">서버 응답 없음 · 접속이 안 될 수 있어요</p>
+            {!dockError && !gameBusy && !syncing && access.outage && (
+              <p className="dockHint">{access.outage === "auth" ? "인증 서버 점검 중" : "인터넷 연결 끊김"}</p>
             )}
             {showLaunchProgress && (
               <div className={`launchProgress${gameRunning && joinedServer ? " isPlaying" : ""}`} role="status">
@@ -989,8 +975,8 @@ function App() {
               </div>
             )}
             <div className="launchRow">
-              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={showLaunchProgress} onClick={() => void launchSelected()}>
-                {gameRunning ? "게임 실행 중" : showLaunchProgress ? <><Spinner />게임 시작 중</> : "게임 시작"}
+              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={showLaunchProgress} onClick={() => void requestLaunch()}>
+                {gameRunning ? "게임 실행 중" : showLaunchProgress ? <><Spinner />게임 시작 중</> : serverState === "offline" ? <><ServerOffIcon />게임 시작</> : "게임 시작"}
               </button>
               {gameRunning && gameStatus.pid && (
                 <button className="stopButton" onClick={requestStopGame}>게임 종료</button>
@@ -1047,6 +1033,8 @@ function App() {
                 </div>
               </article>
 
+              <MemoryPanel servers={availableServers} />
+
               <article className="panel">
                 <div className="panelHeader">
                   <h3>설치 위치</h3>
@@ -1058,6 +1046,8 @@ function App() {
                   <button className="secondaryButton" onClick={() => void openInstanceRoot()}>폴더 열기</button>
                 </div>
               </article>
+
+              <DiscordPresencePanel />
 
               <article className="panel">
                 <div className="panelHeader">
@@ -1115,34 +1105,6 @@ function App() {
                   </div>
                 )}
               </article>
-
-              {access.isAdmin && (
-                <article className="panel">
-                  <div className="panelHeader">
-                    <h3>테스터</h3>
-                    <span>테스터는 테섭에 들어갈 수 있고, 런처 새 버전을 먼저 받아요.</span>
-                  </div>
-                  <div className="memberList">
-                    {members.length === 0 && <p className="emptyText">불러오는 중…</p>}
-                    {members.map((member) => (
-                      <div className="memberItem" key={member.userId}>
-                        <span>
-                          {member.name}
-                          {member.gameName ? ` · ${member.gameName}` : ""}
-                          {member.role === "admin" ? " · 관리자(항상 테스터)" : ""}
-                        </span>
-                        {member.role === "admin" ? (
-                          <span className="mutedText">테스터</span>
-                        ) : (
-                          <button className={member.tester ? "secondaryButton" : "textButton"} disabled={testerBusyId !== null} onClick={() => void toggleTester(member)}>
-                            {testerBusyId === member.userId ? "저장 중…" : member.tester ? "테스터 해제" : "테스터로 지정"}
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </article>
-              )}
 
               <section className="panel logPanel">
                 <div className="panelHeader">
@@ -1267,6 +1229,11 @@ function App() {
 
       {patchNotesOpen && <PatchNotesPanel onClose={() => setPatchNotesOpen(false)} />}
 
+      {moveTarget && (
+        <InstallMoveDialog from={instanceRoot} to={moveTarget} onSwitch={switchInstanceRoot} onClose={() => setMoveTarget(null)} />
+      )}
+      {adminOpen && access.isAdmin && <AdminPanel selfId={user.id} onClose={() => setAdminOpen(false)} confirm={setConfirmRequest} />}
+
       {whatsNew && !confirmRequest && <WhatsNewDialog whatsNew={whatsNew} onClose={closeWhatsNew} />}
       {confirmDialog}
     </main>
@@ -1300,16 +1267,6 @@ function loaderLabel(kind: LoaderKind | ServerSoftwareKind): string {
 function serverKindLabel(server: ServerPreset): string {
   const kind = server.serverLoader?.kind ?? server.loader.kind;
   return kind === "vanilla" ? "바닐라 서버" : `${loaderLabel(kind)} 서버`;
-}
-
-function serverStateLabel(state: string): string {
-  switch (state) {
-    case "online": return "서버 온라인";
-    case "offline": return "서버 응답 없음";
-    case "catalogError": return "서버 목록 오류";
-    case "loading": return "서버 불러오는 중";
-    default: return "서버 확인 중";
-  }
 }
 
 /**
@@ -1375,16 +1332,6 @@ function formatDate(value: string): string {
 
 function formatLogLine(entry: LogEntry): string {
   return [formatClock(entry.at), entry.stage, stripStage(entry.stage, entry.message)].filter(Boolean).join("  ");
-}
-
-function formatRelativeTime(timestamp: number, now = Date.now()): string {
-  const seconds = Math.max(0, Math.floor((now - timestamp) / 1_000));
-  if (seconds < 60) return "방금 전";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}분 전`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}시간 전`;
-  return `${Math.floor(hours / 24)}일 전`;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

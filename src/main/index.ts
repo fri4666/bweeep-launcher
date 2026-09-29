@@ -19,11 +19,18 @@ import { isReleasePageUrl } from "./release-notes.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
-import { findBlockedJars, installMod, listPersonalMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
+import { findBlockedJars, installMod, listPersonalMods, refetchPreviousMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
 import { bundledFeatureMods } from "./client-feature-mods.js";
 import { connectionGuardEnabled, connectionGuardJvmArgs, ensureConnectionGuard } from "./connection-guard.js";
 import { markWhatsNewSeen, pendingWhatsNew } from "./whats-new.js";
 import { findDefaultSkins, SkinLibrary } from "./skins.js";
+import { net as electronNet } from "electron";
+import os from "node:os";
+import { OfflineAccess } from "./offline-access.js";
+import { recommendedMemoryMb, resolveGameMemory } from "../shared/game-memory.js";
+import { installMoveInProgress, registerInstallMove } from "./install-move-ipc.js";
+import { discordGameStarted, discordGameStopped, registerDiscordPresence } from "./discord-presence-ipc.js";
+import { registerAdminIpc } from "./admin-ipc.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let sessionUser: LauncherUser | null = null;
@@ -61,6 +68,7 @@ function focusMainWindow(): void {
 function setGameStatus(status: GameStatus): void {
   gameStatus = status;
   broadcast("game:status", status);
+  if (status.state === "idle") discordGameStopped();
   if (status.state === "idle") installPendingLauncherUpdate();
 }
 
@@ -89,10 +97,17 @@ function requireInstanceRoot(value: unknown): string {
 // Server presets from the last catalog load. Mod requests take the loader,
 // version and blocked mods from here, never from the renderer.
 const catalogPresets = new Map<string, ServerPreset>();
+// The last server list and access, used while launcher-access is down.
+const offlineAccess = new OfflineAccess(path.join(app.getPath("userData"), "offline-snapshot.json"), {
+  savedUserId: () => auth.savedUserId(),
+  gameServers: () => [...catalogPresets.values()].map((preset) => preset.server),
+  systemOnline: () => electronNet.isOnline()
+});
 
 async function loadCatalog(): Promise<ServerPreset[]> {
-  if (!sessionUser) return [];
-  const presets = presetsFromManifests(await auth.listManifests(sessionUser), (manifest, reason) => {
+  const user = sessionUser;
+  if (!user) return [];
+  const presets = presetsFromManifests(await offlineAccess.listManifests(user, () => auth.listManifests(user)), (manifest, reason) => {
     const id = manifest && typeof manifest === "object" && "id" in manifest ? String(manifest.id) : null;
     void writeGameLog("catalog.manifest.skipped", { packId: id, reason });
   });
@@ -103,10 +118,20 @@ async function loadCatalog(): Promise<ServerPreset[]> {
 
 const PACK_ID = /^[a-z0-9][a-z0-9-]{1,62}$/;
 
-function requireLaunchRequest(value: unknown): { packId: string; instanceDir: string; withoutPersonalMods: boolean } {
-  const request = value as { packId?: unknown; instanceDir?: unknown; withoutPersonalMods?: unknown } | null;
+function requireLaunchRequest(value: unknown): { packId: string; instanceDir: string; withoutPersonalMods: boolean; memoryMb: number | null } {
+  const request = value as { packId?: unknown; instanceDir?: unknown; withoutPersonalMods?: unknown; memoryMb?: unknown } | null;
   if (typeof request?.packId !== "string" || !PACK_ID.test(request.packId)) throw new Error("서버 정보가 올바르지 않습니다.");
-  return { packId: request.packId, instanceDir: requireInstanceRoot(request.instanceDir), withoutPersonalMods: request.withoutPersonalMods === true };
+  return {
+    packId: request.packId,
+    instanceDir: requireInstanceRoot(request.instanceDir),
+    withoutPersonalMods: request.withoutPersonalMods === true,
+    // resolveGameMemory snaps any number to a step this PC offers; anything else means automatic.
+    memoryMb: typeof request.memoryMb === "number" && Number.isFinite(request.memoryMb) ? request.memoryMb : null
+  };
+}
+
+function totalMemoryMb(): number {
+  return Math.floor(os.totalmem() / 1048576);
 }
 
 async function requireModTarget(value: unknown): Promise<ModTarget> {
@@ -378,12 +403,16 @@ app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   await session.defaultSession.setProxy({ mode: "system" });
   setModrinthUserAgent(app.getVersion());
+  const gameSession = registerAdminIpc({ auth, user: () => sessionUser, lastGameLogFile: () => lastGameLogFile, broadcast });
   ipcMain.handle("catalog:list", () => loadCatalog());
   ipcMain.handle("server:status", (_event, server: unknown) => {
     if (!isCatalogServer(server, [...catalogPresets.values()].map((preset) => preset.server))) throw new Error("서버 목록에 없는 주소입니다.");
     return checkServer({ host: server.host, port: server.port });
   });
+  ipcMain.handle("system:memory", () => ({ totalMb: totalMemoryMb() }));
   ipcMain.handle("paths:defaultInstanceRoot", () => defaultInstanceRoot());
+  registerInstallMove(() => gameStatus.state !== "idle");
+  registerDiscordPresence();
   ipcMain.handle("content:folders", (_event, instanceRoot: unknown) => getUserContentFolders(requireInstanceRoot(instanceRoot)));
   ipcMain.handle("content:chooseFolders", async (event, instanceRoot: unknown, kind: unknown) => {
     const root = requireInstanceRoot(instanceRoot);
@@ -418,6 +447,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("account:cancelLogin", () => auth.cancelPendingLogin("user_cancelled"));
   ipcMain.handle("account:logout", async () => {
     await auth.signOut();
+    await offlineAccess.clear();
     sessionUser = null;
     setTesterAudience(false);
     return { loggedIn: false, allowed: false, isAdmin: false, reason: "런처 계정에서 로그아웃했습니다." };
@@ -427,10 +457,13 @@ app.whenReady().then(async () => {
       const status = await auth.getAccessStatus(sessionUser);
       if (!status.loggedIn) sessionUser = null;
       setTesterAudience(status.loggedIn && status.allowed && status.testAllowed === true);
+      void offlineAccess.rememberAccess(status);
       return status;
     } catch (error) {
       // An unreachable server says nothing new about who is signed in, so the update channel stays as it is.
       if (!sessionUser) throw error;
+      const lastKnown = await offlineAccess.accessDuringOutage(sessionUser, error);
+      if (lastKnown) return lastKnown;
       return {
         loggedIn: true,
         allowed: false,
@@ -479,6 +512,11 @@ app.whenReady().then(async () => {
   ipcMain.handle("mods:install", async (_event, target: unknown, projectId: unknown) => installMod(await requireModTarget(target), String(projectId)));
   ipcMain.handle("mods:update", async (_event, target: unknown, projectId: unknown) => updateMod(await requireModTarget(target), String(projectId)));
   ipcMain.handle("mods:remove", async (_event, target: unknown, projectId: unknown) => removeMod(await requireModTarget(target), String(projectId)));
+  ipcMain.handle("mods:refetch", async (_event, target: unknown) => {
+    const modTarget = await requireModTarget(target);
+    const others = [...catalogPresets.values()].filter((preset) => preset.packId !== modTarget.packId);
+    return refetchPreviousMods(modTarget, others.map((preset) => ({ loader: preset.loader.kind, minecraftVersion: preset.minecraftVersion })));
+  });
   ipcMain.handle("skin:state", (_event, instanceRoot: unknown) => skinState(optionalInstanceRoot(instanceRoot)));
   ipcMain.handle("skin:add", async (event, instanceRoot: unknown) => {
     const owner = BrowserWindow.fromWebContents(event.sender);
@@ -559,12 +597,14 @@ app.whenReady().then(async () => {
     if (gameStatus.state !== "idle") {
       throw new Error("Minecraft가 이미 시작 중이거나 실행 중입니다.");
     }
+    if (installMoveInProgress()) throw new Error("설치 위치를 옮기는 중이에요.");
     const runId = ++gameRunId;
     const startedAt = Date.now();
     lastGameLogFile = null;
     setGameStatus({ state: "starting", startedAt });
     const progress = (payload: SyncProgress) => {
       if (!event.sender.isDestroyed()) event.sender.send("modpack:progress", payload);
+      gameSession.observe(payload);
       void writeGameLog("launch.progress", {
         kind: payload.kind,
         stage: payload.stage ?? null,
@@ -580,7 +620,9 @@ app.whenReady().then(async () => {
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
       progress({ kind: "info", stage: "서버 목록", message: "받는 중" });
-      const manifest = await auth.getManifest(sessionUser, request.packId);
+      const manifest = await auth.getManifest(sessionUser, request.packId).catch(async (error: unknown) => {
+        throw await offlineAccess.launchError(error);
+      });
       assertManifest(manifest);
       if (manifest.id !== request.packId) throw new Error("선택한 서버와 받은 모드팩 정보가 일치하지 않습니다.");
       requireBweeepAccounts(manifest);
@@ -613,11 +655,19 @@ app.whenReady().then(async () => {
       const getLaunchAuthorization = async (): Promise<LaunchAuthorization> => {
         await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
         const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
+        gameSession.started(identity.accessToken, startedAt);
         const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
         await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
         return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
       };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
+      // The recommendation shown in settings (from the server list) is the one used here.
+      const memory = resolveGameMemory({
+        recommendedMb: catalogPresets.get(request.packId)?.recommendedMemoryMb ?? recommendedMemoryMb(manifest),
+        totalMb: totalMemoryMb(),
+        requestedMb: request.memoryMb
+      });
+      await writeGameLog("launch.memory", { ...memory, totalMb: totalMemoryMb() });
       // The Minecraft installer libraries are a large module graph, so they load on the first launch, not at startup.
       const { installAndLaunch } = await import("./minecraft-runtime.js");
       const launched = await installAndLaunch(manifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
@@ -627,6 +677,7 @@ app.whenReady().then(async () => {
           ? { kind: "info", stage: "게임 종료", message: "직접 끔" }
           : { kind: exit.abnormal ? "error" : "info", stage: "게임 종료", message: exit.message });
         if (gameRunId === runId) {
+          gameSession.exited();
           setGameStatus(exit.abnormal && !stoppedByPlayer
             ? {
                 state: "idle",
@@ -649,16 +700,20 @@ app.whenReady().then(async () => {
           abnormal: exit.abnormal,
           crashReportLocation: exit.crashReportLocation
         });
-      }, guardArgs);
+      }, guardArgs, memory);
       if (gameRunId === runId && gameIsStarting()) {
         setGameStatus({ state: "running", pid: launched.pid, startedAt });
+        discordGameStarted(manifest.name, startedAt);
         await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
       } else {
         await writeGameLog("launch.exited-before-return", { packId: request.packId, version: launched.version });
       }
       return { ...launched, instanceDir: synced.instanceDir };
     } catch (error) {
-      if (gameRunId === runId) setGameStatus({ state: "idle" });
+      if (gameRunId === runId) {
+        gameSession.stop();
+        setGameStatus({ state: "idle" });
+      }
       const details = gameErrorDetails(error);
       await writeGameLog("launch.failed", details);
       throw new Error(details.message);
@@ -667,7 +722,7 @@ app.whenReady().then(async () => {
 
   void (async () => {
     try {
-      sessionUser = await auth.restoreUser();
+      sessionUser = await offlineAccess.restoreUser(() => auth.restoreUser());
     } catch {
       // The renderer will show its normal signed-out state when a persisted session cannot be restored.
     }

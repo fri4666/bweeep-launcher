@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.bweeep"
-version = "1.0.0"
+version = "1.1.0"
 
 repositories {
     mavenCentral()
@@ -25,6 +25,7 @@ tasks.withType(JavaCompile).configureEach {
 shadowJar {
     archiveBaseName = "bweeep-guard"
     // The launcher pins the jar's hash, so a rebuild must give the same bytes.
+    // javac output differs a little between JDKs; the shipped jar is built with JDK 25, as in CI.
     preserveFileTimestamps = false
     reproducibleFileOrder = true
     archiveClassifier = ""
@@ -43,10 +44,18 @@ shadowJar {
 tasks.named("jar") { enabled = false }
 tasks.named("assemble") { dependsOn shadowJar }
 
-// A plain-Java check against a real Netty Bootstrap, run with the built agent.
-tasks.register("verifyAgent", JavaExec) {
-    dependsOn shadowJar, testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = "com.bweeep.guard.AgentCheck"
-    jvmArgs = ["-javaagent:${tasks.shadowJar.archiveFile.get().asFile}", "-Dbweeep.targetServer=127.0.0.1:25599"]
+// Plain-Java checks against a real Netty Bootstrap, run with the built agent.
+def agentCheck = { String name, String main, List<String> properties ->
+    tasks.register(name, JavaExec) {
+        dependsOn shadowJar, testClasses
+        classpath = sourceSets.test.runtimeClasspath
+        mainClass = main
+        jvmArgs = ["-javaagent:${tasks.shadowJar.archiveFile.get().asFile}"] + properties
+    }
 }
+agentCheck("verifyAgent", "com.bweeep.guard.AgentCheck", ["-Dbweeep.targetServer=127.0.0.1:25599"])
+agentCheck("verifyLeave", "com.bweeep.guard.LeaveCheck", ["-Dbweeep.targetServer=127.0.0.1:25598"])
+agentCheck("verifyExitOnLeave", "com.bweeep.guard.ExitCheck", ["-Dbweeep.targetServer=127.0.0.1:25597", "-Dbweeep.exitOnLeave=true"])
+// The checks are plain mains, not JUnit tests; `gradlew build` runs them through check.
+tasks.named("test") { failOnNoDiscoveredTests = false }
+tasks.named("check") { dependsOn "verifyAgent", "verifyLeave", "verifyExitOnLeave" }
