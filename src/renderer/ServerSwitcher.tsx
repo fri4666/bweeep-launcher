@@ -3,18 +3,27 @@ import type { ServerPreset, ServerStatus } from "../shared/types.js";
 import type { ServerStatuses } from "./useServerStatuses.js";
 import "./play.css";
 
-export type ServerState = "catalogError" | "loading" | "checking" | "online" | "offline";
+export type ServerState = "catalogError" | "loading" | "checking" | "online" | "sleeping" | "starting" | "offline";
 
 export function serverState(catalogState: "loading" | "ready" | "error", server: ServerPreset | undefined, status: ServerStatus | undefined): ServerState {
   if (catalogState === "error") return "catalogError";
   if (catalogState === "loading" || !server) return "loading";
   if (!status) return "checking";
-  return status.online ? "online" : "offline";
+  return statusState(status);
 }
+
+function statusState(status: ServerStatus): "online" | "sleeping" | "starting" | "offline" {
+  if (!status.online) return "offline";
+  return status.sleep ?? "online";
+}
+
+// A sleeping server starts by itself when someone presses Play.
+const SLEEP_TEXT = { sleeping: "쉬는 중", starting: "켜는 중" } as const;
 
 function playerCount(status: ServerStatus | undefined): string {
   if (!status) return "";
   if (!status.online) return "꺼짐";
+  if (status.sleep) return SLEEP_TEXT[status.sleep];
   return status.players ? `${status.players.online}/${status.players.max}` : "켜짐";
 }
 
@@ -64,6 +73,7 @@ export function ServerSwitcher({ servers, selected, statuses, catalogState, lock
   const title = state === "catalogError" ? "서버 목록 오류" : state === "loading" ? "서버 불러오는 중" : selected?.name ?? "";
   const detail = state === "online" && status
     ? [status.players ? `${status.players.online}/${status.players.max}명` : null, `${status.latencyMs ?? "-"}ms`].filter(Boolean).join(" · ")
+    : state === "sleeping" || state === "starting" ? SLEEP_TEXT[state]
     : state === "offline" ? "꺼짐"
     : state === "checking" ? "확인 중"
     : state === "catalogError" ? "목록을 못 받았어요"
@@ -112,7 +122,7 @@ export function ServerSwitcher({ servers, selected, statuses, catalogState, lock
                 type="button"
                 role="option"
                 aria-selected={server.id === selected?.id}
-                className={`serverMenuItem is-${itemStatus ? itemStatus.online ? "online" : "offline" : "checking"}`}
+                className={`serverMenuItem is-${itemStatus ? statusState(itemStatus) : "checking"}`}
                 onClick={() => {
                   onSelect(server.id);
                   setOpen(false);

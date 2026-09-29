@@ -467,6 +467,12 @@ h3 {
   box-shadow: 0 0 0 4px rgba(238, 138, 128, 0.16);
 }
 
+.is-sleeping .statusDot {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(217, 176, 114, 0.16);
+}
+
+.is-starting .statusDot,
 .is-checking .statusDot,
 .is-loading .statusDot {
   background: var(--accent);

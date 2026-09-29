@@ -818,6 +818,7 @@ function manualSteps({ unit, status, realSystemd, unitChanged }) {
   }
   todo(`접속 확인: journalctl --user -u ${args.unit}.service -f 에서 "authlib-injector" 와 "Done" 로그를 확인하고, 런처로 접속`);
   if (!args.manifest) todo(`카탈로그: manifest 를 resources/manifests/ 에 두고 node scripts/publish-manifest.mjs <file> → --activate`);
+  todo(`빈 서버 재우기: node scripts/gate-server.mjs --dir ${args.dir} --unit ${args.unit} --apply (서버가 한 번 켜진 뒤, 접속자 없을 때)`);
   if (step === 0) info("할 일이 없습니다.");
 }
 

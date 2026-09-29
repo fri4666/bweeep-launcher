@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { presetsFromManifests, requireBweeepAccounts } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
-import { checkServer } from "./server-status.js";
+import { checkServer, wakeServer } from "./server-status.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
 import type { LaunchAuthorization } from "./minecraft-runtime.js";
 import { authlibInjectorJvmArgs, ensureAuthlibInjector } from "./authlib-injector.js";
@@ -617,6 +617,12 @@ app.whenReady().then(async () => {
       });
     };
     await writeGameLog("launch.started", { packId: request.packId });
+    const selectedServer = catalogPresets.get(request.packId)?.server;
+    if (selectedServer) {
+      void wakeServer(selectedServer).then((status) => {
+        if (status.sleep) void writeGameLog("launch.server.wake", { state: status.sleep });
+      });
+    }
     try {
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
       progress({ kind: "info", stage: "서버 목록", message: "받는 중" });
