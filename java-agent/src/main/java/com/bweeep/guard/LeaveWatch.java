@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 final class LeaveWatch {
     // Players notice anything longer: the game used to close as soon as they left.
-    static final long GRACE_MS = 300L;
+    static final long GRACE_MS = 100L;
     private static final long HALT_AFTER_MS = 2_000L;
 
     /** Connections to the selected server being opened or open. */
