@@ -73,6 +73,15 @@ const kicked = leaveEvents([
   ""
 ].join("\n"));
 assert.deepEqual(kicked, [{ kind: "error", stage: "서버 연결 끊김", message: "서버가 닫혔습니다" }]);
+// Vanilla's launcher logging config prints XML to the console.
+const kickedXml = leaveEvents([
+  `<log4j:Event logger="net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl" timestamp="1790000000000" level="WARN" thread="Render thread">`,
+  `  <log4j:Message><![CDATA[Client disconnected with reason: Bweeep leave check]]></log4j:Message>`,
+  `</log4j:Event>`,
+  `  <log4j:Message><![CDATA[[STDOUT]: BWEEP_EXIT_ON_LEAVE]]></log4j:Message>`,
+  ""
+].join("\n"));
+assert.deepEqual(kickedXml, [{ kind: "error", stage: "서버 연결 끊김", message: "Bweeep leave check" }]);
 const quitByChoice = leaveEvents("BWEEP_TARGET_CONNECTED\nBWEEP_TARGET_DISCONNECTED\nBWEEP_EXIT_ON_LEAVE\n");
 assert.deepEqual(quitByChoice, [{ kind: "info", stage: "서버 연결 종료", message: "게임 끔" }], "leaving by choice shows nothing");
 assert.equal(leaveEvents("Client disconnected with reason: Quitting\nBWEEP_EXIT_ON_LEAVE\n")[0].kind, "info");

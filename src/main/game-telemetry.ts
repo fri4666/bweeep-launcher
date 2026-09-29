@@ -24,8 +24,9 @@ export function createGameOutputObserver(progress: (event: SyncProgress) => void
 }
 
 // Logged when the connection ends from the server's side or the network
-// (kick, shutdown, timeout), in the game's language. Older versions log nothing.
-const DISCONNECT_REASON = /Client disconnected with reason: (.+)$/;
+// (kick, shutdown, timeout), in the game's language, from 1.20.2 on. The
+// console may be log4j XML, where the message ends in "]]></log4j:Message>".
+const DISCONNECT_REASON = /Client disconnected with reason: (.+?)(?:\]\]>.*)?$/;
 // Leaving by choice, in case a version logs it too.
 const QUIT_REASONS = new Set(["quitting", "종료 중", "multiplayer.status.quitting"]);
 
