@@ -171,6 +171,19 @@ try {
   assert.equal(requests.length, 0);
   console.log("modpack-sync-disk-space=passed");
 
+  // 8. Crash Assistant is never installed, and a copy an older launcher put there is removed.
+  const crashAssistant = packFile("CrashAssistant-forge-1.19-1.20.1-1.11.10.jar", crypto.randomBytes(4 * 1024));
+  const crashTarget = path.join(instance, crashAssistant.path);
+  await fsp.writeFile(crashTarget, bodies.get("CrashAssistant-forge-1.19-1.20.1-1.11.10.jar"));
+  const managedPath = path.join(instance, ".bweeep", "managed-files.json");
+  const managed = JSON.parse(await fsp.readFile(managedPath, "utf8"));
+  await fsp.writeFile(managedPath, JSON.stringify([...managed, crashAssistant.path]));
+  requests.length = 0;
+  result = await sync("8", [...files, crashAssistant]);
+  assert.equal(requests.length, 0, "Crash Assistant is not downloaded");
+  assert.equal(await fsp.access(crashTarget).then(() => true, () => false), false, "an installed Crash Assistant is removed");
+  console.log("modpack-sync-skips-crash-assistant=passed");
+
   // --- Pack config overrides --------------------------------------------------
   const archives = path.join(instance, ".bweeep", "mrpack");
   const syncOverrides = async (version, overrides) => {
