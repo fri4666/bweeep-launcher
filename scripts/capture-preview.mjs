@@ -10,9 +10,19 @@ const catalogUnavailable = process.env.BWEEP_PREVIEW_CATALOG_UNAVAILABLE === "tr
 const testChannelDenied = process.env.BWEEP_PREVIEW_TEST_CHANNEL_DENIED === "true";
 const whatsNewMode = process.env.BWEEP_PREVIEW_WHATS_NEW === "true";
 const patchNotesOffline = process.env.BWEEP_PREVIEW_PATCH_NOTES_OFFLINE === "true";
+const serverOffline = process.env.BWEEP_PREVIEW_SERVER_OFFLINE === "true";
+const authOutage = process.env.BWEEP_PREVIEW_AUTH_OUTAGE === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline, previewServerOffline, previewAuthOutage }) => {
+  // A minimized window reports "hidden"; previews switch it with window.__setHidden.
+  window.__hidden = false;
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => window.__hidden ? "hidden" : "visible" });
+  window.__setHidden = (hidden) => {
+    window.__hidden = hidden;
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+  window.__launchRequests = 0;
   const listeners = [];
   const gameStatusListeners = [];
   const updateListeners = [];
@@ -102,7 +112,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
           loader: { kind: "neoforge", version: "21.1.228" },
           serverLoader: { kind: "fabric", version: "0.18.1" },
           gameAuth: "yggdrasil",
-          blockedModrinthProjects: ["zbhsCnsA"]
+          blockedModrinthProjects: ["zbhsCnsA"],
+          recommendedMemoryMb: 6144
         },
         {
           id: "vanilla-survival-test",
@@ -114,10 +125,12 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
           minecraftVersion: "26.3",
           loader: { kind: "fabric", version: "0.19.5" },
           gameAuth: "offline",
-          blockedModrinthProjects: []
+          blockedModrinthProjects: [],
+          recommendedMemoryMb: 3072
         }
       ];
     },
+    systemMemory: async () => ({ totalMb: 16384 }),
     listMembers: async () => members,
     setTester: async (userId, tester) => {
       members = members.map((member) => member.userId === userId ? { ...member, tester } : member);
@@ -170,18 +183,25 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     userContentFolders: async () => ({ mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] }),
     chooseUserContentFolders: async (_root, kind) => ({ folders: kind === "mods" ? { mods: ["D:\\Minecraft\\my-mods", "D:\\Minecraft\\more-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] } : { mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders", "D:\\Minecraft\\more-shaders"] }, selected: 1 }),
     removeUserContentFolder: async (_root, kind, folder) => ({ mods: kind === "mods" ? [] : ["D:\\Minecraft\\my-mods"], shaderpacks: kind === "shaderpacks" ? [] : ["D:\\Minecraft\\my-shaders"] }),
-    serverStatus: async () => {
+    // The test server (25566) is off; the main one too in the server-offline preview.
+    serverStatus: async (server) => {
       window.__serverStatusCalls += 1;
+      if (server.port === 25566 || (previewServerOffline && !window.__serverBackOnline)) {
+        return { online: false, host: server.host, port: server.port, message: "연결 끊김" };
+      }
       return {
         online: true,
-        host: "server.fri4666.com",
-        port: 25565,
+        host: server.host,
+        port: server.port,
         latencyMs: 18,
-        message: "서버 연결 가능"
+        message: "서버 연결 가능",
+        players: { online: 3, max: 20 },
+        version: "1.21.1"
       };
     },
     accessStatus: async () => ({
       loggedIn: previewSignedIn,
+      ...(previewAuthOutage ? { outage: "auth" } : {}),
       allowed: previewSignedIn && !previewAccessUnavailable && (!previewAccessDenied || inviteRedeemed),
       isAdmin: !previewTestChannelDenied,
       testAllowed: !previewTestChannelDenied,
@@ -289,6 +309,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     openReleasePage: async (url) => { window.__openedReleasePage = url; },
     launchGame: async (request) => {
       window.__lastLaunchRequest = request;
+      window.__launchRequests += 1;
       const startedAt = Date.now();
       emitGameStatus({ state: "starting", startedAt });
       if (window.__exitBeforeLaunchResolves) {
@@ -347,7 +368,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewAuthOutage: authOutage });
 
 await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 if (testChannelDenied) {
@@ -401,6 +422,69 @@ if (patchNotesOffline) {
   await browser.close();
   process.exit(errors.length ? 1 : 0);
 }
+if (serverOffline) {
+  const checks = [];
+  await page.locator(".launchButton .launchOffIcon").waitFor({ timeout: 10000 });
+  if (!(await page.locator(".serverPill").innerText()).includes("꺼짐")) throw new Error("the top bar does not say the server is off");
+  await page.screenshot({ path: "previews/bweeep-launcher-server-offline.png" });
+  // Asked once: cancel starts nothing, confirming starts the game, and the next start does not ask again.
+  await page.locator(".launchButton").click();
+  const dialog = page.getByRole("alertdialog", { name: "서버가 꺼져 있어요" });
+  await dialog.waitFor();
+  if (!(await dialog.innerText()).includes("그래도 시작할까요?")) throw new Error("the off-server question is wrong");
+  await page.screenshot({ path: "previews/bweeep-launcher-server-offline-confirm.png" });
+  await dialog.getByRole("button", { name: "취소" }).click();
+  if (await page.evaluate(() => window.__launchRequests) !== 0) throw new Error("cancelling still started the game");
+  await page.locator(".launchButton").click();
+  await dialog.getByRole("button", { name: "시작", exact: true }).click();
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
+  await page.evaluate(() => window.__exitGame());
+  await page.getByRole("button", { name: "게임 시작" }).waitFor();
+  await page.locator(".launchButton").click();
+  await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
+  if (await page.getByRole("alertdialog").count() || await page.evaluate(() => window.__launchRequests) !== 2) throw new Error("the off-server question was asked twice");
+  await page.evaluate(() => window.__exitGame());
+  await page.getByRole("button", { name: "게임 시작" }).waitFor();
+  checks.push("offline-launch-asks-once");
+  // Minimized (hidden): no status checks. Visible again: checked at once.
+  await page.evaluate(() => window.__setHidden(true));
+  const hiddenCalls = await page.evaluate(() => window.__serverStatusCalls);
+  await page.waitForTimeout(10_800);
+  if (await page.evaluate(() => window.__serverStatusCalls) !== hiddenCalls) throw new Error("server status was polled while the window was hidden");
+  await page.evaluate(() => { window.__serverBackOnline = true; window.__setHidden(false); });
+  await page.waitForFunction((count) => window.__serverStatusCalls > count, hiddenCalls, { timeout: 2000 });
+  await page.locator(".launchButton .launchOffIcon").waitFor({ state: "detached" });
+  checks.push("polling-paused-while-hidden");
+  console.log(JSON.stringify({ interactionChecks: checks, errors }));
+  await browser.close();
+  process.exit(errors.length ? 1 : 0);
+}
+if (authOutage) {
+  await page.locator(".launchButton").waitFor({ timeout: 10000 });
+  if ((await page.locator(".dockHint").innerText()) !== "인증 서버 점검 중") throw new Error("the auth outage hint is missing");
+  if (!(await page.locator(".heroCopy h2").innerText()).includes("Create Aeronautics")) throw new Error("the saved server list is not shown during the outage");
+  await page.screenshot({ path: "previews/bweeep-launcher-auth-outage.png" });
+  await page.locator(".launchButton").click();
+  await page.locator(".dockError").waitFor();
+  const lineCount = (element) => {
+    const style = getComputedStyle(element);
+    const line = Number.isFinite(parseFloat(style.lineHeight)) ? parseFloat(style.lineHeight) : parseFloat(style.fontSize) * 1.4;
+    return Math.round(element.getBoundingClientRect().height / line);
+  };
+  const refusalLines = await page.locator(".dockError strong").evaluate(lineCount);
+  if ((await page.locator(".dockError strong").innerText()) !== "인증 서버 점검 중이라 지금은 못 들어가요" || await page.locator(".dockError p").count() || refusalLines > 1) {
+    throw new Error(`the outage refusal is not one line (${refusalLines}): ${await page.locator(".dockError").innerText()}`);
+  }
+  if (await page.evaluate(() => window.__launchRequests) !== 0) throw new Error("the game started during an auth outage");
+  await page.screenshot({ path: "previews/bweeep-launcher-auth-outage-launch.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  if (await page.locator(".dockError strong").evaluate(lineCount) > 1) throw new Error("the outage refusal wraps at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-auth-outage-narrow.png" });
+  console.log(JSON.stringify({ interactionChecks: ["auth-outage-saved-servers", "auth-outage-launch-refused-one-line"], errors }));
+  await browser.close();
+  process.exit(errors.length ? 1 : 0);
+}
 const expectedEntrySelector = accessUnavailable ? ".entryActions .primaryButton" : accessDenied ? ".entryInvite" : signedIn ? ".launchButton" : ".entryPrimary";
 await page.locator(expectedEntrySelector).waitFor({ state: "visible", timeout: 10000 });
 const interactionChecks = [];
@@ -448,9 +532,29 @@ if (catalogUnavailable) {
   if (mainText.includes("server.fri4666.com") || mainText.includes(":25565")) {
     throw new Error("server address is visible on the main screen");
   }
-  if (mainText.includes("서버 선택")) {
-    throw new Error("server picker remained on the main screen");
+  // The top bar switches servers and shows each one's players.
+  const pillText = await page.locator(".serverPill").innerText();
+  if (!pillText.includes("Create Aeronautics") || !pillText.includes("3/20명") || !pillText.includes("18ms")) {
+    throw new Error(`the server pill does not show the server and its players: ${pillText}`);
   }
+  await page.locator(".serverPillButton").click();
+  const serverMenu = page.getByRole("listbox", { name: "서버" });
+  await serverMenu.waitFor();
+  const menuItems = (await serverMenu.getByRole("option").allInnerTexts()).map((text) => text.replace(/\s+/g, " ").trim());
+  if (menuItems.length !== 2 || !menuItems[0].includes("3/20") || !menuItems[1].includes("테섭") || !menuItems[1].includes("꺼짐")) {
+    throw new Error(`server menu is wrong: ${JSON.stringify(menuItems)}`);
+  }
+  if ((await serverMenu.innerText()).includes("server.fri4666.com")) throw new Error("the server menu shows addresses");
+  await page.screenshot({ path: "previews/bweeep-launcher-server-menu.png" });
+  await serverMenu.getByRole("option", { name: /Vanilla Test/ }).click();
+  await page.locator(".heroCopy h2").filter({ hasText: "Vanilla Test" }).waitFor();
+  if (await page.evaluate(() => localStorage.getItem("bweeep.selected-pack-id")) !== "vanilla-survival-test") throw new Error("the switched server was not saved");
+  if (!(await page.locator(".launchButton .launchOffIcon").count())) throw new Error("an off server shows no mark on the launch button");
+  await page.locator(".serverPillButton").click();
+  await serverMenu.getByRole("option", { name: /Create Aeronautics/ }).click();
+  await page.locator(".heroCopy h2").filter({ hasText: "Create Aeronautics" }).waitFor();
+  if (await serverMenu.count()) throw new Error("the server menu stayed open after choosing");
+  interactionChecks.push("main-screen-server-switch");
   if (await page.locator(".updatePanel, .updateModal, .progressTrack").count()) {
     throw new Error("obsolete update or progress UI remained on the main screen");
   }
@@ -483,13 +587,18 @@ if (catalogUnavailable) {
   if (narrowLayout.chips === 0 || narrowLayout.chipOverlap || narrowLayout.copyOverlap || narrowLayout.horizontalScroll) {
     throw new Error(`narrow window layout overlaps: ${JSON.stringify(narrowLayout)}`);
   }
+  await page.locator(".serverPillButton").click();
+  const narrowMenu = await page.evaluate(() => {
+    const menu = document.querySelector(".serverMenu").getBoundingClientRect();
+    const items = [...document.querySelectorAll(".serverMenuItem")].map((item) => item.scrollWidth <= item.clientWidth);
+    return { inside: menu.right <= window.innerWidth && menu.bottom <= window.innerHeight, itemsFit: items.every(Boolean) };
+  });
+  await page.screenshot({ path: "previews/bweeep-launcher-server-menu-narrow.png" });
+  if (!narrowMenu.inside || !narrowMenu.itemsFit) throw new Error(`server menu does not fit at 920px: ${JSON.stringify(narrowMenu)}`);
+  await page.keyboard.press("Escape");
+  await page.locator(".serverMenu").waitFor({ state: "detached" });
   await page.setViewportSize({ width: 1440, height: 900 });
   interactionChecks.push("narrow-window-no-overlap");
-  const serverFact = await page.locator(".serverPill").innerText();
-  if (!serverFact.includes("방금 전") || /\d{1,2}시\s*\d{1,2}분|\d{1,2}:\d{2}/.test(serverFact)) {
-    throw new Error(`server checked time is not relative: ${serverFact}`);
-  }
-  interactionChecks.push("relative-server-time");
   const indicator = page.locator(".updateIndicator");
   await page.evaluate(() => window.__emitUpdate({ state: "downloading", update: { version: "0.1.31", notes: ["긴 업데이트 설명은 화면에 나오면 안 돼요."] }, percent: 42 }));
   await indicator.waitFor();
@@ -524,6 +633,22 @@ if (catalogUnavailable) {
     throw new Error("launcher version is missing from the settings footer");
   }
   interactionChecks.push("launcher-version-in-settings");
+  // Game memory per server: automatic by default, a warning below the recommendation.
+  const memoryRows = page.locator(".memoryRow");
+  if (await memoryRows.count() !== 2) throw new Error("game memory is not listed per server");
+  if ((await memoryRows.nth(0).locator(".memoryValue").innerText()) !== "자동 6GB" || (await memoryRows.nth(1).locator(".memoryValue").innerText()) !== "자동 3GB") {
+    throw new Error(`automatic memory is wrong: ${await page.locator(".memoryList").innerText()}`);
+  }
+  if (await page.locator(".memoryValue.isLow").count()) throw new Error("automatic memory warns on a 16GB PC");
+  await memoryRows.nth(0).getByRole("slider").press("Home");
+  await memoryRows.nth(0).locator(".memoryValue.isLow", { hasText: "2GB" }).waitFor();
+  if (await memoryRows.nth(0).getByRole("img", { name: "권장 6GB보다 적어요" }).count() !== 1) throw new Error("low memory has no warning icon");
+  await page.locator(".panel").filter({ hasText: "게임 메모리" }).screenshot({ path: "previews/bweeep-launcher-memory.png" });
+  await memoryRows.nth(1).getByRole("slider").press("End");
+  if ((await memoryRows.nth(1).locator(".memoryValue").innerText()) !== "14GB") throw new Error("the slider does not reach PC memory minus 2GB");
+  await memoryRows.nth(1).getByRole("button", { name: "자동" }).click();
+  if ((await memoryRows.nth(1).locator(".memoryValue").innerText()) !== "자동 3GB") throw new Error("자동 did not reset the memory");
+  interactionChecks.push("memory-per-server");
   await page.getByRole("radio", { name: "10명" }).click();
   await page.getByRole("button", { name: "10명용 초대 만들기" }).click();
   await page.getByText("BWEEP-123456789ABC-123456789ABC", { exact: true }).waitFor();
@@ -682,6 +807,8 @@ if (catalogUnavailable) {
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 시작 중" }).waitFor();
   if (!(await page.getByRole("button", { name: "게임 시작 중" }).isDisabled())) throw new Error("launch button was not locked while starting");
+  if (await page.evaluate(() => window.__lastLaunchRequest?.memoryMb) !== 2048) throw new Error("the chosen memory was not sent with the launch");
+  interactionChecks.push("memory-sent-with-launch");
   await page.waitForTimeout(480);
   if (await page.locator(".launchProgress").count() !== 1 || !(await page.locator(".launchProgress").innerText()).includes("33%")) {
     throw new Error("actual file progress was not visible during launch");

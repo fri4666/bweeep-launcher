@@ -1,0 +1,201 @@
+/* Server switcher in the top bar */
+
+.serverSwitcher {
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+
+.serverPillButton {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 11px;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.serverPillButton:disabled {
+  color: inherit;
+  background: transparent;
+  cursor: default;
+}
+
+.serverPill:has(.serverPillButton:not(:disabled):hover),
+.serverPill:has(.serverPillButton[aria-expanded="true"]) {
+  background: #25262b;
+}
+
+.serverPillButton > div {
+  min-width: 0;
+}
+
+.serverPillButton strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.serverPillButton small {
+  font-variant-numeric: tabular-nums;
+}
+
+.serverPillCaret {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin-left: auto;
+  fill: none;
+  stroke: var(--muted);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.serverMenu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  gap: 2px;
+  min-width: 100%;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.35);
+}
+
+.serverMenuItem {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  justify-content: stretch;
+  gap: 11px;
+  min-height: 38px;
+  padding: 0 10px 0 8px;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+
+.serverMenuItem:hover {
+  color: var(--text-strong);
+  background: var(--surface-3);
+}
+
+.serverMenuItem[aria-selected="true"] {
+  color: var(--text-strong);
+  background: rgba(217, 176, 114, 0.12);
+}
+
+.serverMenuItem .statusDot {
+  width: 8px;
+  height: 8px;
+  flex-basis: 8px;
+  margin-left: 4px;
+  box-shadow: none;
+}
+
+.serverMenuName {
+  overflow: hidden;
+  font-weight: 800;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.serverMenuName small {
+  margin-left: 6px;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.serverMenuCount {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.serverMenuItem.is-offline .serverMenuCount {
+  color: var(--danger);
+}
+
+/* Launch button while the selected server is off */
+
+.launchOffIcon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  opacity: 0.8;
+}
+
+/* Game memory in settings */
+
+.memoryList {
+  display: grid;
+  gap: 4px;
+}
+
+.memoryRow {
+  display: grid;
+  grid-template-columns: minmax(90px, 160px) minmax(0, 1fr) 96px auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 40px;
+}
+
+.memoryRow strong {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.memoryRow input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.memoryValue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.memoryValue.isLow {
+  color: var(--warn);
+}
+
+.memoryValue svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.memoryRow .textButton:disabled {
+  background: transparent;
+}
