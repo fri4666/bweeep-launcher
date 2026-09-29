@@ -95,6 +95,8 @@ export interface ServerStatus {
   /** From the Minecraft status ping; missing when only a TCP connection answered. */
   players?: { online: number; max: number };
   version?: string;
+  /** Stopped while empty to save memory (server gate); pressing Play starts it. */
+  sleep?: "sleeping" | "starting";
 }
 
 export interface ServerConnection {

@@ -27,6 +27,7 @@ jobs:
       - run: node scripts/verify-game-exit.mjs
       - run: node scripts/verify-personal-content.mjs
       - run: node scripts/verify-server-status.mjs
+      - run: node scripts/verify-server-gate.mjs
       - run: node scripts/verify-launch-identity.mjs
       - run: node scripts/verify-modpack-sync.mjs
       - run: npx playwright install --with-deps chromium
@@ -45,6 +46,7 @@ jobs:
           BWEEP_PREVIEW_CATALOG_UNAVAILABLE=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_WHATS_NEW=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_PATCH_NOTES_OFFLINE=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_SERVER_SLEEPING=true node scripts/capture-preview.mjs
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

@@ -11,6 +11,8 @@ const DEFAULT_TIMEOUT_MS = 3500;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
 // Protocol -1 asks for the status without claiming a client version.
 const STATUS_PROTOCOL = -1;
+/** Added to the handshake host so the server gate (scripts/server-gate.mjs) starts a sleeping server. */
+export const WAKE_MARKER = "\0bweeep-wake";
 
 // The launcher polls every server; a check still running is shared, not repeated.
 const inFlight = new Map<string, Promise<ServerStatus>>();
@@ -29,7 +31,16 @@ export function checkServer(server: { host: string; port: number }, options: Che
   return check;
 }
 
-function pingServer(host: string, port: number, options: CheckServerOptions): Promise<ServerStatus> {
+/**
+ * Asks a server stopped while empty to start, as soon as Play is pressed, so
+ * it starts while the game files are checked and the game loads. A server
+ * without the gate just answers a normal status ping.
+ */
+export function wakeServer(server: { host: string; port: number }): Promise<ServerStatus> {
+  return pingServer(server.host, server.port, {}, true);
+}
+
+function pingServer(host: string, port: number, options: CheckServerOptions, wake = false): Promise<ServerStatus> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const startedAt = performance.now();
@@ -53,14 +64,16 @@ function pingServer(host: string, port: number, options: CheckServerOptions): Pr
 
     socket.once("connect", () => {
       latencyMs = Math.round(performance.now() - startedAt);
-      socket.write(Buffer.concat([encodeHandshake(host, port), encodePacket(0x00, Buffer.alloc(0))]));
+      socket.write(Buffer.concat([encodeHandshake(wake ? `${host}${WAKE_MARKER}` : host, port), encodePacket(0x00, Buffer.alloc(0))]));
     });
     socket.on("data", (chunk: Buffer) => {
       received = Buffer.concat([received, chunk]);
       try {
         const reply = readStatusReply(received, maxResponseBytes);
         if (!reply) return;
-        finish({ ...tcpOnly(), ...parseStatusJson(reply) });
+        const { off, ...status } = parseStatusJson(reply);
+        // Switched off by the owner: the gate answers, but nobody can get in.
+        finish(off ? offline() : { ...tcpOnly(), ...status });
       } catch {
         finish(tcpOnly());
       }
@@ -133,17 +146,23 @@ export function readStatusReply(buffer: Buffer, maxBytes: number): string | null
   return packet.subarray(start, start + text.value).toString("utf8");
 }
 
-/** Player counts and version name; fields that are missing or malformed are left out. */
-export function parseStatusJson(text: string): Pick<ServerStatus, "players" | "version"> {
+/**
+ * Player counts, version name and the server gate's state; fields that are
+ * missing or malformed are left out. `off` means the gate refuses joins.
+ */
+export function parseStatusJson(text: string): Pick<ServerStatus, "players" | "version" | "sleep"> & { off?: true } {
   const status = JSON.parse(text) as unknown;
   if (!status || typeof status !== "object") throw new Error("status is not an object");
-  const { players, version } = status as { players?: { online?: unknown; max?: unknown }; version?: { name?: unknown } };
-  const result: Pick<ServerStatus, "players" | "version"> = {};
+  const { players, version, bweeep } = status as { players?: { online?: unknown; max?: unknown }; version?: { name?: unknown }; bweeep?: { gate?: unknown } };
+  const result: Pick<ServerStatus, "players" | "version" | "sleep"> & { off?: true } = {};
   if (isCount(players?.online) && isCount(players?.max)) result.players = { online: players.online, max: players.max };
   if (typeof version?.name === "string") {
     const name = version.name.replace(/§./g, "").trim().slice(0, 64);
     if (name) result.version = name;
   }
+  const gate = bweeep && typeof bweeep === "object" ? bweeep.gate : undefined;
+  if (gate === "sleeping" || gate === "starting") result.sleep = gate;
+  if (gate === "off") result.off = true;
   return result;
 }
 

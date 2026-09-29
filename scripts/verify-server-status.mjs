@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import net from "node:net";
-import { checkServer, encodeVarInt, readVarInt } from "../dist/src/main/server-status.js";
+import os from "node:os";
+import path from "node:path";
+import { checkServer, encodeVarInt, readVarInt, wakeServer } from "../dist/src/main/server-status.js";
 
 // VarInt framing, including the 5-byte negative protocol number.
 for (const value of [0, 1, 127, 128, 255, 25565, 2097151, 2147483647, -1]) {
@@ -144,6 +146,41 @@ for (const [name, bytes] of [
   await checkServer({ host: "127.0.0.1", port: server.port });
   assert.equal(server.seen.connections, 2, "a later check opens a new connection");
   await server.close();
+}
+
+// The server gate's states: sleeping and starting count as reachable, off does not.
+for (const [gate, online, sleep] of [["sleeping", true, "sleeping"], ["starting", true, "starting"], ["off", false, undefined], ["weird", true, undefined]]) {
+  const server = await fakeServer((socket) => socket.end(statusReply({ version: { name: "26.3" }, players: { online: 0, max: 10 }, bweeep: { gate } })));
+  const status = await checkServer({ host: "127.0.0.1", port: server.port });
+  assert.equal(status.online, online, gate);
+  assert.equal(status.sleep, sleep, gate);
+  await server.close();
+}
+
+// Play wakes a sleeping server through the real gate; a plain check never does.
+{
+  const { ServerGate } = await import("./server-gate.mjs");
+  const port = await new Promise((resolve) => {
+    const probe = net.createServer().listen(0, "127.0.0.1", () => {
+      const { port: free } = probe.address();
+      probe.close(() => resolve(free));
+    });
+  });
+  const starts = [];
+  const gate = new ServerGate({ name: "t", unit: "bweeep-t", listen: port, backend: 1 }, {
+    stateDir: path.join(os.tmpdir(), `bweeep-status-gate-${process.pid}`),
+    control: { start: async (unit) => { starts.push(unit); return { ok: true }; }, stop: async () => ({ ok: true }), isActive: async () => false },
+    log: () => undefined,
+    timing: { slowProbeMs: 60_000, fastProbeMs: 60_000, probeTimeoutMs: 100 }
+  });
+  await gate.listen();
+  const plain = await checkServer({ host: "127.0.0.1", port });
+  assert.equal(plain.sleep, "sleeping");
+  assert.equal(starts.length, 0, "a status check leaves it asleep");
+  const woken = await wakeServer({ host: "127.0.0.1", port });
+  assert.equal(woken.online, true);
+  assert.deepEqual(starts, ["bweeep-t"], "Play starts it");
+  await gate.close();
 }
 
 console.log("server-status-regression=passed");
