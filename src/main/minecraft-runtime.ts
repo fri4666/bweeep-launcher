@@ -20,11 +20,13 @@ import {
   resolveMinecraftVersionJsonInstallFile,
   resolveNeoForgedInstallerFile
 } from "@xmcl/installer";
+import { MIN_GAME_MEMORY_MB, type GameMemory } from "../shared/game-memory.js";
 import type { ModpackManifest, SyncProgress } from "../shared/types.js";
 import { ensureBundledClientMods, removeStaleLockMod, verifyRemoteConnectionLock, type BundledClientMod } from "./client-feature-mods.js";
 import type { LaunchIdentity } from "./launch-identity.js";
 import { describeGameExit, type GameExitResult } from "./game-exit.js";
 import { createGameOutputObserver } from "./game-telemetry.js";
+import { InstalledVersions } from "./installed-versions.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
 import { isUsableSystemJava } from "./system-java.js";
 
@@ -47,7 +49,8 @@ export async function installAndLaunch(
   progress: ProgressSink,
   onExit: (exit: GameExitResult) => void,
   /** JVM arguments of the connection guard agent; empty when the pack opts out. */
-  connectionGuardArgs: string[] = []
+  connectionGuardArgs: string[] = [],
+  memory: Pick<GameMemory, "minMb" | "maxMb"> = { minMb: MIN_GAME_MEMORY_MB, maxMb: 6144 }
 ): Promise<{ pid: number; version: string }> {
   if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
     throw new Error("지원하지 않는 Minecraft 로더입니다.");
@@ -76,12 +79,17 @@ export async function installAndLaunch(
     }
   });
   const minecraft = MinecraftFolder.from(instanceDir);
+  // Versions installed by an earlier launch need no metadata from Mojang, Fabric or Forge.
+  const installed = InstalledVersions.forInstance(instanceDir);
+  const isUsable = (versionId: string) => Version.parse(minecraft, versionId).then(() => true);
+  const loaderKey = `${manifest.loader.kind}:${manifest.minecraftVersion}:${manifest.loader.version}`;
   const javaPath = await runStage(report, "Java 런타임", () => resolveRuntime(instanceDir, manifest.java, runtime, report));
-  const baseVersion = await runStage(report, "Minecraft 기본 파일", () => installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, report));
+  const baseVersion = await runStage(report, "Minecraft 기본 파일", () => installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, report, installed));
   const version = manifest.loader.kind === "vanilla" ? baseVersion
     : manifest.loader.kind === "fabric"
-      ? await runStage(report, "Fabric 설치", () => installFabric(minecraft, manifest, runtime, report))
-      : await runStage(report, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", () => installForgeFamily(minecraft, manifest, javaPath, runtime, report));
+      ? await runStage(report, "Fabric 설치", async () => (await installed.reuseOrInstall(loaderKey, isUsable, () => installFabric(minecraft, manifest, runtime, report))).versionId)
+      : await runStage(report, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", async () =>
+        (await installed.reuseOrInstall(loaderKey, isUsable, () => installForgeFamily(minecraft, manifest, javaPath, runtime, report))).versionId);
   await runStage(report, "실행 라이브러리", () => installLaunchLibraries(minecraft, version, runtime, report));
   if (await removeStaleLockMod(instanceDir, manifest, bundledClientMods)) {
     report({ kind: "info", stage: "게임 파일", message: "안 쓰는 예전 모드 정리" });
@@ -122,8 +130,8 @@ export async function installAndLaunch(
     extraExecOption: {
       env: { ...process.env, BWEEP_GAME_TICKET: gameTicket }
     },
-    minMemory: 2048,
-    maxMemory: 6144
+    minMemory: memory.minMb,
+    maxMemory: memory.maxMb
   });
   report({ kind: "info", stage: "게임 프로세스", message: "창 여는 중" });
   gameProcess.stdout?.on("data", createGameOutputObserver(report));
@@ -253,13 +261,17 @@ async function installMinecraftBase(
   minecraft: MinecraftFolder,
   minecraftVersion: string,
   runtime: InstallRuntime,
-  progress: ProgressSink
+  progress: ProgressSink,
+  installed: InstalledVersions
 ): Promise<string> {
   progress({ kind: "info", stage: "게임 정보", message: `Minecraft ${minecraftVersion}` });
-  const entry = (await getVersionList({ fetch: fetchWithSystemNetwork })).versions.find((item) => item.id === minecraftVersion);
-  if (!entry) throw new Error(`Minecraft ${minecraftVersion} 정보를 찾지 못했습니다.`);
-  await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-version", type: "files", files: [resolveMinecraftVersionJsonInstallFile(entry, minecraft)] }] }, runtime);
-  const resolved = await Version.parse(minecraft, minecraftVersion);
+  const { versionId } = await installed.reuseOrInstall(`minecraft:${minecraftVersion}`, (id) => Version.parse(minecraft, id).then(() => true), async () => {
+    const entry = (await getVersionList({ fetch: fetchWithSystemNetwork })).versions.find((item) => item.id === minecraftVersion);
+    if (!entry) throw new Error(`Minecraft ${minecraftVersion} 정보를 찾지 못했습니다.`);
+    await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-version", type: "files", files: [resolveMinecraftVersionJsonInstallFile(entry, minecraft)] }] }, runtime);
+    return minecraftVersion;
+  });
+  const resolved = await Version.parse(minecraft, versionId);
   const baseFiles = [
     resolveMinecraftJarInstallFile(resolved),
     ...resolveLibraryInstallFiles(resolved.libraries, minecraft),

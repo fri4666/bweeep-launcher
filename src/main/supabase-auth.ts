@@ -9,6 +9,8 @@ import { fingerprint } from "./hash.js";
 import { writeAuthLog } from "./logs.js";
 import { createOfflineLaunchIdentity, type LaunchIdentity } from "./launch-identity.js";
 import { launcherProtocolScheme } from "./launcher-channel.js";
+import { AuthServiceUnavailableError } from "./offline-access.js";
+import { isAuthOutageResponse } from "../shared/auth-outage.js";
 
 interface SupabaseConfig {
   url?: string;
@@ -217,14 +219,23 @@ export class SupabaseAuth {
     const client = await this.getClient();
     if (!client) return null;
 
-    const { data } = await client.auth.getUser();
-    if (!data.user) return null;
+    const { data, error } = await client.auth.getUser();
+    if (!data.user) {
+      // Supabase keeps the saved session when it could not be reached; so does the launcher.
+      if (isRetryableAuthError(error)) throw new AuthServiceUnavailableError(error.status ?? 0);
+      return null;
+    }
     if (data.user.app_metadata?.provider !== "discord") {
       await client.auth.signOut({ scope: "local" });
       this.client = null;
       return null;
     }
     return toLauncherUser(data.user);
+  }
+
+  /** The user id in the saved login session, read without the network. */
+  async savedUserId(): Promise<string | null> {
+    return new EncryptedSessionStorage().userId();
   }
 
   async getAccessStatus(user: LauncherUser | null): Promise<AccessStatus> {
@@ -428,7 +439,8 @@ export class SupabaseAuth {
         autoRefreshToken: true,
         detectSessionInUrl: false,
         storage: new EncryptedSessionStorage()
-      }
+      },
+      global: { fetch: fetchWithTimeout }
     });
     return this.client;
   }
@@ -459,6 +471,9 @@ export class SupabaseAuth {
     if (response.status === 401 && functionResponseCode(response.payload) === "INVALID_BEARER_TOKEN") {
       throw new InvalidLauncherSessionError();
     }
+    if (!response.ok && isAuthOutageResponse(response.status, hasFunctionMessage(response.payload))) {
+      throw new AuthServiceUnavailableError(response.status, functionResponseMessage(response.status, response.payload, fallbackMessage));
+    }
     if (!response.ok || !response.payload) {
       throw new Error(functionResponseMessage(response.status, response.payload, fallbackMessage));
     }
@@ -468,9 +483,27 @@ export class SupabaseAuth {
 
 async function currentAccessToken(client: SupabaseClient): Promise<string> {
   const { data, error } = await client.auth.getSession();
+  // An expired token that could not be refreshed for lack of a server is not a signed-out user.
+  if (isRetryableAuthError(error)) throw new AuthServiceUnavailableError(error.status ?? 0);
   const accessToken = data.session?.access_token;
   if (error || !accessToken) throw new InvalidLauncherSessionError();
   return accessToken;
+}
+
+/** Supabase auth's network and gateway (502–504) failures; the saved session is still valid. */
+function isRetryableAuthError(error: unknown): error is { status?: number } {
+  return error instanceof Error && error.name === "AuthRetryableFetchError";
+}
+
+function hasFunctionMessage(payload: unknown): boolean {
+  const message = payload && typeof payload === "object" && "message" in payload ? (payload as FunctionErrorPayload).message : null;
+  return typeof message === "string" && message.trim().length > 0;
+}
+
+/** No Supabase request may hang a launch or the start of the launcher. */
+function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const timeout = AbortSignal.timeout(15_000);
+  return fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
 }
 
 function summarizeAuthorizationUrl(rawUrl: string): Record<string, unknown> {
@@ -495,7 +528,7 @@ export class LoginCancelledError extends Error {
 
 async function postLauncherAccess<T>(config: Required<Pick<SupabaseConfig, "url" | "publishableKey">>, accessToken: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; payload: T | FunctionErrorPayload | null }> {
   try {
-    const response = await fetch(`${config.url}/functions/v1/launcher-access`, {
+    const response = await fetchWithTimeout(`${config.url}/functions/v1/launcher-access`, {
       method: "POST",
       headers: {
         apikey: config.publishableKey,
@@ -554,6 +587,19 @@ class EncryptedSessionStorage {
     const values = await this.read();
     delete values[key];
     await this.write(values);
+  }
+
+  async userId(): Promise<string | null> {
+    for (const [key, value] of Object.entries(await this.read())) {
+      if (!key.endsWith("-auth-token")) continue;
+      try {
+        const id = (JSON.parse(value) as { user?: { id?: unknown } } | null)?.user?.id;
+        if (typeof id === "string" && id) return id;
+      } catch {
+        // Not a session entry.
+      }
+    }
+    return null;
   }
 
   private async read(): Promise<Record<string, string>> {

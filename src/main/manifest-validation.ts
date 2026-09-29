@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isMemoryMb } from "../shared/game-memory.js";
 import type { ModpackManifest } from "../shared/types.js";
 
 export function assertManifest(manifest: ModpackManifest): void {
@@ -39,6 +40,9 @@ export function assertManifest(manifest: ModpackManifest): void {
     !manifest.blockedModrinthProjects.every((id) => typeof id === "string" && /^[A-Za-z0-9]{8}$/.test(id))
   )) {
     throw new Error("차단 모드 목록 형식이 올바르지 않습니다.");
+  }
+  if (manifest.recommendedMemoryMb !== undefined && !isMemoryMb(manifest.recommendedMemoryMb)) {
+    throw new Error("권장 메모리 값이 올바르지 않습니다.");
   }
   if (manifest.mrpack && (!/^https:\/\//.test(manifest.mrpack.url) || !Number.isSafeInteger(manifest.mrpack.size) || manifest.mrpack.size < 1 || !/^[a-f0-9]{128}$/i.test(manifest.mrpack.sha512))) {
     throw new Error("Modrinth 모드팩 정보가 올바르지 않습니다.");

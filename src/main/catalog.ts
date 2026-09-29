@@ -1,3 +1,4 @@
+import { recommendedMemoryMb } from "../shared/game-memory.js";
 import type { ModpackManifest, ServerPreset } from "../shared/types.js";
 import { assertManifest } from "./manifest-validation.js";
 
@@ -16,7 +17,8 @@ export function toServerPreset(manifest: ModpackManifest): ServerPreset {
     serverLoader: manifest.serverLoader,
     environment: manifest.audience === "testers" ? "test" : "production",
     gameAuth: manifest.gameAuth ?? "offline",
-    blockedModrinthProjects: manifest.blockedModrinthProjects ?? []
+    blockedModrinthProjects: manifest.blockedModrinthProjects ?? [],
+    recommendedMemoryMb: recommendedMemoryMb(manifest)
   };
 }
 
