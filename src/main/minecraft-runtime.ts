@@ -62,7 +62,6 @@ export async function installAndLaunch(
     progress(event);
   };
   const runtime = createDefaultNodeInstallRuntime({
-    maxConcurrency: 2,
     download: (files) => {
       const batchStage = activeStage;
       return downloadInstallFilesWithSystemNetwork(files, (completed, total, filePath, phase) => {
