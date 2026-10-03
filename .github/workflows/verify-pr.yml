@@ -30,6 +30,7 @@ jobs:
       - run: node scripts/verify-server-gate.mjs
       - run: node scripts/verify-launch-identity.mjs
       - run: node scripts/verify-modpack-sync.mjs
+      - run: node scripts/verify-install-download.mjs
       - run: npx playwright install --with-deps chromium
       - name: 홈 화면과 실행 흐름 확인
         shell: bash
