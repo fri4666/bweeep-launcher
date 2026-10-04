@@ -35,12 +35,14 @@ const string = (text) => {
 /** A fake Minecraft server: answers status, records what joins send, echoes after login. */
 function fakeBackend(port, { players = 0 } = {}) {
   const joins = [];
+  let silent = false;
   const server = net.createServer((socket) => {
     let buffer = Buffer.alloc(0);
     let handshake = null;
     const join = { frames: [], socket };
     socket.on("error", () => undefined);
     socket.on("data", (chunk) => {
+      if (silent) return;
       buffer = Buffer.concat([buffer, chunk]);
       for (;;) {
         const read = readFrame(buffer, 1 << 20);
@@ -73,6 +75,8 @@ function fakeBackend(port, { players = 0 } = {}) {
       server.close(() => resolve());
     }),
     setPlayers: (count) => { players = count; },
+    /** Keeps accepting connections but answers nothing, like a server that hangs. */
+    setSilent: (value) => { silent = value; },
     port
   };
 }
@@ -335,7 +339,78 @@ try {
   }
   pass("rcon-stop-then-systemd");
 
-  // 10. Config checks.
+  // 10. A server that crashed and got stuck on the way out: its port is closed but systemd still
+  //     counts the unit as running. Status says "starting", a join waits, and after hungRefusedMs
+  //     the unit is stopped and started again and the join is handed over.
+  const hungTiming = { holdPingMs: 150, fastProbeMs: 50, slowProbeMs: 100, probeTimeoutMs: 300, idleMs: 60_000 };
+  {
+    const backend4 = fakeBackend(await freePort());
+    const control4 = fakeControl(backend4, 300);
+    await backend4.listen();
+    control4.setActive(true);
+    const listen4 = await freePort();
+    const gate4 = new ServerGate(
+      { name: "먹통", unit: "bweeep-hung", listen: listen4, backend: backend4.port },
+      { stateDir, control: control4, log: (line) => lines.push(line), timing: { ...hungTiming, hungRefusedMs: 1_000, hungSilentMs: 60_000 } }
+    );
+    await gate4.listen();
+    assert.equal(gate4.state, "up");
+    await backend4.close();
+    const crashedAt = Date.now();
+    const waiting = joinClient(listen4, "seos_py");
+    await until(() => gate4.unanswered, "the gate notices the closed port");
+    status = await statusPing(listen4);
+    assert.deepEqual(status.bweeep, { gate: "starting" });
+    await until(() => control4.calls.length > 0, "restart of the stuck server");
+    assert.ok(Date.now() - crashedAt >= 900, "not before hungRefusedMs");
+    await until(() => waiting.welcome, "the waiting join reaches the restarted server");
+    assert.deepEqual(control4.calls, ["stop bweeep-hung", "start bweeep-hung"]);
+    assert.equal(gate4.state, "up");
+    assert.equal(backend4.joins.at(-1).frames.length, 1, "the server sees only the login start");
+    waiting.socket.destroy();
+
+    // Switched off from the desktop: a closed port is left alone and joins are refused.
+    fs.writeFileSync(path.join(stateDir, "bweeep-hung.off"), "");
+    await backend4.close();
+    await until(() => gate4.unanswered, "the gate notices the closed port again");
+    const refusedWhileOff = joinClient(listen4, "seos_py");
+    await until(() => refusedWhileOff.closed, "join refused while off");
+    await sleep(1_300);
+    assert.equal(control4.calls.length, 2, "no restart while switched off");
+    fs.rmSync(path.join(stateDir, "bweeep-hung.off"));
+
+    // Stopped from outside (the unit is no longer running): asleep, not restarted.
+    control4.setActive(false);
+    await until(() => gate4.state === "down", "down after an outside stop");
+    assert.equal(control4.calls.length, 2);
+    await gate4.close();
+  }
+  pass("stuck-after-crash-is-restarted");
+
+  // 11. A server that accepts connections but answers nothing gets the longer hungSilentMs.
+  {
+    const backend5 = fakeBackend(await freePort());
+    const control5 = fakeControl(backend5, 100);
+    await backend5.listen();
+    control5.setActive(true);
+    const gate5 = new ServerGate(
+      { name: "조용", unit: "bweeep-silent", listen: await freePort(), backend: backend5.port },
+      { stateDir, control: control5, log: (line) => lines.push(line), timing: { ...hungTiming, probeTimeoutMs: 100, hungRefusedMs: 100, hungSilentMs: 1_200 } }
+    );
+    await gate5.listen();
+    backend5.setSilent(true);
+    const silentAt = Date.now();
+    await until(() => control5.calls.length > 0, "restart of the silent server");
+    assert.ok(Date.now() - silentAt >= 1_100, "silence waits for hungSilentMs, not hungRefusedMs");
+    backend5.setSilent(false);
+    await until(() => gate5.state === "up" && control5.calls.length === 2, "silent server back up");
+    assert.deepEqual(control5.calls, ["stop bweeep-silent", "start bweeep-silent"]);
+    await gate5.close();
+    await backend5.close();
+  }
+  pass("silent-server-waits-longer");
+
+  // 12. Config checks.
   const configFile = path.join(stateDir, "gate.json");
   fs.writeFileSync(configFile, JSON.stringify({ stateDir, servers: [{ unit: "a", listen: 1, backend: 1 }] }));
   assert.throws(() => readConfig(configFile), /두 번/);
