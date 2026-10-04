@@ -41,7 +41,7 @@ async function tree(root, relative = "") {
     result[relative || "."] = "dir";
     for (const entry of (await fsp.readdir(target)).sort()) Object.assign(result, await tree(root, relative ? `${relative}/${entry}` : entry));
   } else {
-    result[relative] = `${stat.size}:${crypto.createHash("sha256").update(await fsp.readFile(target)).digest("hex")}:${Math.floor(stat.mtimeMs)}`;
+    result[relative] = `${stat.size}:${crypto.createHash("sha256").update(await fsp.readFile(target)).digest("hex")}:${Math.round(stat.mtimeMs)}`;
   }
   return result;
 }
