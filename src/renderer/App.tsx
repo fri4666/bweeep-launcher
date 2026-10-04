@@ -25,6 +25,7 @@ import { DiscordPresencePanel } from "./DiscordPresencePanel.js";
 import { PatchNotesPanel, ReleaseMeta, ReleaseNoteSections, releaseTitle } from "./PatchNotesPanel.js";
 import { ServerOffIcon, ServerSwitcher, serverState as describeServerState } from "./ServerSwitcher.js";
 import { MemoryPanel, savedMemoryMb } from "./MemoryPanel.js";
+import { useNotice } from "./useNotice.js";
 import { useOfflineLaunchConsent, useServerStatuses } from "./useServerStatuses.js";
 import { authOutageFromMessage, authOutageMessages } from "../shared/auth-outage.js";
 
@@ -378,6 +379,7 @@ function App() {
   );
   const serverStatuses = useServerStatuses(availableServers);
   const offlineLaunchConsent = useOfflineLaunchConsent(serverStatuses.byId);
+  const notice = useNotice(access?.allowed === true);
 
   // After an update, the new version's notes are shown once members reach the main screen.
   useEffect(() => {
@@ -917,6 +919,13 @@ function App() {
         </header>
         <section className="hero">
           <div className="heroBackdrop" />
+          {notice.shown && (
+            <div className="heroNotice" role="status">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6l-6 4z" /><path d="M16.5 9.5a3.5 3.5 0 0 1 0 5M19 7a7 7 0 0 1 0 10" /></svg>
+              <p>{notice.shown.text}</p>
+              <button className="iconOnly" aria-label="공지 닫기" onClick={notice.dismiss}>×</button>
+            </div>
+          )}
           <div className="heroCopy">
             {catalogState === "error" ? (
               <>
@@ -1232,7 +1241,9 @@ function App() {
       {moveTarget && (
         <InstallMoveDialog from={instanceRoot} to={moveTarget} onSwitch={switchInstanceRoot} onClose={() => setMoveTarget(null)} />
       )}
-      {adminOpen && access.isAdmin && <AdminPanel selfId={user.id} onClose={() => setAdminOpen(false)} confirm={setConfirmRequest} />}
+      {adminOpen && access.isAdmin && (
+        <AdminPanel selfId={user.id} onClose={() => setAdminOpen(false)} confirm={setConfirmRequest} shownNotice={notice.current} onNoticeChange={notice.replace} />
+      )}
 
       {whatsNew && !confirmRequest && <WhatsNewDialog whatsNew={whatsNew} onClose={closeWhatsNew} />}
       {confirmDialog}

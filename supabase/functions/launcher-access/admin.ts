@@ -1,5 +1,6 @@
 import type { createClient } from "@supabase/supabase-js";
 import { isModpackManifest, usesBweeepAccounts } from "./catalog.ts";
+import { normalizeNoticeText, toNotice } from "./notice.ts";
 
 type Db = ReturnType<typeof createClient<any, "public">>;
 
@@ -18,7 +19,9 @@ export type AdminRequest =
   | { action: "adminReleases" }
   | { action: "activateRelease"; releaseId: string }
   | { action: "adminDiagnostics" }
-  | { action: "openDiagnostics"; diagnosticId: string };
+  | { action: "openDiagnostics"; diagnosticId: string }
+  | { action: "setNotice"; text: string }
+  | { action: "clearNotice" };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value: unknown): value is string => typeof value === "string" && uuidPattern.test(value);
@@ -29,7 +32,12 @@ export function parseAdminRequest(body: Record<string, unknown>): AdminRequest |
     case "adminNames":
     case "adminReleases":
     case "adminDiagnostics":
+    case "clearNotice":
       return { action: body.action };
+    case "setNotice": {
+      const text = normalizeNoticeText(body.text);
+      return text ? { action: "setNotice", text } : null;
+    }
     case "setTester":
       return isUuid(body.userId) && typeof body.tester === "boolean" ? { action: "setTester", userId: body.userId, tester: body.tester } : null;
     case "setMemberRole":
@@ -53,7 +61,7 @@ export function parseAdminRequest(body: Record<string, unknown>): AdminRequest |
 
 export const ADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "listMembers", "setTester", "setMemberRole", "removeMember", "adminNames", "releaseName", "deleteReservation",
-  "adminReleases", "activateRelease", "adminDiagnostics", "openDiagnostics"
+  "adminReleases", "activateRelease", "adminDiagnostics", "openDiagnostics", "setNotice", "clearNotice"
 ]);
 
 /** For a body that already passed parseAdminRequest. */
@@ -287,6 +295,19 @@ export async function handleAdminRequest(db: Db, actorId: string, body: AdminReq
           p_actor: actorId, p_action: "open_diagnostics", p_target: upload.id, p_detail: { userId: upload.user_id }
         });
         return json({ url: reachable(signed.signedUrl, publicUrl) });
+      }
+      case "setNotice": {
+        // The request body arrives as sent, so the stored text is normalized here too.
+        const text = normalizeNoticeText(body.text);
+        if (!text) return json({ message: "공지 내용이 올바르지 않아요." }, 400);
+        const { data, error } = await db.rpc("launcher_admin_set_notice", { p_actor: actorId, p_body: text });
+        if (error) return refusal(error, "공지를 올리지 못했습니다.");
+        return json({ notice: toNotice(data?.[0]) });
+      }
+      case "clearNotice": {
+        const { error } = await db.rpc("launcher_admin_clear_notice", { p_actor: actorId });
+        if (error) return refusal(error, "공지를 내리지 못했습니다.");
+        return json({ notice: null });
       }
     }
   } catch (error) {

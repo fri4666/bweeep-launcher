@@ -29,6 +29,7 @@ import type {
   WhatsNew
 } from "../shared/types.js";
 import type { AdminDiagnostics, AdminNames, AdminRelease, AuthFailure } from "../shared/admin-types.js";
+import type { LauncherNotice } from "../shared/notice.js";
 
 /** Returns an unsubscribe function so React effects can clean up. */
 function subscribe<T>(channel: string) {
@@ -89,6 +90,9 @@ const api = {
   activateRelease: (releaseId: string) => ipcRenderer.invoke("admin:activateRelease", releaseId) as Promise<AdminRelease[]>,
   adminDiagnostics: () => ipcRenderer.invoke("admin:diagnostics") as Promise<AdminDiagnostics>,
   openDiagnostics: (diagnosticId: string) => ipcRenderer.invoke("admin:openDiagnostics", diagnosticId) as Promise<void>,
+  notice: () => ipcRenderer.invoke("notice:current") as Promise<LauncherNotice | null>,
+  setNotice: (text: string) => ipcRenderer.invoke("admin:setNotice", text) as Promise<LauncherNotice | null>,
+  clearNotice: () => ipcRenderer.invoke("admin:clearNotice") as Promise<LauncherNotice | null>,
   sendDiagnostics: () => ipcRenderer.invoke("diagnostics:send") as Promise<void>,
   searchMods: (target: ModTarget, query: string, offset: number) => ipcRenderer.invoke("mods:search", target, query, offset) as Promise<ModSearchResult>,
   personalMods: (target: ModTarget, checkUpdates: boolean) => ipcRenderer.invoke("mods:list", target, checkUpdates) as Promise<PersonalMod[]>,

@@ -69,7 +69,9 @@ async function main() {
     { action: "adminReleases" },
     { action: "activateRelease", releaseId: other.userId },
     { action: "adminDiagnostics" },
-    { action: "openDiagnostics", diagnosticId: other.userId }
+    { action: "openDiagnostics", diagnosticId: other.userId },
+    { action: "setNotice", text: "멤버가 올린 공지" },
+    { action: "clearNotice" }
   ];
   for (const body of adminCalls) {
     const asMember = await call(member, body);
@@ -206,6 +208,27 @@ async function main() {
   const catalog = await call(member, { action: "catalog" });
   check("the catalog serves the rolled-back version", catalog.body?.manifests?.some((item) => item.manifest.id === PACK && item.version === "1"), JSON.stringify(catalog.body)?.slice(0, 300));
 
+  // --- the notice
+  let notice = await call(member, { action: "notice" });
+  check("no notice at first, and the refused posts left none", notice.status === 200 && notice.body?.notice === null, JSON.stringify(notice.body));
+  check("an outsider cannot read the notice", (await call(outsider, { action: "notice" })).status === 403);
+  const posted = await call(boss, { action: "setNotice", text: "  오늘 밤 9시에 점검해요 \r\n\r\n 10분쯤 걸려요 " });
+  check("admin posts a notice, stored tidy", posted.status === 200 && posted.body?.notice?.text === "오늘 밤 9시에 점검해요\n10분쯤 걸려요"
+    && !Number.isNaN(Date.parse(posted.body.notice.at)), JSON.stringify(posted.body));
+  notice = await call(member, { action: "notice" });
+  check("members read the posted notice", notice.body?.notice?.id === posted.body?.notice?.id && notice.body?.notice?.text === posted.body?.notice?.text, JSON.stringify(notice.body));
+  check("a notice over 100 characters is refused", (await call(boss, { action: "setNotice", text: "가".repeat(101) })).status === 400);
+  check("an empty or three-line notice is refused", (await call(boss, { action: "setNotice", text: " \n " })).status === 400
+    && (await call(boss, { action: "setNotice", text: "a\nb\nc" })).status === 400);
+  const second = await call(boss, { action: "setNotice", text: "두 번째 공지" });
+  notice = await call(member, { action: "notice" });
+  const shown = await db.from("launcher_notices").select("id").is("ended_at", null);
+  check("a new notice replaces the one before", second.status === 200 && notice.body?.notice?.id === second.body?.notice?.id
+    && shown.data?.length === 1 && shown.data[0].id === second.body?.notice?.id, JSON.stringify([notice.body, shown.data]));
+  const cleared = await call(boss, { action: "clearNotice" });
+  check("admin takes the notice down", cleared.status === 200 && cleared.body?.notice === null && (await call(member, { action: "notice" })).body?.notice === null);
+  check("taking down when nothing is shown is fine", (await call(boss, { action: "clearNotice" })).status === 200);
+
   // --- removal and the admin log
   members = await call(boss, { action: "removeMember", userId: other.userId });
   check("admin removes a member", members.status === 200 && !row(members, other));
@@ -213,7 +236,7 @@ async function main() {
   check("the removed member loses access", removedStatus.body?.allowed === false, JSON.stringify(removedStatus.body));
   const log = await db.from("launcher_admin_actions").select("action").eq("actor_id", boss.userId);
   const actions = new Set((log.data ?? []).map((item) => item.action));
-  check("every change is in the admin log", ["set_tester", "set_role", "release_name", "delete_reservation", "activate_release", "remove_member", "open_diagnostics"].every((action) => actions.has(action)), [...actions].join());
+  check("every change is in the admin log", ["set_tester", "set_role", "release_name", "delete_reservation", "activate_release", "remove_member", "open_diagnostics", "set_notice", "clear_notice"].every((action) => actions.has(action)), [...actions].join());
 }
 
 async function createUser(name, role) {

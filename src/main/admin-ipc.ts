@@ -1,5 +1,6 @@
 import { ipcMain, shell } from "electron";
 import type { AdminDiagnostics, AdminNames, AdminRelease, AuthFailure } from "../shared/admin-types.js";
+import { type LauncherNotice, noticeProblem, parseNotice } from "../shared/notice.js";
 import type { LauncherUser, MemberSummary } from "../shared/types.js";
 import { isDiagnosticsUrl, readLogTail } from "./diagnostics.js";
 import { GameSessionWatch } from "./game-session-watch.js";
@@ -55,6 +56,14 @@ export function registerAdminIpc(context: AdminIpcContext): GameSessionWatch {
     if (!isDiagnosticsUrl(url)) throw new Error("진단 정보 주소가 올바르지 않습니다.");
     await shell.openExternal(url);
   });
+  const notice = async (body: Record<string, unknown>, fallback: string): Promise<LauncherNotice | null> =>
+    parseNotice((await auth.call<{ notice?: unknown }>(user(), body, fallback)).notice);
+  ipcMain.handle("notice:current", () => notice({ action: "notice" }, "공지를 불러오지 못했습니다."));
+  ipcMain.handle("admin:setNotice", (_event, text: unknown) => {
+    if (typeof text !== "string" || noticeProblem(text) !== null) throw new Error("공지 내용이 올바르지 않습니다.");
+    return notice({ action: "setNotice", text }, "공지를 올리지 못했습니다.");
+  });
+  ipcMain.handle("admin:clearNotice", () => notice({ action: "clearNotice" }, "공지를 내리지 못했습니다."));
   ipcMain.handle("diagnostics:send", async () => {
     const [gameLog, launcherLog] = await Promise.all([readLogTail(context.lastGameLogFile()), readLogTail(gameLogPath())]);
     await auth.call<{ ok: boolean }>(user(), { action: "uploadDiagnostics", gameLog, launcherLog }, "진단 정보를 보내지 못했습니다.");

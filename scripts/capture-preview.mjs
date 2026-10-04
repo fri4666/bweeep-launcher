@@ -208,6 +208,15 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       return adminReleases;
     },
     adminDiagnostics: async () => adminDiagnostics,
+    notice: async () => window.__notice ?? null,
+    setNotice: async (text) => {
+      window.__notice = { id: `notice-${Date.now()}`, text: text.trim(), at: new Date().toISOString() };
+      return window.__notice;
+    },
+    clearNotice: async () => {
+      window.__notice = null;
+      return null;
+    },
     openDiagnostics: async (id) => { window.__openedDiagnostics = id; },
     sendDiagnostics: async () => {
       window.__diagnosticsSent += 1;
@@ -747,8 +756,68 @@ if (adminMode) {
   if (await narrowOverflow(panel)) throw new Error("admin diagnostics overflow at 920px");
   await page.screenshot({ path: "previews/bweeep-launcher-admin-diagnostics-narrow.png" });
   await page.setViewportSize({ width: 1440, height: 900 });
+
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await panel.getByText("올린 공지가 없어요.").waitFor();
+  const post = panel.getByRole("button", { name: "올리기" });
+  const noticeInput = panel.getByLabel("공지 내용");
+  if (!(await post.isDisabled())) throw new Error("an empty notice can be posted");
+  await noticeInput.fill("가".repeat(101));
+  if (!(await post.isDisabled()) || !(await panel.innerText()).includes("101/100")) throw new Error("a notice over the limit can be posted");
+  await noticeInput.fill("한 줄\n두 줄\n세 줄");
+  if (!(await post.isDisabled())) throw new Error("a three-line notice can be posted");
+  await noticeInput.fill("오늘 밤 9시에 선릿벨리 서버를 점검해요\n10분쯤 걸려요");
+  await post.click();
+  await panel.locator(".adminNoticeShown").filter({ hasText: "10분쯤 걸려요" }).waitFor();
+  if (await noticeInput.inputValue() !== "") throw new Error("the draft stays after posting");
+  checks.push("admin-notice-limits", "admin-notice-post");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-notice.png" });
+  if (await narrowOverflow(panel)) throw new Error("admin notice overflows at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-notice-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+
   await page.keyboard.press("Escape");
   if (await page.getByRole("dialog", { name: "관리" }).count()) throw new Error("Escape did not close the admin tab");
+
+  // The posted notice is on the main screen at once, clear of the server text and the play dock.
+  const banner = page.locator(".heroNotice");
+  await banner.filter({ hasText: "10분쯤 걸려요" }).waitFor();
+  await page.screenshot({ path: "previews/bweeep-launcher-notice.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  const covered = await page.evaluate(() => {
+    const notice = document.querySelector(".heroNotice").getBoundingClientRect();
+    const hero = document.querySelector(".hero").getBoundingClientRect();
+    const overlaps = [".heroCopy", ".actionDock"].some((selector) => {
+      const other = document.querySelector(selector).getBoundingClientRect();
+      return notice.left < other.right && other.left < notice.right && notice.top < other.bottom && other.top < notice.bottom;
+    });
+    return overlaps || notice.right > hero.right || notice.bottom > hero.bottom;
+  });
+  if (covered) throw new Error("the notice covers the server text or the play dock at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-notice-narrow.png" });
+  // The longest notice allowed, two lines of wide characters, still fits in the smallest window.
+  const fits = await page.evaluate(() => {
+    const text = document.querySelector(".heroNotice p");
+    const before = text.textContent;
+    text.textContent = `${"가".repeat(50)}\n${"나".repeat(49)}`;
+    const notice = document.querySelector(".heroNotice").getBoundingClientRect();
+    const copy = document.querySelector(".heroCopy").getBoundingClientRect();
+    text.textContent = before;
+    return notice.bottom <= copy.top;
+  });
+  if (!fits) throw new Error("the longest notice covers the server text at 920px");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await banner.getByRole("button", { name: "공지 닫기" }).click();
+  if (await banner.count()) throw new Error("the closed notice is still shown");
+  checks.push("notice-banner-shown", "notice-banner-closed");
+  // Taking it down in the admin tab removes it for members who had not closed it.
+  await page.getByRole("button", { name: "관리", exact: true }).click();
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await panel.getByRole("button", { name: "내리기" }).click();
+  await panel.getByText("올린 공지가 없어요.").waitFor();
+  checks.push("admin-notice-taken-down");
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "설정", exact: true }).click();
   if ((await page.locator(".settingsModal").innerText()).includes("테스터로 지정")) throw new Error("the tester list is still in settings");
   checks.push("tester-list-moved");
