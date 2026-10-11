@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "bweeep_notify",
+  "version": "${version}",
+  "name": "Bweeep Notify",
+  "description": "Shows server notices as a banner at the top of the screen with a ding.",
+  "authors": ["fri4666"],
+  "license": "All Rights Reserved",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.fri4666.bweeep.notify.NotifyClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
