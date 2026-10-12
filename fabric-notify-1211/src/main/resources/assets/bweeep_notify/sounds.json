@@ -1,0 +1,8 @@
+{
+  "notice": {
+    "category": "master",
+    "sounds": [
+      { "name": "bweeep_notify:notice", "stream": false }
+    ]
+  }
+}
