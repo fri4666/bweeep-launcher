@@ -35,6 +35,15 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   window.__authFailure = (reason) => authFailureListeners.forEach((listener) => listener({ reason, at: new Date().toISOString() }));
   window.__diagnosticsSent = 0;
   window.__openedDiagnostics = null;
+  // Admin requests can be slowed (__adminDelayMs) or made to fail (__adminFail = the server's message).
+  // "unsupported" is what the main process turns launcher-access's unknown-action answer into.
+  window.__adminDelayMs = 0;
+  window.__adminFail = null;
+  const adminGate = async () => {
+    if (window.__adminDelayMs) await new Promise((resolve) => setTimeout(resolve, window.__adminDelayMs));
+    if (window.__adminFail === "unsupported") throw new Error("Error invoking remote method 'notice:current': Error: 서버가 아직 이 기능을 지원하지 않아요.");
+    if (window.__adminFail) throw new Error(`Error invoking remote method 'admin:request': Error: ${window.__adminFail}`);
+  };
   const hoursFromNow = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();
   let adminNames = {
     holds: [
@@ -181,43 +190,57 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     systemMemory: async () => ({ totalMb: 16384 }),
     listMembers: async () => members,
     setTester: async (userId, tester) => {
+      await adminGate();
       members = members.map((member) => member.userId === userId ? { ...member, tester } : member);
       return members;
     },
     setMemberRole: async (userId, role) => {
+      await adminGate();
       members = members.map((member) => member.userId === userId ? { ...member, role, tester: role === "admin" || member.tester } : member);
       return members;
     },
     removeMember: async (userId) => {
+      await adminGate();
       members = members.filter((member) => member.userId !== userId);
       return members;
     },
     adminNames: async () => adminNames,
     releaseName: async (userId, gameName) => {
+      await adminGate();
       adminNames = { ...adminNames, holds: adminNames.holds.filter((hold) => hold.userId !== userId || hold.gameName !== gameName) };
       return adminNames;
     },
     deleteReservation: async (uuid) => {
+      await adminGate();
       adminNames = { ...adminNames, reservations: adminNames.reservations.filter((item) => item.minecraftUuid !== uuid) };
       return adminNames;
     },
     adminReleases: async () => adminReleases,
     activateRelease: async (releaseId) => {
+      await adminGate();
       const target = adminReleases.find((release) => release.id === releaseId);
       adminReleases = adminReleases.map((release) => release.packId === target.packId ? { ...release, active: release.id === releaseId } : release);
       return adminReleases;
     },
     adminDiagnostics: async () => adminDiagnostics,
-    notice: async () => window.__notice ?? null,
+    notice: async () => {
+      await adminGate();
+      return window.__notice ?? null;
+    },
     setNotice: async (text) => {
+      await adminGate();
       window.__notice = { id: `notice-${Date.now()}`, text: text.trim(), at: new Date().toISOString() };
       return window.__notice;
     },
     clearNotice: async () => {
+      await adminGate();
       window.__notice = null;
       return null;
     },
-    openDiagnostics: async (id) => { window.__openedDiagnostics = id; },
+    openDiagnostics: async (id) => {
+      await adminGate();
+      window.__openedDiagnostics = id;
+    },
     sendDiagnostics: async () => {
       window.__diagnosticsSent += 1;
       if (window.__diagnosticsSent > 1) throw new Error("Error invoking remote method 'diagnostics:send': Error: 진단 정보는 10분에 한 번만 보낼 수 있어요.");
@@ -495,7 +518,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   };
 }, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewServerSleeping: serverSleeping, previewAuthOutage: authOutage, previewMoveAndMods: moveAndModsMode, previewMember: memberMode });
 
-await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
+await page.goto(process.env.BWEEP_PREVIEW_URL ?? "http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 if (testChannelDenied) {
   await page.getByText("지정된 테스터만 쓸 수 있어요").waitFor({ timeout: 10000 });
   if (await page.locator(".launchButton").count()) throw new Error("the test build opened for a member who is not a tester");
@@ -771,10 +794,89 @@ if (adminMode) {
   await panel.locator(".adminNoticeShown").filter({ hasText: "10분쯤 걸려요" }).waitFor();
   if (await noticeInput.inputValue() !== "") throw new Error("the draft stays after posting");
   checks.push("admin-notice-limits", "admin-notice-post");
+  // The post is confirmed twice: a green toast with a check, and a check beside the notice that is now shown.
+  const okToast = panel.locator(".adminToast.isOk");
+  await okToast.filter({ hasText: "공지를 올렸어요" }).waitFor();
+  if ((await okToast.getAttribute("role")) !== "status") throw new Error("the success toast is not announced as a status");
+  await panel.locator(".adminPanelState.isDone .adminMark.isDone").waitFor();
+  checks.push("admin-notice-post-confirmed");
+  // Let the toast's 160ms fade-in and the row's 200ms colour change finish before the picture is taken.
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-success.png" });
+  // The green state goes away by itself.
+  await page.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+  if (await panel.locator(".adminMark").count()) throw new Error("the check mark does not go away");
+  checks.push("admin-feedback-clears-itself");
   await page.screenshot({ path: "previews/bweeep-launcher-admin-notice.png" });
   if (await narrowOverflow(panel)) throw new Error("admin notice overflows at 920px");
   await page.screenshot({ path: "previews/bweeep-launcher-admin-notice-narrow.png" });
   await page.setViewportSize({ width: 1440, height: 900 });
+
+  // Busy, failure and "the server does not know this yet" look different from success and never change the layout.
+  await panel.getByRole("tab", { name: "멤버" }).click();
+  const friend = panel.locator(".adminRow").filter({ hasText: "집가고싶다" });
+  await friend.waitFor();
+  const rowBox = await friend.boundingBox();
+  await page.evaluate(() => { window.__adminDelayMs = 1500; });
+  await friend.getByRole("button", { name: "테스터" }).click();
+  await friend.locator(".adminMark.isBusy").waitFor();
+  if (!(await friend.evaluate((row) => row.classList.contains("isBusy")))) throw new Error("the busy row is not marked");
+  if (!(await friend.getByRole("button", { name: "관리자" }).isDisabled())) throw new Error("other buttons stay clickable while a request runs");
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-busy.png" });
+  await friend.locator(".adminMark.isDone").waitFor({ timeout: 4000 });
+  await panel.locator(".adminToast.isOk").filter({ hasText: "집가고싶다 테스터 해제" }).waitFor();
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-row-done.png" });
+  const afterBox = await friend.boundingBox();
+  if (Math.abs(afterBox.y - rowBox.y) > 0.5 || Math.abs(afterBox.height - rowBox.height) > 0.5) throw new Error("the rows moved while feedback appeared");
+  checks.push("admin-feedback-busy-then-done", "admin-feedback-no-layout-jump");
+  await page.evaluate(() => { window.__adminDelayMs = 0; });
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+
+  await page.evaluate(() => { window.__adminFail = "저장하지 못했어요 (시험용 오류)"; });
+  await friend.getByRole("button", { name: "테스터" }).click();
+  const errorToast = panel.locator(".adminToast.isError");
+  await errorToast.filter({ hasText: "시험용 오류" }).waitFor();
+  if ((await errorToast.getAttribute("role")) !== "alert") throw new Error("the failure is not announced as an alert");
+  if (await panel.locator(".adminMark.isDone").count()) throw new Error("a failed request shows a check");
+  if (await friend.getByRole("button", { name: "테스터" }).isDisabled()) throw new Error("the button stays locked after a failure");
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-failure.png" });
+  // The toast sits in the title row: inside the panel and clear of the title and the close button, also at the smallest window.
+  const toastClear = () => panel.evaluate((modal) => {
+    const toast = modal.querySelector(".adminToast").getBoundingClientRect();
+    const box = modal.getBoundingClientRect();
+    const others = [modal.querySelector(".modalHeader h2"), modal.querySelector(".closeButton")].map((element) => element.getBoundingClientRect());
+    const inside = toast.left >= box.left && toast.right <= box.right && toast.top >= box.top && toast.bottom <= box.bottom;
+    const apart = others.every((other) => toast.right <= other.left || other.right <= toast.left || toast.bottom <= other.top || other.bottom <= toast.top);
+    return inside && apart;
+  });
+  if (!(await toastClear())) throw new Error("the toast covers the title or the close button");
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(150);
+  if (!(await toastClear())) throw new Error("the toast covers the title or the close button at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-failure-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  checks.push("admin-feedback-toast-clear-of-title");
+  await page.waitForTimeout(3200);
+  if (!(await errorToast.count())) throw new Error("the failure disappears before it is read");
+  await errorToast.getByRole("button", { name: "닫기" }).click();
+  await errorToast.waitFor({ state: "detached" });
+  checks.push("admin-feedback-failure-stays-until-closed");
+
+  await page.evaluate(() => { window.__adminFail = "unsupported"; });
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await panel.locator(".adminToast.isError").filter({ hasText: "서버가 아직 이 기능을 지원하지 않아요." }).waitFor();
+  if ((await panel.innerText()).includes("지원하지 않는 요청입니다")) throw new Error("the raw server message reaches the notice tab");
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-unsupported.png" });
+  checks.push("admin-notice-unsupported-message");
+  await page.evaluate(() => { window.__adminFail = null; });
+  await panel.getByRole("tab", { name: "멤버" }).click();
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await panel.locator(".adminNoticeShown").filter({ hasText: "10분쯤 걸려요" }).waitFor();
+  if (await panel.locator(".adminToast").count()) throw new Error("the old failure is still shown after the tab was reloaded");
 
   await page.keyboard.press("Escape");
   if (await page.getByRole("dialog", { name: "관리" }).count()) throw new Error("Escape did not close the admin tab");
