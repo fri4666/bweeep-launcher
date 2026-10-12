@@ -287,7 +287,7 @@ async function handleRequest(request: Request): Promise<Response> {
     }
 
     if (body.action === "notice") {
-      return json({ notice: await currentNotice(supabaseAdmin) });
+      return json({ notice: await currentNotice(supabaseAdmin, userId) });
     }
 
     if (isAdminRequest(body)) {

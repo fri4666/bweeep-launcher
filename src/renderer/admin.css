@@ -4,8 +4,163 @@
   width: min(820px, 100%);
 }
 
+.adminModal {
+  position: relative;
+}
+
 .adminTabs {
   justify-self: start;
+}
+
+/* Feedback for every admin request: the mark in the row, the toast over the panel's bottom edge. */
+
+.adminMark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+
+.adminMark svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.adminMark.isBusy {
+  color: var(--muted);
+}
+
+.adminMark.isDone {
+  color: var(--ok);
+}
+
+.adminRow.isBusy,
+.adminPanelState.isBusy {
+  opacity: 0.7;
+}
+
+.adminRow.isDone,
+.adminPanelState.isDone {
+  background: rgba(132, 173, 114, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(132, 173, 114, 0.4);
+}
+
+.adminRow,
+.adminPanelState {
+  transition: background-color 200ms ease, box-shadow 200ms ease, opacity 150ms ease;
+}
+
+/* In the empty middle of the title row, so it never covers the list however short the list is. */
+.adminToastSlot {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  right: 120px;
+  left: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 56px;
+  pointer-events: none;
+}
+
+.adminToast {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 9px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  pointer-events: auto;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  animation: adminToastIn 160ms ease-out;
+}
+
+.adminToast > svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.adminToast.isOk {
+  color: var(--ok);
+  background: #1b2219;
+  border: 1px solid rgba(132, 173, 114, 0.5);
+}
+
+.adminToast.isError {
+  color: var(--danger);
+  background: #261b1a;
+  border: 1px solid rgba(238, 138, 128, 0.5);
+}
+
+.adminToast span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.adminToastClose {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin: -2px -6px -2px 2px;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.adminToastClose svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+.adminToastClose:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+@keyframes adminToastIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .adminToast {
+    animation: none;
+  }
+
+  .adminNoticeItem {
+    transition: none;
+  }
+
+  .adminRow,
+  .adminPanelState {
+    transition: none;
+  }
+
+  .adminMark .spinner {
+    animation: none !important;
+  }
 }
 
 .adminList {
@@ -131,6 +286,70 @@
 
 .adminNoticeShown .textButton {
   flex: 0 0 auto;
+}
+
+/* One row per notice shown now: who it is for above the text. */
+.adminNoticeItem {
+  padding: 8px 6px 8px 10px;
+  border-radius: 8px;
+  transition: background-color 200ms ease, box-shadow 200ms ease, opacity 150ms ease;
+}
+
+.adminNoticeItem + .adminNoticeItem {
+  margin-top: 4px;
+}
+
+.adminNoticeItem.isBusy {
+  opacity: 0.7;
+}
+
+.adminNoticeItem.isDone {
+  background: rgba(132, 173, 114, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(132, 173, 114, 0.4);
+}
+
+.adminNoticeBody {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.adminNoticeTarget {
+  overflow: hidden;
+  color: var(--subtle);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.adminNoticeTo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.adminNoticeTo label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.adminSelect {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.adminSelect:disabled {
+  opacity: 0.55;
 }
 
 .adminNoticeInput {

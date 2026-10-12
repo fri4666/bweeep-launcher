@@ -11,6 +11,7 @@ import { createOfflineLaunchIdentity, type LaunchIdentity } from "./launch-ident
 import { launcherProtocolScheme } from "./launcher-channel.js";
 import { AuthServiceUnavailableError } from "./offline-access.js";
 import { isAuthOutageResponse } from "../shared/auth-outage.js";
+import { describeServerMessage } from "../shared/server-errors.js";
 
 interface SupabaseConfig {
   url?: string;
@@ -566,7 +567,7 @@ function functionResponseMessage(status: number, payload: unknown, fallback: str
     return "런처 세션 토큰이 서버에 전달되지 않았습니다. 다른 계정으로 다시 로그인해 주세요.";
   }
   if (status === 401) return "로그인 세션을 서버에서 인증하지 못했습니다. 다른 계정으로 다시 로그인해 주세요.";
-  if (typeof message === "string" && message.trim()) return message;
+  if (typeof message === "string" && message.trim()) return describeServerMessage(status, message);
 
   return status ? `${fallback} (서버 응답 ${status})` : `${fallback} (네트워크 연결을 확인해 주세요.)`;
 }
