@@ -41,21 +41,13 @@ export interface LaunchAuthorization {
   yggdrasil?: { jvmArgs: string[] };
 }
 
-export async function installAndLaunch(
-  manifest: ModpackManifest,
-  instanceDir: string,
-  getLaunchAuthorization: () => Promise<LaunchAuthorization>,
-  bundledClientMods: BundledClientMod[],
-  progress: ProgressSink,
-  onExit: (exit: GameExitResult) => void,
-  /** JVM arguments of the connection guard agent; empty when the pack opts out. */
-  connectionGuardArgs: string[] = [],
-  memory: Pick<GameMemory, "minMb" | "maxMb"> = { minMb: MIN_GAME_MEMORY_MB, maxMb: 6144 }
-): Promise<{ pid: number; version: string }> {
-  if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
-    throw new Error("지원하지 않는 Minecraft 로더입니다.");
-  }
+/** What the game needs before the pack's own files matter: Java, the Minecraft files and the loader. */
+export interface PreparedGame {
+  javaPath: string;
+  version: string;
+}
 
+function createInstallContext(progress: ProgressSink): { report: ProgressSink; runtime: InstallRuntime } {
   let activeStage = "게임 파일";
   const report: ProgressSink = (event) => {
     if (event.stage) activeStage = event.stage;
@@ -78,6 +70,20 @@ export async function installAndLaunch(
       });
     }
   });
+  return { report, runtime };
+}
+
+/**
+ * Java, the Minecraft files and the loader. None of it depends on the modpack
+ * files, so a launch can run this while the pack is still syncing. It touches
+ * nothing in `mods/` and not the loader's launch libraries: a pack can bring
+ * some of those itself, and they are checked once the sync is over.
+ */
+export async function prepareGameFiles(manifest: ModpackManifest, instanceDir: string, progress: ProgressSink): Promise<PreparedGame> {
+  if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
+    throw new Error("지원하지 않는 Minecraft 로더입니다.");
+  }
+  const { report, runtime } = createInstallContext(progress);
   const minecraft = MinecraftFolder.from(instanceDir);
   // Versions installed by an earlier launch need no metadata from Mojang, Fabric or Forge.
   const installed = InstalledVersions.forInstance(instanceDir);
@@ -90,6 +96,26 @@ export async function installAndLaunch(
       ? await runStage(report, "Fabric 설치", async () => (await installed.reuseOrInstall(loaderKey, isUsable, () => installFabric(minecraft, manifest, runtime, report))).versionId)
       : await runStage(report, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", async () =>
         (await installed.reuseOrInstall(loaderKey, isUsable, () => installForgeFamily(minecraft, manifest, javaPath, runtime, report))).versionId);
+  return { javaPath, version };
+}
+
+export async function installAndLaunch(
+  manifest: ModpackManifest,
+  instanceDir: string,
+  getLaunchAuthorization: () => Promise<LaunchAuthorization>,
+  bundledClientMods: BundledClientMod[],
+  progress: ProgressSink,
+  onExit: (exit: GameExitResult) => void,
+  /** JVM arguments of the connection guard agent; empty when the pack opts out. */
+  connectionGuardArgs: string[] = [],
+  memory: Pick<GameMemory, "minMb" | "maxMb"> = { minMb: MIN_GAME_MEMORY_MB, maxMb: 6144 },
+  /** The game files, when the caller already started preparing them next to the pack sync. */
+  preparing?: Promise<PreparedGame>
+): Promise<{ pid: number; version: string }> {
+  const { javaPath, version } = await (preparing ?? prepareGameFiles(manifest, instanceDir, progress));
+  const { report, runtime } = createInstallContext(progress);
+  const minecraft = MinecraftFolder.from(instanceDir);
+  // After the pack sync: files the pack brings itself (the Fabric libraries, for one) are already in place and skipped.
   await runStage(report, "실행 라이브러리", () => installLaunchLibraries(minecraft, version, runtime, report));
   if (await removeStaleLockMod(instanceDir, manifest, bundledClientMods)) {
     report({ kind: "info", stage: "게임 파일", message: "안 쓰는 예전 모드 정리" });
