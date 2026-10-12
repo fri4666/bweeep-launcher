@@ -1,14 +1,17 @@
 // Opening hours of the server gate: the window logic (Korean time, boundaries,
 // week wrap, startsOn), the strict config check, and the gate with a fake
-// clock: a stopped server outside its hours is not started and joins are
-// turned away with the next opening time, a running server is never touched,
-// an admin can open it by hand, and new hours load without cutting anyone off.
+// clock with a fake console: a stopped server outside its hours is not started
+// and joins are turned away with the next opening time; when the hours end a
+// running server is warned (5 min, 1 min, 10 s) and stopped gracefully, once;
+// when they begin it is started, once, after the other server has left; a gate
+// restart, a hand-opened period, `startsOn`, no schedule and a console that
+// does not answer are all handled; new hours load without cutting anyone off.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  ServerGate, WAKE_MARKER, formatOpenTime, isOpenAt, nextCloseAt, nextOpenAt, parseSchedule, readConfig, reloadSchedules
+  ServerGate, WAKE_MARKER, changesBetween, formatOpenTime, isOpenAt, nextCloseAt, nextOpenAt, parseSchedule, readConfig, reloadSchedules
 } from "./server-gate.mjs";
 import { fakeBackend, fakeControl, freePort, joinClient, sleep, statusPing, until } from "./lib/gate-test-kit.mjs";
 
@@ -87,6 +90,17 @@ assert.equal(open(twice, 2026, 10, 25, 2, 0), false);
 assert.equal(nextOpenAt(twice, kst(2026, 10, 26, 11)), kst(2026, 10, 31, 20));
 pass("several-windows");
 
+// 7b. The boundaries the gate acts on: window ends and starts, not startsOn itself, plus the end of a hand-opened period.
+const flips = (schedule, from, to, until = 0) => changesBetween(schedule, until, from, to).map((change) => `${change.type} ${formatOpenTime(change.at)}`);
+assert.deepEqual(flips(cobblemon, kst(2026, 10, 1), kst(2026, 10, 27)), ["open 금 12:00", "close 일 12:00"], "nothing before startsOn, none at startsOn");
+assert.deepEqual(flips(sunlit, kst(2026, 10, 1), kst(2026, 10, 27)), ["close 금 12:00", "open 일 12:00"]);
+assert.deepEqual(flips(cobblemon, kst(2026, 10, 1), kst(2026, 10, 22, 23, 59, 59)), [], "the test period has no boundaries");
+assert.deepEqual(flips(cobblemon, kst(2026, 10, 26), kst(2026, 11, 8)), ["open 금 12:00", "close 일 12:00", "open 금 12:00"]);
+assert.equal(changesBetween(cobblemon, 0, kst(2026, 10, 25, 12), kst(2026, 10, 25, 12))[0].at, kst(2026, 10, 25, 12), "a boundary at the range edge counts");
+assert.deepEqual(flips(cobblemon, kst(2026, 10, 26), kst(2026, 10, 28), kst(2026, 10, 27, 10)), ["close 화 10:00"], "the end of a hand-opened period in closed hours is a closing");
+assert.deepEqual(flips(cobblemon, kst(2026, 10, 24, 8), kst(2026, 10, 26), kst(2026, 10, 25, 20)), ["close 일 20:00"], "a hand-opened period past the window end moves the closing");
+pass("boundaries-the-gate-acts-on");
+
 // 8. Strict checks: anything unclear is refused instead of guessed.
 const refuse = (value, reason) => assert.throws(() => parseSchedule(value), reason);
 refuse(null, /객체/);
@@ -125,21 +139,68 @@ pass("gate-json-schedule-check");
 
 // ---- the gate with a fake clock
 
-const timing = { holdPingMs: 150, fastProbeMs: 50, slowProbeMs: 100, probeTimeoutMs: 300, idleMs: 400 };
+const baseTiming = { holdPingMs: 150, fastProbeMs: 50, slowProbeMs: 100, probeTimeoutMs: 300, idleMs: 400, hoursCheckMs: 30, lateCloseWaitMs: 50 };
 let clock = kst(2026, 10, 26, 9); // Monday 09:00: Cobblemon closed
 const lines = [];
-function makeGate(unit, { startDelayMs = 200, schedule = { startsOn: START, open: [{ from: "fri 12:00", to: "sun 12:00" }] }, control: customControl } = {}) {
+const COBBLEMON = { startsOn: START, open: [{ from: "fri 12:00", to: "sun 12:00" }] };
+const SUNLIT = { startsOn: START, open: [{ from: "sun 12:00", to: "fri 12:00" }] };
+
+function makeGate(unit, { startDelayMs = 200, schedule = COBBLEMON, control: customControl, timing = {} } = {}) {
   return (async () => {
     const backend = fakeBackend(await freePort());
     const control = customControl ? customControl(backend) : fakeControl(backend, startDelayMs);
     const listen = await freePort();
     const gate = new ServerGate(
       { name: unit, unit, listen, backend: backend.port, ...(schedule ? { schedule } : {}) },
-      { stateDir, control, log: (line) => lines.push(line), timing, now: () => clock }
+      { stateDir, control, log: (line) => lines.push(line), timing: { ...baseTiming, ...timing }, now: () => clock }
     );
     await gate.listen();
     return { gate, backend, control, listen };
   })();
+}
+
+/**
+ * A gate with a console: `events` is the ordered record of what it did to the server (notices, console stop,
+ * systemd stop, start); the console "stop" takes `stopMs` and really stops the fake server.
+ */
+async function makeRig(unit, { schedule = COBBLEMON, rconWorks = true, stopMs = 20, running = false, timing = {}, events = [], label = unit } = {}) {
+  const backend = fakeBackend(await freePort());
+  const base = fakeControl(backend, 100);
+  const control = {
+    calls: base.calls,
+    isActive: base.isActive,
+    setActive: base.setActive,
+    start: async (name) => { events.push(`${label} start`); return base.start(name); },
+    stop: async (name) => { events.push(`${label} systemd stop`); return base.stop(name); }
+  };
+  const rcon = async (_port, password, command) => {
+    assert.equal(password, "secret-password");
+    if (command.startsWith("tellraw @a ")) {
+      const notice = JSON.parse(command.slice("tellraw @a ".length));
+      assert.equal(notice.translate, "bweeep.notice");
+      assert.equal(notice.fallback, "[공지] %3$s");
+      assert.match(command, /^[\x00-\x7f]*$/, "the command is plain ASCII (non-ASCII is escaped)");
+      events.push(`${label} notice ${notice.with[0]} ${notice.with[1]}s ${notice.with[2]}`);
+      return rconWorks ? "" : null;
+    }
+    events.push(`${label} rcon ${command}`);
+    if (!rconWorks) return null;
+    await sleep(stopMs);
+    await backend.close();
+    base.setActive(false);
+    return "Stopping the server";
+  };
+  if (running) {
+    await backend.listen();
+    base.setActive(true);
+  }
+  const listen = await freePort();
+  const gate = new ServerGate(
+    { name: unit, unit, listen, backend: backend.port, rcon: { port: 1, password: "secret-password" }, ...(schedule ? { schedule } : {}) },
+    { stateDir, control, rcon, log: (line) => lines.push(`${label}: ${line}`), timing: { ...baseTiming, idleMs: 60_000, ...timing }, now: () => clock }
+  );
+  await gate.listen();
+  return { gate, backend, control, listen, events, base };
 }
 
 try {
@@ -161,58 +222,232 @@ try {
     pass("closed-and-stopped-never-starts");
   }
 
-  // 11. Open: it starts as before. A running server is not touched when the hours end.
+  // 11. The hours end while a player is on: warned at 5 min, 1 min and 10 s, then the console "stop" and systemd, once.
   {
-    const { gate, backend, control, listen } = await makeGate("bweeep-running");
     clock = kst(2026, 10, 24, 15); // Saturday: open
-    let status = await statusPing(listen, `x${WAKE_MARKER}`);
-    assert.ok(["starting", "sleeping"].includes(status.bweeep.gate));
-    await until(() => gate.state === "up", "server up inside its hours");
-    assert.deepEqual(control.calls, ["start bweeep-running"]);
+    const rig = await makeRig("bweeep-closing");
+    const { gate, events, listen, backend } = rig;
+    await statusPing(listen, `x${WAKE_MARKER}`);
+    await until(() => gate.state === "up", "up inside its hours");
     const player = joinClient(listen, "seos_py");
     await until(() => player.welcome, "player is in");
-    clock = kst(2026, 10, 25, 12); // the window ends while the player is on
-    await sleep(900); // longer than idleMs
-    assert.equal(gate.state, "up", "still up after the hours ended");
-    assert.deepEqual(control.calls, ["start bweeep-running"], "no stop, no restart at closing time");
-    assert.equal(player.closed, false, "the player was not disconnected");
-    status = await statusPing(listen);
-    assert.equal(status.bweeep, undefined, "a running server answers for itself");
-    const second = joinClient(listen, "friend");
-    await until(() => second.welcome, "a running server still takes joins after closing");
-    second.socket.destroy();
-    // Everyone leaves: the normal empty-server sleep applies, and then it stays closed.
-    player.socket.destroy();
-    await until(() => gate.state === "down", "normal idle sleep");
-    assert.deepEqual(control.calls, ["start bweeep-running", "stop bweeep-running"]);
-    status = await statusPing(listen);
-    assert.equal(status.bweeep.gate, "closed");
-    assert.equal(status.bweeep.nextOpen, kst(2026, 10, 30, 12));
-    const refused = joinClient(listen, "seos_py");
-    await until(() => refused.closed, "refused after the idle stop");
-    assert.match(refused.disconnect, /금 12:00에 열려요/);
-    assert.equal(control.calls.length, 2, "nothing started after closing");
+    const notices = () => events.filter((event) => event.includes(" notice "));
+    clock = kst(2026, 10, 25, 11, 54, 59);
+    await sleep(200);
+    assert.equal(notices().length, 0, "nothing before 5 minutes are left");
+    clock = kst(2026, 10, 25, 11, 55, 0);
+    await until(() => notices().length === 1, "the 5-minute warning");
+    assert.equal(notices()[0], "bweeep-closing notice warning 8s 5분 뒤 서버가 닫혀요");
+    clock = kst(2026, 10, 25, 11, 57, 0);
+    await sleep(200);
+    assert.equal(notices().length, 1, "each warning once");
+    clock = kst(2026, 10, 25, 11, 59, 0);
+    await until(() => notices().length === 2, "the 1-minute warning");
+    assert.equal(notices()[1], "bweeep-closing notice warning 8s 1분 뒤 서버가 닫혀요");
+    clock = kst(2026, 10, 25, 11, 59, 50);
+    await until(() => notices().length === 3, "the 10-second warning");
+    assert.equal(notices()[2], "bweeep-closing notice urgent 8s 곧 서버가 닫혀요, 지금 저장돼요");
+    clock = kst(2026, 10, 25, 11, 59, 59);
+    await sleep(200);
+    assert.equal(gate.state, "up", "still up one second before the end");
+    assert.equal(player.closed, false);
+    assert.ok(!events.some((event) => event.includes("stop")), "no stop before the end");
+    clock = kst(2026, 10, 25, 12, 0, 0);
+    await until(() => gate.state === "down", "stopped at the end");
+    assert.deepEqual(events, [
+      "bweeep-closing start",
+      "bweeep-closing notice warning 8s 5분 뒤 서버가 닫혀요",
+      "bweeep-closing notice warning 8s 1분 뒤 서버가 닫혀요",
+      "bweeep-closing notice urgent 8s 곧 서버가 닫혀요, 지금 저장돼요",
+      "bweeep-closing rcon stop",
+      "bweeep-closing systemd stop"
+    ]);
+    // Once per boundary: more time passing changes nothing, and a join is turned away rather than starting it.
+    for (const time of [[2026, 10, 25, 12, 0, 5], [2026, 10, 25, 14], [2026, 10, 27, 10]]) {
+      clock = kst(...time);
+      await sleep(150);
+    }
+    const late = joinClient(listen, "friend");
+    await until(() => late.closed, "refused once stopped");
+    assert.match(late.disconnect, /열려 있지 않아요/);
+    assert.equal(events.length, 6, "no second stop, no start");
+    // Someone starts it by hand in the closed hours: the boundary was already handled, so it is left alone.
+    rig.base.setActive(true);
+    await backend.listen();
+    await sleep(300);
+    assert.equal(events.length, 6, "no stop/start loop");
     await gate.close();
     await backend.close();
-    pass("running-server-is-never-touched-when-hours-end");
+    pass("closing-boundary-warns-then-stops-once");
   }
 
-  // 12. A join waiting for a start that began inside the hours is still handed over after they end.
+  // 12. The hours begin: started once, after the grace; then the normal rules (idle sleep, wake on join) apply.
   {
-    clock = kst(2026, 10, 24, 15);
-    const { gate, control, listen, backend } = await makeGate("bweeep-held", { startDelayMs: 500 });
+    clock = kst(2026, 10, 25, 11, 59, 0); // Sunday just before noon: Sunlit closed
+    const rig = await makeRig("bweeep-opening", { schedule: SUNLIT, timing: { idleMs: 500 } });
+    const { gate, events, listen } = rig;
+    await sleep(200);
+    assert.deepEqual(events, [], "closed: nothing");
+    clock = kst(2026, 10, 25, 12, 0, 0);
+    await sleep(200);
+    assert.deepEqual(events, [], "the boundary itself waits out the grace");
+    clock = kst(2026, 10, 25, 12, 0, 59);
+    await sleep(200);
+    assert.deepEqual(events, []);
+    clock = kst(2026, 10, 25, 12, 1, 0);
+    await until(() => gate.state === "up", "started after the grace");
+    assert.deepEqual(events, ["bweeep-opening start"]);
+    // Nobody comes: it sleeps again by itself, and the boundary does not start it a second time.
+    await until(() => gate.state === "down", "idle sleep");
+    clock = kst(2026, 10, 25, 13);
+    await sleep(300);
+    assert.deepEqual(events, ["bweeep-opening start", "bweeep-opening rcon stop", "bweeep-opening systemd stop"]);
+    // A join wakes it as usual.
     const joiner = joinClient(listen, "seos_py");
-    await until(() => control.calls.length === 1, "the join started the server");
-    clock = kst(2026, 10, 25, 12);
-    await until(() => joiner.welcome, "the held join reaches the server", 6_000);
-    assert.equal(backend.joins.length, 1);
+    await until(() => joiner.welcome, "woken by a join inside the hours");
+    assert.equal(events.filter((event) => event.endsWith(" start")).length, 2);
     joiner.socket.destroy();
-    await until(() => gate.state === "down", "idle stop");
     await gate.close();
-    pass("held-join-survives-closing");
+    await rig.backend.close();
+    pass("opening-boundary-starts-once");
   }
 
-  // 13. A join arriving while the server is stopping, after the hours ended, is refused and no restart follows.
+  // 13. A gate (re)started while a server runs in closed hours: the players get the last warning, then it is stopped, once, also across restarts.
+  {
+    clock = kst(2026, 10, 26, 9); // Monday: closed since Sunday noon
+    const events = [];
+    const rig = await makeRig("bweeep-restarted", { running: true, events });
+    const { gate, listen, backend } = rig;
+    assert.equal(gate.state, "up");
+    const player = joinClient(listen, "seos_py");
+    await until(() => player.welcome, "player is in");
+    await until(() => gate.state === "down", "stopped by the hours");
+    assert.deepEqual(events, [
+      "bweeep-restarted notice urgent 8s 곧 서버가 닫혀요, 지금 저장돼요",
+      "bweeep-restarted rcon stop",
+      "bweeep-restarted systemd stop"
+    ]);
+    await gate.close();
+    // The same gate restarted later (same state directory) with the server running again: this boundary is done.
+    const again = await makeRig("bweeep-restarted", { running: true, events });
+    assert.equal(again.gate.state, "up");
+    await sleep(400);
+    assert.equal(again.gate.state, "up", "not stopped twice for one boundary");
+    assert.equal(events.length, 3);
+    await again.gate.close();
+    await again.backend.close();
+    await backend.close();
+    pass("gate-restart-in-closed-hours");
+  }
+
+  // 14. A hand-opened period is respected, and its end is a boundary like any other.
+  {
+    clock = kst(2026, 10, 27, 10); // Tuesday: closed
+    const handUntil = clock + 20 * 60_000;
+    fs.writeFileSync(path.join(stateDir, "bweeep-byhand.open-until"), new Date(handUntil).toISOString());
+    const events = [];
+    const rig = await makeRig("bweeep-byhand", { running: true, events });
+    const { gate } = rig;
+    assert.equal(gate.state, "up");
+    await sleep(300);
+    assert.deepEqual(events, [], "opened by hand: nothing happens on its own");
+    clock = handUntil - 5 * 60_000;
+    await until(() => events.length === 1, "5-minute warning before the hand-opened period ends");
+    assert.match(events[0], /notice warning 8s 5분 뒤/);
+    clock = handUntil;
+    await until(() => gate.state === "down", "stopped when the hand-opened period ended");
+    assert.deepEqual(events.slice(1), ["bweeep-byhand rcon stop", "bweeep-byhand systemd stop"]);
+    await gate.close();
+    await rig.backend.close();
+    pass("hand-opened-hours-respected");
+  }
+
+  // 15. Before startsOn, without a schedule, and with warnings off.
+  {
+    // Before startsOn nothing happens on its own, whatever the weekday and hour.
+    const events = [];
+    clock = kst(2026, 10, 18, 11, 0); // the Sunday a week before startsOn
+    const rig = await makeRig("bweeep-early", { running: true, events });
+    // ...and startsOn itself stops nothing: Cobblemon's tester period runs through that Friday morning until the first window ends.
+    for (const time of [[2026, 10, 18, 11, 55], [2026, 10, 18, 12, 0, 1], [2026, 10, 19, 9], [2026, 10, 22, 23, 59, 59], [2026, 10, 23, 0, 0, 5], [2026, 10, 23, 8]]) {
+      clock = kst(...time);
+      await sleep(150);
+    }
+    assert.deepEqual(events, []);
+    assert.equal(rig.gate.state, "up");
+    await rig.gate.close();
+    await rig.backend.close();
+
+    // No schedule at all.
+    clock = kst(2026, 10, 25, 11, 0);
+    const none = await makeRig("bweeep-none", { running: true, schedule: null, events });
+    for (const time of [[2026, 10, 25, 11, 55], [2026, 10, 25, 12, 0, 1], [2026, 10, 27, 9]]) {
+      clock = kst(...time);
+      await sleep(150);
+    }
+    assert.deepEqual(events, []);
+    assert.equal(none.gate.state, "up");
+    await none.gate.close();
+    await none.backend.close();
+
+    // "warn": false: stopped at the end, without notices.
+    clock = kst(2026, 10, 25, 11, 40);
+    const quiet = await makeRig("bweeep-quiet", { running: true, schedule: { ...COBBLEMON, warn: false }, events });
+    clock = kst(2026, 10, 25, 11, 59, 50);
+    await sleep(200);
+    assert.deepEqual(events, [], "no warnings");
+    clock = kst(2026, 10, 25, 12, 0, 0);
+    await until(() => quiet.gate.state === "down", "stopped without warnings");
+    assert.deepEqual(events, ["bweeep-quiet rcon stop", "bweeep-quiet systemd stop"]);
+    await quiet.gate.close();
+    await quiet.backend.close();
+    pass("nothing-before-startsOn-or-without-schedule");
+  }
+
+  // 16. Cobblemon closes at the moment Sunlit opens: Sunlit waits for the grace and for Cobblemon to be gone.
+  {
+    clock = kst(2026, 10, 25, 11, 59, 30);
+    const order = [];
+    const cobblemon = await makeRig("bweeep-seq-cobblemon", { running: true, events: order, label: "cobblemon", stopMs: 700, schedule: { ...COBBLEMON, warn: false } });
+    const sunlit = await makeRig("bweeep-seq-sunlit", { schedule: { ...SUNLIT, warn: false }, events: order, label: "sunlit" });
+    clock = kst(2026, 10, 25, 12, 0, 0);
+    await until(() => fs.existsSync(path.join(stateDir, "bweeep-seq-cobblemon.stopping")), "Cobblemon is stopping");
+    clock = kst(2026, 10, 25, 12, 1, 10); // past the grace, but Cobblemon's JVM is still saving
+    await sleep(300);
+    assert.ok(!order.includes("sunlit start"), "Sunlit waits while Cobblemon is still stopping");
+    await until(() => order.includes("sunlit start"), "Sunlit starts once Cobblemon is down");
+    await until(() => sunlit.gate.state === "up", "Sunlit is up");
+    assert.ok(order.indexOf("sunlit start") > order.indexOf("cobblemon systemd stop"), order.join(" | "));
+    assert.equal(fs.existsSync(path.join(stateDir, "bweeep-seq-cobblemon.stopping")), false, "the marker is gone");
+    assert.equal(order.filter((event) => event === "sunlit start").length, 1);
+    await cobblemon.gate.close();
+    await sunlit.gate.close();
+    await cobblemon.backend.close();
+    await sunlit.backend.close();
+    pass("close-and-open-at-the-same-instant");
+  }
+
+  // 17. The console does not answer: the notices are logged as not delivered and the stop falls back to systemd's (SIGTERM; the server saves), never anything harsher.
+  {
+    clock = kst(2026, 10, 25, 11, 40);
+    const events = [];
+    const rig = await makeRig("bweeep-noconsole", { running: true, rconWorks: false, events });
+    clock = kst(2026, 10, 25, 11, 55, 0);
+    await until(() => events.length === 1, "the warning is tried");
+    clock = kst(2026, 10, 25, 12, 0, 0);
+    await until(() => rig.gate.state === "down", "stopped without the console");
+    assert.deepEqual(events.at(-2), "bweeep-noconsole rcon stop");
+    assert.deepEqual(events.at(-1), "bweeep-noconsole systemd stop");
+    const log = lines.join("\n");
+    assert.match(log, /bweeep-noconsole\] notice not delivered/);
+    assert.match(log, /bweeep-noconsole\] rcon stop failed, stopping with systemd/);
+    assert.deepEqual(Object.keys(rig.control).sort(), ["calls", "isActive", "setActive", "start", "stop"], "the gate can only start and stop the unit");
+    await rig.gate.close();
+    await rig.backend.close();
+    pass("failed-console-falls-back-to-systemd-stop");
+  }
+
+  // 18. A join arriving while the server is stopping after the hours ended is refused and no restart follows.
   {
     clock = kst(2026, 10, 24, 15);
     const slowStop = (backend) => {
@@ -236,7 +471,7 @@ try {
     pass("no-restart-after-stop-when-closed");
   }
 
-  // 14. An admin opens a closed server by hand until a time; it ends by itself, and a bad file counts for nothing.
+  // 19. An admin opens a closed stopped server by hand: it can be woken; a bad or ended file counts for nothing.
   {
     clock = kst(2026, 10, 27, 10); // Tuesday: closed
     const { gate, backend, control, listen } = await makeGate("bweeep-hand");
@@ -262,33 +497,33 @@ try {
     pass("admin-open-until-override");
   }
 
-  // 15. New hours load from gate.json (what SIGHUP does) without cutting a connection.
+  // 20. New hours load from gate.json (what SIGHUP does) without cutting a connection while the server is inside them.
   {
-    clock = kst(2026, 10, 24, 15);
-    const { gate, backend, listen } = await makeGate("bweeep-hours", { schedule: null });
+    clock = kst(2026, 10, 24, 15); // Saturday: open once Cobblemon's hours exist
+    const { gate, backend, listen } = await makeGate("bweeep-hours", { schedule: null, timing: { idleMs: 60_000 } });
     await statusPing(listen, `x${WAKE_MARKER}`);
     await until(() => gate.state === "up", "up without hours");
     const player = joinClient(listen, "seos_py");
     await until(() => player.welcome, "player is in");
     assert.equal(gate.isClosed(), false, "no schedule: always open");
-    clock = kst(2026, 10, 27, 10); // Tuesday: closed once hours exist
-    assert.equal(gate.isClosed(), false);
     writeConfig({ startsOn: START, open: [{ from: "fri 12:00", to: "sun 12:00" }] });
     const bad = [];
     assert.deepEqual(reloadSchedules(configFile, [gate], (line) => bad.push(line)), ["bweeep-hours"]);
-    assert.equal(gate.isClosed(), true, "hours now apply");
+    await sleep(200);
+    assert.equal(gate.isClosed(), false, "inside the new hours");
     assert.equal(player.closed, false, "the connection was not touched");
     assert.equal(gate.state, "up");
     writeConfig({ open: [] });
     assert.deepEqual(reloadSchedules(configFile, [gate], (line) => bad.push(line)), [], "an invalid file changes nothing");
     assert.match(bad.join("\n"), /unchanged/);
-    assert.equal(gate.isClosed(), true, "old hours kept");
     fs.writeFileSync(configFile, "{ broken");
     assert.deepEqual(reloadSchedules(configFile, [gate], () => undefined), []);
+    clock = kst(2026, 10, 27, 10); // Tuesday: closed by the loaded hours
+    assert.equal(gate.isClosed(), true, "old hours kept");
+    player.socket.destroy();
     writeConfig(undefined);
     assert.deepEqual(reloadSchedules(configFile, [gate], () => undefined), ["bweeep-hours"]);
     assert.equal(gate.isClosed(), false, "removed hours: open again");
-    player.socket.destroy();
     await gate.close();
     await backend.close();
     pass("reload-hours-without-dropping-players");
@@ -297,13 +532,14 @@ try {
   console.error(lines.join("\n"));
   throw error;
 } finally {
-  fs.rmSync(stateDir, { recursive: true, force: true });
+  // (stateDir is removed at the very end)
 }
+
 // ---- the standard hours and the helper that puts them in place (scripts/gate-schedule.mjs)
 
 {
   const { STANDARD_HOURS, STARTS_ON, standardSchedule, withStandardHours, withoutHours, describeHours } = await import("./gate-schedule.mjs");
-  const { execFileSync, spawn } = await import("node:child_process");
+  const { execFile, execFileSync, spawn } = await import("node:child_process");
   const { gateCodeHash } = await import("./server-gate.mjs");
 
   // 16. The two real servers: parse, start on a Friday, and tile the week exactly.
@@ -360,6 +596,19 @@ try {
   assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-27T10:00+09:00"), /지금 닫힘 · 금 12:00에 열림/);
   assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-24T10:00+09:00"), /지금 열림 · 일 12:00에 닫힘/);
   assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-10T10:00+09:00"), /전이라 항상 열림/);
+  // `show` says what a gate would do on reading the hours: nothing for a stopped server, a warned stop for a running one.
+  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-27T10:00+09:00"), /bweeep-cobblemon-fabric: 서버가 꺼져 있어 아무것도 하지 않음/);
+  const runningBackend = fakeBackend(written.servers[0].backend);
+  await runningBackend.listen();
+  const forecastRun = await new Promise((resolve, reject) => {
+    execFile(process.execPath, [path.join(import.meta.dirname, "gate-schedule.mjs"), "show", "--config", toolConfig, "--at", "2026-10-27T10:00+09:00"], { encoding: "utf8" }, (error, stdout) => error ? reject(error) : resolve(stdout));
+  });
+  assert.match(forecastRun, /서버가 켜져 있어 경고 후 끕니다\(일 12:00에 닫혔어야 함\)/);
+  const forecastOpen = await new Promise((resolve, reject) => {
+    execFile(process.execPath, [path.join(import.meta.dirname, "gate-schedule.mjs"), "show", "--config", toolConfig, "--at", "2026-10-30T12:00:30+09:00"], { encoding: "utf8" }, (error, stdout) => error ? reject(error) : resolve(stdout));
+  });
+  assert.match(forecastOpen, /이미 켜져 있음/);
+  await runningBackend.close();
   // Opening by hand and ending it.
   tool("open", "--config", toolConfig, "--hours", "2", "--write");
   const handFile = path.join(toolState, "bweeep-cobblemon-fabric.open-until");
@@ -421,4 +670,5 @@ try {
   fs.rmSync(toolDir, { recursive: true, force: true });
 }
 
+fs.rmSync(stateDir, { recursive: true, force: true });
 console.log("server schedule: all checks passed");

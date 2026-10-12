@@ -13,7 +13,9 @@
 //   are refused and status says "off".
 // - Outside its optional "schedule" (opening hours) a STOPPED server is not
 //   started: joins are refused with the next opening time and status says
-//   "closed" (+ `nextOpen`). A server that is already running is never touched.
+//   "closed" (+ `nextOpen`). When the hours end, a running server is warned
+//   in-game (5 min, 1 min, 10 s) and stopped with the console "stop" (the
+//   world is saved); when they begin it is started. Each boundary once.
 //   `<stateDir>/<unit>.open-until` (ISO time) opens it by hand until then.
 //
 // Usage: node scripts/server-gate.mjs --config <gate.json>
@@ -51,8 +53,31 @@ export const DEFAULTS = {
   // after this long. A closed port means it crashed or is stopping and has
   // had time to save; silence can be a busy server, so that waits longer.
   hungRefusedMs: 45_000,
-  hungSilentMs: 180_000
+  hungSilentMs: 180_000,
+  // Opening hours: how often the gate looks at the clock.
+  hoursCheckMs: 1_000,
+  // A server starts this long after an opening boundary, so the one closing at the same instant (Cobblemon
+  // Sunday noon = Sunlit Sunday noon) has time to save and exit before the other JVM comes up.
+  openStartDelayMs: 60_000,
+  // A start for a boundary older than this is not made: a gate that was not running then leaves a sleeping server asleep.
+  startFreshMs: 10 * 60_000,
+  // A warning is only sent within this long after its moment; a late one would read wrong ("5분 뒤" with 3 minutes left).
+  warningLateMs: 15_000,
+  // A close that is found late (gate restart, hours loaded or override ended while players are on) gives this much notice.
+  lateCloseWaitMs: 10_000,
+  // Another gate's stop marker older than this is ignored (a crashed gate leaves it behind).
+  otherStopMaxMs: 6 * 60_000
 };
+
+/**
+ * What players see before the opening hours end and the server is stopped (the Bweeep notice banner,
+ * sent over RCON). Edit the moments and texts here; `"warn": false` in a schedule turns them off for that server.
+ */
+export const HOURS_WARNINGS = [
+  { beforeMs: 5 * 60_000, level: "warning", seconds: 8, text: "5분 뒤 서버가 닫혀요" },
+  { beforeMs: 60_000, level: "warning", seconds: 8, text: "1분 뒤 서버가 닫혀요" },
+  { beforeMs: 10_000, level: "urgent", seconds: 8, text: "곧 서버가 닫혀요, 지금 저장돼요" }
+];
 
 const TEXT = {
   off: "서버가 꺼져 있어요",
@@ -62,12 +87,14 @@ const TEXT = {
 
 // ---- opening hours
 //
-// gate.json: "schedule": { "startsOn": "2026-10-26", "open": [{ "from": "fri 12:00", "to": "sun 12:00" }] }
+// gate.json: "schedule": { "startsOn": "2026-10-26", "open": [{ "from": "fri 12:00", "to": "sun 12:00" }], "warn": true }
 // Times are Korean time (UTC+9, no daylight saving). A window runs from `from`
 // up to, not including, `to`, and may wrap past the end of the week
 // ("sun 12:00" -> "fri 12:00"). Before `startsOn` (a Korean date) the server is
-// always open. No `schedule` at all: always open. The gate only decides whether
-// a stopped server may be STARTED; it never stops one that is running.
+// always open and the gate does nothing on its own. No `schedule` at all: always open.
+// Inside the schedule the gate keeps the server on the hours: a stopped server
+// is not started outside them, a running one is warned (HOURS_WARNINGS) and
+// then stopped gracefully when they end, and one is started when they begin.
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_NAMES = ["월", "화", "수", "목", "금", "토", "일"];
@@ -96,8 +123,9 @@ function parseWindowTime(text, where) {
 export function parseSchedule(value, label = "schedule") {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}: 객체여야 합니다.`);
   for (const key of Object.keys(value)) {
-    if (!["timezone", "startsOn", "open"].includes(key)) throw new Error(`${label}: 알 수 없는 항목 "${key}" 입니다.`);
+    if (!["timezone", "startsOn", "open", "warn"].includes(key)) throw new Error(`${label}: 알 수 없는 항목 "${key}" 입니다.`);
   }
+  if (value.warn !== undefined && typeof value.warn !== "boolean") throw new Error(`${label}: warn 은 true 나 false 여야 합니다.`);
   if (value.timezone !== undefined && value.timezone !== "Asia/Seoul") throw new Error(`${label}: timezone 은 Asia/Seoul 만 쓸 수 있습니다.`);
   let startsOnMs = null;
   if (value.startsOn !== undefined) {
@@ -122,7 +150,7 @@ export function parseSchedule(value, label = "schedule") {
     if (start === end) throw new Error(`${where}: from 과 to 가 같습니다.`);
     return { start, end };
   });
-  return { startsOnMs, windows };
+  return { startsOnMs, windows, warn: value.warn !== false };
 }
 
 function inWindow(second, { start, end }) {
@@ -151,6 +179,36 @@ export function nextCloseAt(schedule, ms) {
   const second = weekSecond(ms);
   const waits = schedule.windows.filter((window) => inWindow(second, window)).map(({ end }) => ((end - second + WEEK_SECONDS) % WEEK_SECONDS) || WEEK_SECONDS);
   return Math.floor(ms / 1000) * 1000 + Math.max(...waits) * 1000;
+}
+
+const WEEK_MS = WEEK_SECONDS * 1000;
+
+/** Open by the schedule, or by an admin's hand until `overrideUntilMs` (0: none). */
+function effectiveOpenAt(schedule, overrideUntilMs, ms) {
+  return isOpenAt(schedule, ms) || ms < overrideUntilMs;
+}
+
+/**
+ * The moments in [fromMs, toMs] where being open flips, oldest first, as { at, type: "open" | "close" }.
+ * The end of a hand-opened period is one too. `startsOn` is not: before it nothing flips, and at it nothing is
+ * stopped (a server running then, say Cobblemon's tester period, is left alone until the first window ends).
+ */
+export function changesBetween(schedule, overrideUntilMs, fromMs, toMs) {
+  const candidates = new Set();
+  const firstWeek = Math.floor(fromMs / 1000) * 1000 - weekSecond(fromMs) * 1000 - WEEK_MS;
+  for (let weekStart = firstWeek; weekStart <= toMs; weekStart += WEEK_MS) {
+    for (const { start, end } of schedule.windows) {
+      candidates.add(weekStart + start * 1000);
+      candidates.add(weekStart + end * 1000);
+    }
+  }
+  if (overrideUntilMs > 0) candidates.add(overrideUntilMs);
+  return [...candidates]
+    .filter((at) => at >= fromMs && at <= toMs)
+    .sort((a, b) => a - b)
+    .map((at) => ({ at, before: effectiveOpenAt(schedule, overrideUntilMs, at - 1), after: effectiveOpenAt(schedule, overrideUntilMs, at) }))
+    .filter((change) => change.before !== change.after)
+    .map((change) => ({ at: change.at, type: change.after ? "open" : "close" }));
 }
 
 /** "금 12:00": the weekday and time in Korean time. */
@@ -365,6 +423,12 @@ export class ServerGate {
     this.now = now;
     /** Opening hours (see parseSchedule), or null: always open. */
     this.hours = entry.schedule ? parseSchedule(entry.schedule, `${entry.unit}.schedule`) : null;
+    /** Boundaries already acted on, kept in a file so a restarted gate does not act twice. */
+    this.hoursState = this.readHoursState();
+    this.hoursTimer = null;
+    this.enforcing = false;
+    /** Players the server itself last reported. */
+    this.onlineCount = 0;
     this.timing = { ...DEFAULTS, ...timing };
     this.idleMs = (entry.idleMinutes ?? this.timing.idleMinutes) * 60_000;
     if (timing.idleMs !== undefined) this.idleMs = timing.idleMs;
@@ -400,19 +464,22 @@ export class ServerGate {
 
   /**
    * An admin can open a closed server by hand (`<unit>.open-until` holds an
-   * ISO time or epoch milliseconds); it stops counting when that time passes.
+   * ISO time or epoch milliseconds). The time in the file, or 0 when there is
+   * none; it stops counting when that time passes, and its end is a boundary.
    */
-  openedByHand() {
+  overrideUntil() {
     try {
       const text = fs.readFileSync(this.openFile, "utf8").trim();
       const until = /^\d+$/.test(text) ? Number(text) : Date.parse(text);
-      return Number.isFinite(until) && until > this.now();
+      return Number.isFinite(until) && until > 0 ? until : 0;
     } catch {
-      return false;
+      return 0;
     }
   }
 
-  /** Outside its opening hours: a stopped server is not started. Running servers are never touched. */
+  openedByHand() { return this.overrideUntil() > this.now(); }
+
+  /** Outside its opening hours (and not opened by hand): a stopped server is not started. */
   isClosed() {
     return this.hours !== null && !isOpenAt(this.hours, this.now()) && !this.openedByHand();
   }
@@ -424,6 +491,152 @@ export class ServerGate {
 
   /** What a refused join reads. */
   refusalText() { return this.isOff() ? TEXT.off : TEXT.closed(this.nextOpen()); }
+
+  // ---- keeping the server on its opening hours
+
+  get hoursFile() { return path.join(this.stateDir, `${this.entry.unit}.hours.json`); }
+  /** Marks a scheduled stop under way, so the gate of the server opening at the same moment waits. */
+  get stoppingFile() { return path.join(this.stateDir, `${this.entry.unit}.stopping`); }
+
+  readHoursState() {
+    try {
+      const state = JSON.parse(fs.readFileSync(this.hoursFile, "utf8"));
+      return { stop: Number(state.stop) || 0, start: Number(state.start) || 0, warned: state.warned && typeof state.warned === "object" ? state.warned : {} };
+    } catch {
+      return { stop: 0, start: 0, warned: {} };
+    }
+  }
+
+  saveHoursState() {
+    // Old warning records are dropped; the boundaries themselves are what is remembered.
+    const cutoff = this.now() - 9 * 86_400_000;
+    for (const key of Object.keys(this.hoursState.warned)) if (Number(key) < cutoff) delete this.hoursState.warned[key];
+    try {
+      fs.mkdirSync(this.stateDir, { recursive: true });
+      fs.writeFileSync(`${this.hoursFile}.tmp`, JSON.stringify(this.hoursState));
+      fs.renameSync(`${this.hoursFile}.tmp`, this.hoursFile);
+    } catch (error) {
+      this.log(`hours state not saved: ${error.message}`);
+    }
+  }
+
+  /** The state of the hours now: open, the last boundary, and the next closing. */
+  hoursView(now) {
+    const until = this.overrideUntil();
+    const last = changesBetween(this.hours, until, now - 8 * 86_400_000, now).at(-1) ?? null;
+    const nextClose = changesBetween(this.hours, until, now + 1, now + 8 * 86_400_000).find((change) => change.type === "close")?.at ?? null;
+    return { open: effectiveOpenAt(this.hours, until, now), last, nextClose };
+  }
+
+  scheduleHours() {
+    if (this.stopped) return;
+    this.hoursTimer = setTimeout(() => {
+      this.enforceHours()
+        .catch((error) => this.log(`opening hours check failed: ${error.message}`))
+        .finally(() => this.scheduleHours());
+    }, this.timing.hoursCheckMs);
+  }
+
+  /**
+   * Keeps the server on its hours. At the end of them a running server is
+   * warned and stopped (the console "stop", which saves the world); at the
+   * start of them a stopped one is started. Each boundary is acted on once,
+   * remembered in a file. Before `startsOn`, without a schedule, or while an
+   * admin has the server open by hand, nothing happens on its own.
+   */
+  async enforceHours() {
+    if (!this.hours || this.enforcing || this.stopped) return;
+    this.enforcing = true;
+    try {
+      const now = this.now();
+      const view = this.hoursView(now);
+      if (this.hours.warn && this.state === "up" && view.open && view.nextClose !== null) await this.sendWarnings(view.nextClose, now);
+      if (!view.last) return;
+      if (view.last.type === "close") await this.closeForHours(view.last.at, now);
+      else await this.openForHours(view.last.at, now);
+    } finally {
+      this.enforcing = false;
+    }
+  }
+
+  /** One banner over RCON (the same command as scripts/bweeep-notify.mjs); false when it could not be delivered. */
+  async notify(level, seconds, text) {
+    const rcon = this.entry.rcon;
+    if (!rcon) return false;
+    const json = JSON.stringify({ translate: "bweeep.notice", fallback: "[공지] %3$s", with: [level, String(seconds), text] })
+      .replace(/[\u0080-￿]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+    const reply = await this.rcon(rcon.port, rcon.password, `tellraw @a ${json}`);
+    if (reply === null) this.log("notice not delivered (rcon did not answer)");
+    return reply !== null;
+  }
+
+  async sendWarnings(closeAt, now) {
+    for (const warning of HOURS_WARNINGS) {
+      const at = closeAt - warning.beforeMs;
+      const sent = this.hoursState.warned[closeAt] ?? [];
+      if (now < at || now - at > this.timing.warningLateMs || sent.includes(warning.beforeMs)) continue;
+      this.hoursState.warned[closeAt] = [...sent, warning.beforeMs];
+      this.saveHoursState();
+      this.log(`warning: ${warning.text}`);
+      await this.notify(warning.level, warning.seconds, warning.text);
+    }
+  }
+
+  async closeForHours(at, now) {
+    if (this.hoursState.stop >= at || this.state === "stopping") return;
+    if (this.state === "down") {
+      this.hoursState.stop = at;
+      this.saveHoursState();
+      return;
+    }
+    this.log(`opening hours ended (${formatOpenTime(at)}), stopping the server`);
+    // Found late (the gate was restarted, new hours were loaded, a hand-opened period ended): tell the players first.
+    const late = now - at > this.timing.warningLateMs;
+    if (late && this.hours.warn && this.state === "up" && (this.players.size > 0 || this.onlineCount > 0)) {
+      const last = HOURS_WARNINGS.at(-1);
+      await this.notify(last.level, last.seconds, last.text);
+      await new Promise((resolve) => setTimeout(resolve, this.timing.lateCloseWaitMs));
+    }
+    this.setState("stopping");
+    try {
+      fs.mkdirSync(this.stateDir, { recursive: true });
+      fs.writeFileSync(this.stoppingFile, String(Date.now()));
+    } catch { /* the marker only spares an overlap of two JVMs */ }
+    try {
+      await this.stopServer();
+    } finally {
+      fs.rmSync(this.stoppingFile, { force: true });
+      this.setState("down");
+      this.hoursState.stop = at;
+      this.saveHoursState();
+    }
+  }
+
+  /** Another gate is stopping its server right now (not older than otherStopMaxMs). */
+  otherGateStopping() {
+    try {
+      return fs.readdirSync(this.stateDir).some((name) => {
+        if (!name.endsWith(".stopping") || name === `${this.entry.unit}.stopping`) return false;
+        return Date.now() - fs.statSync(path.join(this.stateDir, name)).mtimeMs < this.timing.otherStopMaxMs;
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  async openForHours(at, now) {
+    if (this.hoursState.start >= at) return;
+    // Not for a boundary long gone: a gate that was not here then leaves a sleeping server asleep.
+    if (now - at > this.timing.startFreshMs) return;
+    if (now < at + this.timing.openStartDelayMs || this.otherGateStopping()) return;
+    if (this.state === "stopping") return;
+    if (this.state === "down" && this.isOff()) return;
+    if (this.state === "down") this.log(`opening hours began (${formatOpenTime(at)}), starting the server`);
+    if (this.wake("opening hours")) {
+      this.hoursState.start = at;
+      this.saveHoursState();
+    }
+  }
 
   readCache() {
     try {
@@ -469,11 +682,13 @@ export class ServerGate {
     await bind("::").catch((error) => error.code === "EAFNOSUPPORT" || error.code === "EADDRNOTAVAIL" ? bind("0.0.0.0") : Promise.reject(error));
     this.log(`listening on ${this.entry.listen} -> 127.0.0.1:${this.entry.backend} (${this.state})`);
     this.schedule();
+    this.scheduleHours();
   }
 
   async close() {
     this.stopped = true;
     clearTimeout(this.timer);
+    clearTimeout(this.hoursTimer);
     for (const socket of [...this.holds, ...this.players]) socket.destroy();
     await new Promise((resolve) => this.server ? this.server.close(() => resolve()) : resolve());
   }
@@ -511,6 +726,7 @@ export class ServerGate {
       if (status) {
         this.probeFailures = 0;
         this.unansweredSince = 0;
+        this.onlineCount = status.players?.online ?? 0;
         this.writeCache(status);
         if (this.state !== "up") this.setState("up");
         this.releaseHolds();
@@ -603,7 +819,7 @@ export class ServerGate {
 
   wake(reason) {
     this.lastActivity = Date.now();
-    // Already running (or starting): left alone, even outside opening hours.
+    // Already running (or starting): nothing to start. Stopping it outside the hours is enforceHours' job, with a warning first.
     if (this.state === "up" || this.state === "starting") return true;
     if (!this.canWake()) return false;
     if (this.state === "stopping") {

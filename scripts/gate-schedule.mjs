@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Opening hours for the server gates: check, write into gate.json, load into a
 // running gate, open a closed server by hand, and put new gate code in place.
-// Nothing here changes anything unless `--write` is given, and nothing here
-// ever stops a Minecraft server. See scripts/SERVER-SCHEDULE.md.
+// Nothing here changes anything unless `--write` is given, and this tool never
+// touches a Minecraft server itself. (A gate that has hours does stop its
+// server, warned and gracefully, when they end; `show` says beforehand what a
+// gate will do the moment it reads the hours.) See scripts/SERVER-SCHEDULE.md.
 //
 //   node scripts/gate-schedule.mjs show   --config <gate.json> [--at 2026-10-30T12:00+09:00]
 //   node scripts/gate-schedule.mjs apply  --config <gate.json> [--write]   standard hours for known units
@@ -15,7 +17,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatOpenTime, gateCodeHash, isOpenAt, nextCloseAt, nextOpenAt, parseSchedule, probeBackend, readConfig } from "./server-gate.mjs";
+import { DEFAULTS, changesBetween, formatOpenTime, gateCodeHash, isOpenAt, nextCloseAt, nextOpenAt, parseSchedule, probeBackend, readConfig } from "./server-gate.mjs";
 
 // ★ The hours live here and nowhere else. "오후" was never given an exact hour, so noon is used.
 /** The hour both servers hand over on: Friday and Sunday. */
@@ -63,6 +65,32 @@ export function describeHours(config, ms, openedByHand = () => false) {
     if (isOpenAt(hours, ms)) return `${server.unit}: 지금 열림 · ${formatOpenTime(nextCloseAt(hours, ms))}에 닫힘${hand}`;
     return `${server.unit}: 지금 닫힘 · ${formatOpenTime(nextOpenAt(hours, ms))}에 열림${hand}`;
   });
+}
+
+/**
+ * What each gate will do the moment it reads these hours at `ms`, from the gate's own memory of handled
+ * boundaries and whether the server is up. One line per server with hours.
+ */
+export async function forecast(config, ms, probe = (port) => probeBackend(port, 1_500)) {
+  const lines = [];
+  for (const server of config.servers) {
+    if (!server.schedule) continue;
+    const hours = parseSchedule(server.schedule, `${server.unit}.schedule`);
+    let handled = { stop: 0, start: 0 };
+    try { handled = JSON.parse(fs.readFileSync(path.join(config.stateDir, `${server.unit}.hours.json`), "utf8")); } catch { /* no memory yet */ }
+    let until = 0;
+    try {
+      const text = fs.readFileSync(path.join(config.stateDir, `${server.unit}.open-until`), "utf8").trim();
+      until = /^\d+$/.test(text) ? Number(text) : Date.parse(text);
+    } catch { /* no hand-opened period */ }
+    const last = changesBetween(hours, Number.isFinite(until) ? until : 0, ms - 8 * 86_400_000, ms).at(-1);
+    const running = (await probe(server.backend)).status !== null;
+    let todo = "할 일 없음";
+    if (last?.type === "close" && !(handled.stop >= last.at)) todo = running ? `서버가 켜져 있어 경고 후 끕니다(${formatOpenTime(last.at)}에 닫혔어야 함)` : "서버가 꺼져 있어 아무것도 하지 않음";
+    if (last?.type === "open" && !(handled.start >= last.at) && ms - last.at <= DEFAULTS.startFreshMs) todo = running ? "이미 켜져 있음" : `${Math.max(0, Math.ceil((last.at + DEFAULTS.openStartDelayMs - ms) / 1000))}초 안에 서버를 켭니다`;
+    lines.push(`${server.unit}: ${todo}`);
+  }
+  return lines;
 }
 
 // ---- command line
@@ -115,6 +143,8 @@ async function main() {
       for (const line of describeHours(config, at, (unit) => {
         try { return Date.parse(fs.readFileSync(handOpenFile(config, unit), "utf8").trim()) > Date.now(); } catch { return false; }
       })) say(line);
+      say("게이트가 이 시간표를 읽는 순간 하게 될 일:");
+      for (const line of await forecast(config, at)) say(`  ${line}`);
       break;
     }
     case "apply":
@@ -127,6 +157,8 @@ async function main() {
       break;
     }
     case "reload": {
+      say("게이트가 지금 시간표를 읽으면:");
+      for (const line of await forecast(config, Date.now())) say(`  ${line}`);
       dry(`systemctl --user kill --kill-whom=main -s HUP bweeep-gate@${unitName}`);
       if (options.write) {
         const result = await run("systemctl", ["--user", "kill", "--kill-whom=main", "-s", "HUP", `bweeep-gate@${unitName}`]);
