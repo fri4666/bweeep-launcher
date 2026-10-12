@@ -212,7 +212,6 @@ function App() {
   const [launcherVersion, setLauncherVersion] = useState("");
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
-  const [clockNow, setClockNow] = useState(Date.now());
   const [gameNameInput, setGameNameInput] = useState("");
   const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
   const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
@@ -337,13 +336,6 @@ function App() {
   }, [instanceRoot]);
 
   useEffect(() => {
-    if (gameStatus.state === "idle") return;
-    setClockNow(Date.now());
-    const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [gameStatus.state]);
-
-  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmRequest) setConfirmRequest(null);
@@ -412,7 +404,6 @@ function App() {
     && displayProgress.total > 0
       ? Math.round(Math.max(0, Math.min(1, displayProgress.completed / displayProgress.total)) * 100)
       : null;
-  const elapsedSeconds = gameStatus.startedAt ? Math.max(0, Math.floor((clockNow - gameStatus.startedAt) / 1_000)) : null;
   const progressTitle = gameRunning
     ? joinedServer ? "서버에서 플레이 중" : "게임 실행 중"
     : displayProgress?.stage ?? "준비 중";
@@ -977,7 +968,7 @@ function App() {
               <div className={`launchProgress${gameRunning && joinedServer ? " isPlaying" : ""}`} role="status">
                 <div className="launchProgressHeading">
                   <strong>{progressTitle}</strong>
-                  <span>{progressPercent !== null ? `${progressPercent}%` : elapsedSeconds !== null ? formatElapsed(elapsedSeconds) : ""}</span>
+                  <span>{progressPercent !== null ? `${progressPercent}%` : gameStatus.startedAt ? <ElapsedTime startedAt={gameStatus.startedAt} /> : ""}</span>
                 </div>
                 {progressDetail && <small title={progressDetail}>{progressDetail}</small>}
                 {!(gameRunning && joinedServer) && <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />}
@@ -1322,6 +1313,34 @@ function shortenPath(value: string): string {
   const parts = value.split(/[\\/]+/).filter(Boolean);
   const tail = parts.slice(-2).join("\\");
   return `${parts[0]}\\…\\${tail}`;
+}
+
+/**
+ * The play timer. Only this text re-renders each second, so the whole launcher
+ * does not repaint next to the game, and nothing ticks while the window is hidden.
+ */
+function ElapsedTime({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    let timer: number | undefined;
+    const stop = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+    };
+    const start = () => {
+      stop();
+      if (document.visibilityState === "hidden") return;
+      setNow(Date.now());
+      timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    };
+    start();
+    document.addEventListener("visibilitychange", start);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", start);
+    };
+  }, []);
+  return <>{formatElapsed(Math.max(0, Math.floor((now - startedAt) / 1_000)))}</>;
 }
 
 function formatElapsed(totalSeconds: number): string {
