@@ -12,7 +12,13 @@
 //   node scripts/verify-notify-banner.mjs            # banner run
 //   node scripts/verify-notify-banner.mjs --no-mod   # fallback run
 //
-// Needs Linux with Xvfb, ffmpeg (x11grab, libx264), xdotool, ImageMagick, JDK 21,
+// With --forge the same run uses a mod-less Forge 1.20.1 server (47.4.0, its own ports 25594/25595
+// and display :152) and the jar of forge-notify-1201 (JDK 17, built with JAVA_HOME on JDK 17):
+//   (cd forge-notify-1201 && ./gradlew build)
+//   node scripts/verify-notify-banner.mjs --forge
+//   node scripts/verify-notify-banner.mjs --forge --no-mod
+//
+// Needs Linux with Xvfb, ffmpeg (x11grab, libx264), xdotool, ImageMagick, JDK 21 (and 17 for --forge),
 // and a checkout with node_modules and a built dist (BWEEP_RUNTIME_REPO, default
 // the main checkout) whose launcher modules install and start the client.
 import { execFile, execFileSync, spawn } from "node:child_process";
@@ -26,14 +32,20 @@ import { rconCommand } from "./server-gate.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RUNTIME_REPO = process.env.BWEEP_RUNTIME_REPO ?? "/home/dev/code/bweeep-lifecycle-recovery";
-const MOD_JAR = process.env.BWEEP_NOTIFY_JAR ?? path.join(REPO, "fabric-notify-1211", "build", "libs", "bweeep-notify-fabric-1.21.1-0.1.0.jar");
-const WORK = process.env.BWEEP_NOTIFY_WORK ?? path.join(os.homedir(), ".cache", "bweeep-notify-e2e");
+const FORGE = process.argv.includes("--forge");
 const NO_MOD = process.argv.includes("--no-mod");
-const RUN = path.join(WORK, NO_MOD ? "run-no-mod" : "run");
-const JAVA = "/usr/lib/jvm/java-21-openjdk-amd64/bin/java";
-const PORT = 25591;
-const RCON_PORT = 25592;
-const DISPLAY = ":151";
+const MOD_JAR = process.env.BWEEP_NOTIFY_JAR ?? (FORGE
+  ? path.join(REPO, "forge-notify-1201", "build", "libs", "bweeep-notify-forge-1.20.1-0.1.0.jar")
+  : path.join(REPO, "fabric-notify-1211", "build", "libs", "bweeep-notify-fabric-1.21.1-0.1.0.jar"));
+const WORK = process.env.BWEEP_NOTIFY_WORK ?? path.join(os.homedir(), ".cache", "bweeep-notify-e2e");
+const RUN = path.join(WORK, `${FORGE ? "run-forge" : "run"}${NO_MOD ? "-no-mod" : ""}`);
+const JAVA = `/usr/lib/jvm/java-${FORGE ? 17 : 21}-openjdk-amd64/bin/java`;
+const FORGE_VERSION = "47.4.0";
+const FORGE_FULL = `1.20.1-${FORGE_VERSION}`;
+// Own ports and display per loader, all far from any production port (25565 and the Sunlit server's).
+const PORT = FORGE ? 25594 : 25591;
+const RCON_PORT = FORGE ? 25595 : 25592;
+const DISPLAY = FORGE ? ":152" : ":151";
 const FPS = 30;
 const GUI_SCALE = 2;
 const PLAYER = "NotifyBot";
@@ -81,10 +93,10 @@ async function main() {
   await fsp.rm(RUN, { recursive: true, force: true });
   for (const dir of ["server", "gate", "client", "shots", path.join("..", "cache")]) await fsp.mkdir(path.join(RUN, dir), { recursive: true });
 
-  const fabricApi = await ensureFabricApi();
-  const launcher = await ensureFabricLauncher();
+  const fabricApi = FORGE ? null : await ensureFabricApi();
+  const launcher = FORGE ? null : await ensureFabricLauncher();
   const rconPassword = randomBytes(12).toString("hex");
-  const server = await startServer(launcher, fabricApi, rconPassword);
+  const server = FORGE ? await startForgeServer(rconPassword) : await startServer(launcher, fabricApi, rconPassword);
   const gateDir = path.join(RUN, "gate");
   await fsp.writeFile(path.join(gateDir, "notify-e2e.json"), JSON.stringify({
     stateDir: path.join(RUN, "gate-state"),
@@ -369,6 +381,17 @@ async function startServer(launcher, fabricApi, rconPassword) {
   if (fs.existsSync(shared)) execFileSync("cp", ["-a", `${shared}/.`, dir]);
   await fsp.copyFile(launcher, path.join(dir, "fabric-server-launch.jar"));
   await fsp.copyFile(fabricApi.file, path.join(dir, "mods", "fabric-api.jar"));
+  await prepareServerDir(dir, rconPassword);
+  const log = path.join(dir, "logs", "latest.log");
+  spawnLogged("systemd-run", ["--user", "--scope", "-q", "-p", "MemoryMax=3G", JAVA, "-Xms256M", "-Xmx1G", "-jar", "fabric-server-launch.jar", "nogui"], { cwd: dir }, path.join(RUN, "server.out"));
+  const started = await waitFor(() => /Done \(/.test(read(log)), 600_000);
+  check("throwaway Fabric 1.21.1 server starts", started);
+  if (!started) throw new Error(`server did not start; see ${path.join(RUN, "server.out")}`);
+  return { dir, log };
+}
+
+/** EULA, server.properties and a port check, shared by both loaders' throwaway servers. */
+async function prepareServerDir(dir, rconPassword) {
   await fsp.copyFile(TEST_EULA, path.join(dir, "eula.txt"));
   const properties = {
     "server-port": PORT, "server-ip": "127.0.0.1", "online-mode": false, "enforce-secure-profile": false, "level-name": "world-notify-e2e",
@@ -380,26 +403,75 @@ async function startServer(launcher, fabricApi, rconPassword) {
   for (const port of [PORT, RCON_PORT]) {
     if (execFileSync("ss", ["-ltn"], { encoding: "utf8" }).includes(`:${port} `)) throw new Error(`port ${port} is busy`);
   }
+}
+
+/**
+ * A throwaway Forge 1.20.1 server with no mods at all: the notice mod is client-only, so the
+ * server must work without it. The installer comes from Forge's maven (checked against its
+ * published sha1); the installed files are cached for the next run.
+ */
+async function startForgeServer(rconPassword) {
+  const dir = path.join(RUN, "server");
+  await fsp.mkdir(dir, { recursive: true });
+  const shared = path.join(WORK, "cache", `forge-${FORGE_FULL}-server-files`);
+  if (!fs.existsSync(path.join(shared, "libraries"))) {
+    const relative = `net/minecraftforge/forge/${FORGE_FULL}/forge-${FORGE_FULL}-installer.jar`;
+    const installer = path.join(WORK, "cache", `forge-${FORGE_FULL}-installer.jar`);
+    const expected = (await (await fetch(`https://maven.minecraftforge.net/${relative}.sha1`, { headers: UA })).text()).trim();
+    if (!fs.existsSync(installer) || sha(installer, "sha1") !== expected) {
+      await fsp.mkdir(path.dirname(installer), { recursive: true });
+      await fsp.writeFile(installer, Buffer.from(await (await fetch(`https://maven.minecraftforge.net/${relative}`, { headers: UA })).arrayBuffer()));
+    }
+    check("Forge installer matches its published sha1", sha(installer, "sha1") === expected, expected);
+    if (sha(installer, "sha1") !== expected) throw new Error("Forge installer download does not match its published hash");
+    const work = path.join(RUN, "server-install");
+    await fsp.mkdir(work, { recursive: true });
+    await new Promise((resolve, reject) => {
+      execFile(JAVA, ["-jar", installer, "--installServer"], { cwd: work, maxBuffer: 64 * 1024 * 1024, timeout: 900_000 }, (error, stdout, stderr) => {
+        fs.writeFileSync(path.join(RUN, "forge-install.log"), `${stdout}\n${stderr}`);
+        if (error) reject(new Error(`Forge server install failed, see ${path.join(RUN, "forge-install.log")}`)); else resolve();
+      });
+    });
+    await fsp.mkdir(shared, { recursive: true });
+    for (const name of fs.readdirSync(work)) {
+      if (/installer/.test(name) || name === "run.bat") continue;
+      execFileSync("cp", ["-a", path.join(work, name), shared]);
+    }
+    await fsp.rm(work, { recursive: true, force: true });
+  }
+  execFileSync("cp", ["-a", `${shared}/.`, dir]);
+  await fsp.mkdir(path.join(dir, "mods"), { recursive: true });
+  await fsp.writeFile(path.join(dir, "user_jvm_args.txt"), "-Xms256M\n-Xmx1G\n");
+  await prepareServerDir(dir, rconPassword);
+  const args = path.join("libraries", "net", "minecraftforge", "forge", FORGE_FULL, "unix_args.txt");
   const log = path.join(dir, "logs", "latest.log");
-  spawnLogged("systemd-run", ["--user", "--scope", "-q", "-p", "MemoryMax=3G", JAVA, "-Xms256M", "-Xmx1G", "-jar", "fabric-server-launch.jar", "nogui"], { cwd: dir }, path.join(RUN, "server.out"));
-  const started = await waitFor(() => /Done \(/.test(read(log)), 600_000);
-  check("throwaway Fabric 1.21.1 server starts", started);
+  spawnLogged("systemd-run", ["--user", "--scope", "-q", "-p", "MemoryMax=3G", JAVA, "@user_jvm_args.txt", `@${args}`, "nogui"], { cwd: dir }, path.join(RUN, "server.out"));
+  const started = await waitFor(() => /Done \(/.test(read(log)), 900_000);
+  check(`throwaway Forge ${FORGE_FULL} server starts (no mods)`, started);
   if (!started) throw new Error(`server did not start; see ${path.join(RUN, "server.out")}`);
   return { dir, log };
 }
 
 async function startClient(fabricApi) {
   const instanceRoot = path.join(RUN, "client", "instances");
-  const manifest = {
-    schemaVersion: 1, id: "notify-e2e", name: "notify e2e", version: "0.0.1", minecraftVersion: "1.21.1",
-    java: { majorVersion: 21, component: "java-runtime-delta" }, loader: { kind: "fabric", version: "0.19.5" },
-    server: { host: "127.0.0.1", port: PORT },
-    files: [{ path: "mods/fabric-api.jar", size: fabricApi.size, sha256: fabricApi.sha256, url: fabricApi.url }]
-  };
+  const manifest = FORGE
+    ? {
+      schemaVersion: 1, id: "notify-e2e", name: "notify e2e", version: "0.0.1", minecraftVersion: "1.20.1",
+      java: { majorVersion: 17, component: "java-runtime-gamma" }, loader: { kind: "forge", version: FORGE_VERSION },
+      server: { host: "127.0.0.1", port: PORT }, files: []
+    }
+    : {
+      schemaVersion: 1, id: "notify-e2e", name: "notify e2e", version: "0.0.1", minecraftVersion: "1.21.1",
+      java: { majorVersion: 21, component: "java-runtime-delta" }, loader: { kind: "fabric", version: "0.19.5" },
+      server: { host: "127.0.0.1", port: PORT },
+      files: [{ path: "mods/fabric-api.jar", size: fabricApi.size, sha256: fabricApi.sha256, url: fabricApi.url }]
+    };
   const instanceDir = path.join(instanceRoot, manifest.id);
   await fsp.mkdir(path.join(instanceDir, ".bweeep", "runtime", "bin"), { recursive: true });
   // Reuse game files of an earlier test client of another version: assets are shared by hash.
-  const cache = process.env.BWEEP_CLIENT_CACHE ?? path.join(os.homedir(), ".cache", "bweeep-server-auth", "fabric-1.21.4-ddingtycoon", "client-0", "instances", "ddingtycoon-private");
+  const cache = process.env.BWEEP_CLIENT_CACHE ?? (FORGE
+    ? path.join(os.homedir(), ".cache", "bweeep-server-auth", "forge-1.20.1", "client-0", "instances", "forge-1.20.1-check")
+    : path.join(os.homedir(), ".cache", "bweeep-server-auth", "fabric-1.21.4-ddingtycoon", "client-0", "instances", "ddingtycoon-private"));
   for (const shared of fs.existsSync(cache) ? ["assets", "libraries"] : []) {
     if (!fs.existsSync(path.join(cache, shared))) continue;
     try { execFileSync("cp", ["-al", path.join(cache, shared), instanceDir]); } catch { execFileSync("cp", ["-a", path.join(cache, shared), instanceDir]); }
@@ -441,7 +513,11 @@ async function runClient(config) {
     if (event.kind === "error") console.log(`ERROR ${event.message}`);
   };
   const synced = await syncModpack({ instanceDir: config.instanceRoot, manifest: config.manifest }, progress);
-  if (config.modJar) await fsp.copyFile(config.modJar, path.join(synced.instanceDir, "mods", "bweeep-notify.jar"));
+  if (config.modJar) {
+    // A pack with no listed files (the Forge run) has no mods folder yet.
+    await fsp.mkdir(path.join(synced.instanceDir, "mods"), { recursive: true });
+    await fsp.copyFile(config.modJar, path.join(synced.instanceDir, "mods", "bweeep-notify.jar"));
+  }
   const authorize = async () => ({ identity: createOfflineLaunchIdentity("notify-e2e", config.offlineName), ticket: "" });
   const exit = await new Promise((resolve) => {
     installAndLaunch(config.manifest, synced.instanceDir, authorize, [], progress, resolve, ["-Xms512M", `-Xmx${config.heapMb}M`])
@@ -499,7 +575,7 @@ async function cleanup() {
   // Keep the downloaded server files for the next run.
   const shared = path.join(WORK, "cache", "server-files");
   const dir = path.join(RUN, "server");
-  if (fs.existsSync(path.join(dir, "libraries")) && !fs.existsSync(shared)) {
+  if (!FORGE && fs.existsSync(path.join(dir, "libraries")) && !fs.existsSync(shared)) {
     fs.mkdirSync(shared, { recursive: true });
     for (const name of ["libraries", "versions", ".fabric", "server.jar"]) {
       if (fs.existsSync(path.join(dir, name))) execFileSync("cp", ["-a", path.join(dir, name), shared]);
