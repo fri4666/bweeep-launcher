@@ -2,7 +2,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import * as yauzl from "yauzl";
 import type { LoaderKind, MrpackSource, PackFile, SyncProgress } from "../shared/types.js";
-import { fetchWithSystemNetwork } from "./system-network.js";
+import { fetchViaDirectSession, fetchWithSystemNetwork } from "./system-network.js";
 import { hashBytes, hashFile } from "./hash.js";
 import { downloadVerified, type Fetcher } from "./download.js";
 import type { HashCache } from "./hash-cache.js";
@@ -49,6 +49,7 @@ export async function prepareMrpack(
     try {
       await downloadVerified({ url: source.url, target: archivePath, size: source.size, sha512: source.sha512 }, {
         fetch: options.fetch ?? fetchWithSystemNetwork,
+        fallbackFetch: options.fetch ? undefined : fetchViaDirectSession,
         onBytes: (received) => progress({ kind: "download", stage: "모드팩 목록", message: "받는 중", completed: received, total: source.size, unit: "bytes" })
       });
     } catch (error) {

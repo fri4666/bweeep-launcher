@@ -66,9 +66,10 @@ export async function installAndLaunch(
       const batchStage = activeStage;
       return downloadInstallFilesWithSystemNetwork(files, (completed, total, filePath, phase) => {
         progress({
-          kind: phase === "start" ? "download" : "info",
+          kind: phase === "done" ? "info" : "download",
           stage: batchStage,
-          message: `받는 중 ${completed}/${total}`,
+          // `completed` has a fractional part while big files are still coming in.
+          message: `받는 중 ${Math.floor(completed)}/${total}`,
           completed,
           total,
           unit: "files",
