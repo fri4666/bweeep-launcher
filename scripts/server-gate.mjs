@@ -11,9 +11,14 @@
 //   so the game loads while the server starts.
 // - `<stateDir>/<unit>.off` (the desktop toggle's "off"): no waking; joins
 //   are refused and status says "off".
+// - Outside its optional "schedule" (opening hours) a STOPPED server is not
+//   started: joins are refused with the next opening time and status says
+//   "closed" (+ `nextOpen`). A server that is already running is never touched.
+//   `<stateDir>/<unit>.open-until` (ISO time) opens it by hand until then.
 //
 // Usage: node scripts/server-gate.mjs --config <gate.json>
-// gate.json: { "stateDir": "...", "servers": [{ "name", "unit", "listen", "backend", "idleMinutes", "rcon": { "port", "password" } }] }
+// gate.json: { "stateDir": "...", "servers": [{ "name", "unit", "listen", "backend", "idleMinutes", "rcon": { "port", "password" }, "schedule": { "startsOn", "open": [{ "from", "to" }] } }] }
+// SIGHUP re-reads only the schedules (see reloadSchedules).
 // With "rcon" the server is stopped with the console "stop" (saves the world), then systemd.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -50,8 +55,111 @@ export const DEFAULTS = {
 
 const TEXT = {
   off: "서버가 꺼져 있어요",
-  failed: "서버를 켜지 못했어요. 잠시 뒤 다시 들어와 주세요"
+  failed: "서버를 켜지 못했어요. 잠시 뒤 다시 들어와 주세요",
+  closed: (nextOpen) => `지금은 열려 있지 않아요. ${formatOpenTime(nextOpen)}에 열려요`
 };
+
+// ---- opening hours
+//
+// gate.json: "schedule": { "startsOn": "2026-10-26", "open": [{ "from": "fri 12:00", "to": "sun 12:00" }] }
+// Times are Korean time (UTC+9, no daylight saving). A window runs from `from`
+// up to, not including, `to`, and may wrap past the end of the week
+// ("sun 12:00" -> "fri 12:00"). Before `startsOn` (a Korean date) the server is
+// always open. No `schedule` at all: always open. The gate only decides whether
+// a stopped server may be STARTED; it never stops one that is running.
+
+const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_NAMES = ["월", "화", "수", "목", "금", "토", "일"];
+const DAY_SECONDS = 86_400;
+const WEEK_SECONDS = 7 * DAY_SECONDS;
+const KST_OFFSET_MS = 9 * 3_600_000;
+const WINDOW_TIME = /^(mon|tue|wed|thu|fri|sat|sun) ([01]\d|2[0-3]):([0-5]\d)$/;
+const MAX_WINDOWS = 14;
+
+/** Seconds since Monday 00:00 Korean time. */
+function weekSecond(ms) {
+  const kst = ms + KST_OFFSET_MS;
+  const days = Math.floor(kst / 86_400_000);
+  // 1970-01-01 was a Thursday (index 3 with Monday first).
+  const dayIndex = (((days + 3) % 7) + 7) % 7;
+  return dayIndex * DAY_SECONDS + Math.floor((kst - days * 86_400_000) / 1000);
+}
+
+function parseWindowTime(text, where) {
+  const match = typeof text === "string" ? WINDOW_TIME.exec(text) : null;
+  if (!match) throw new Error(`${where}: "${text}" 는 "fri 12:00" 모양이어야 합니다.`);
+  return DAYS.indexOf(match[1]) * DAY_SECONDS + Number(match[2]) * 3600 + Number(match[3]) * 60;
+}
+
+/** Checks a gate.json `schedule` block strictly and returns what the gate uses; throws with a readable reason. */
+export function parseSchedule(value, label = "schedule") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}: 객체여야 합니다.`);
+  for (const key of Object.keys(value)) {
+    if (!["timezone", "startsOn", "open"].includes(key)) throw new Error(`${label}: 알 수 없는 항목 "${key}" 입니다.`);
+  }
+  if (value.timezone !== undefined && value.timezone !== "Asia/Seoul") throw new Error(`${label}: timezone 은 Asia/Seoul 만 쓸 수 있습니다.`);
+  let startsOnMs = null;
+  if (value.startsOn !== undefined) {
+    const match = typeof value.startsOn === "string" ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.startsOn) : null;
+    const date = match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))) : null;
+    if (!date || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value.startsOn) {
+      throw new Error(`${label}: startsOn 은 실제 날짜 "2026-10-26" 모양이어야 합니다.`);
+    }
+    startsOnMs = date.getTime() - KST_OFFSET_MS;
+  }
+  if (!Array.isArray(value.open) || value.open.length === 0 || value.open.length > MAX_WINDOWS) {
+    throw new Error(`${label}: open 은 1~${MAX_WINDOWS}개의 시간대 목록이어야 합니다.`);
+  }
+  const windows = value.open.map((window, index) => {
+    const where = `${label}.open[${index}]`;
+    if (!window || typeof window !== "object" || Array.isArray(window)) throw new Error(`${where}: 객체여야 합니다.`);
+    for (const key of Object.keys(window)) {
+      if (key !== "from" && key !== "to") throw new Error(`${where}: 알 수 없는 항목 "${key}" 입니다.`);
+    }
+    const start = parseWindowTime(window.from, `${where}.from`);
+    const end = parseWindowTime(window.to, `${where}.to`);
+    if (start === end) throw new Error(`${where}: from 과 to 가 같습니다.`);
+    return { start, end };
+  });
+  return { startsOnMs, windows };
+}
+
+function inWindow(second, { start, end }) {
+  return start < end ? second >= start && second < end : second >= start || second < end;
+}
+
+/** True when the server may be started at `ms`; no schedule, or before `startsOn`, is always open. */
+export function isOpenAt(schedule, ms) {
+  if (!schedule) return true;
+  if (schedule.startsOnMs !== null && ms < schedule.startsOnMs) return true;
+  const second = weekSecond(ms);
+  return schedule.windows.some((window) => inWindow(second, window));
+}
+
+/** The next moment (ms) a window starts; `ms` itself when it is open now. */
+export function nextOpenAt(schedule, ms) {
+  if (isOpenAt(schedule, ms)) return ms;
+  const second = weekSecond(ms);
+  const wait = Math.min(...schedule.windows.map(({ start }) => (start - second + WEEK_SECONDS) % WEEK_SECONDS));
+  return Math.floor(ms / 1000) * 1000 + wait * 1000;
+}
+
+/** The next moment (ms) the current window ends, or null when it is closed (or before `startsOn`). */
+export function nextCloseAt(schedule, ms) {
+  if (!schedule || (schedule.startsOnMs !== null && ms < schedule.startsOnMs) || !isOpenAt(schedule, ms)) return null;
+  const second = weekSecond(ms);
+  const waits = schedule.windows.filter((window) => inWindow(second, window)).map(({ end }) => ((end - second + WEEK_SECONDS) % WEEK_SECONDS) || WEEK_SECONDS);
+  return Math.floor(ms / 1000) * 1000 + Math.max(...waits) * 1000;
+}
+
+/** "금 12:00": the weekday and time in Korean time. */
+export function formatOpenTime(ms) {
+  const second = weekSecond(ms);
+  const day = Math.floor(second / DAY_SECONDS);
+  const rest = second % DAY_SECONDS;
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${DAY_NAMES[day]} ${pad(Math.floor(rest / 3600))}:${pad(Math.floor((rest % 3600) / 60))}`;
+}
 
 // ---- protocol helpers
 
@@ -248,11 +356,14 @@ export class ServerGate {
    * @param {{ name: string, unit: string, listen: number, backend: number, idleMinutes?: number }} entry
    * @param {{ stateDir: string, control?: typeof systemdControl, log?: (line: string) => void, timing?: Partial<typeof DEFAULTS> }} options
    */
-  constructor(entry, { stateDir, control = systemdControl, rcon = rconCommand, log = console.log, timing = {} }) {
+  constructor(entry, { stateDir, control = systemdControl, rcon = rconCommand, log = console.log, timing = {}, now = Date.now }) {
     this.entry = entry;
     this.stateDir = stateDir;
     this.control = control;
     this.rcon = rcon;
+    this.now = now;
+    /** Opening hours (see parseSchedule), or null: always open. */
+    this.hours = entry.schedule ? parseSchedule(entry.schedule, `${entry.unit}.schedule`) : null;
     this.timing = { ...DEFAULTS, ...timing };
     this.idleMs = (entry.idleMinutes ?? this.timing.idleMinutes) * 60_000;
     if (timing.idleMs !== undefined) this.idleMs = timing.idleMs;
@@ -275,8 +386,43 @@ export class ServerGate {
   }
 
   get offFile() { return path.join(this.stateDir, `${this.entry.unit}.off`); }
+  get openFile() { return path.join(this.stateDir, `${this.entry.unit}.open-until`); }
   get cacheFile() { return path.join(this.stateDir, `${this.entry.unit}.status.json`); }
   isOff() { return fs.existsSync(this.offFile); }
+
+  /** A new schedule from a reloaded gate.json (null removes it); throws and keeps the old one when it is invalid. */
+  setSchedule(raw) {
+    this.hours = raw ? parseSchedule(raw, `${this.entry.unit}.schedule`) : null;
+    this.entry.schedule = raw ?? undefined;
+    this.log(raw ? "opening hours loaded" : "opening hours removed");
+  }
+
+  /**
+   * An admin can open a closed server by hand (`<unit>.open-until` holds an
+   * ISO time or epoch milliseconds); it stops counting when that time passes.
+   */
+  openedByHand() {
+    try {
+      const text = fs.readFileSync(this.openFile, "utf8").trim();
+      const until = /^\d+$/.test(text) ? Number(text) : Date.parse(text);
+      return Number.isFinite(until) && until > this.now();
+    } catch {
+      return false;
+    }
+  }
+
+  /** Outside its opening hours: a stopped server is not started. Running servers are never touched. */
+  isClosed() {
+    return this.hours !== null && !isOpenAt(this.hours, this.now()) && !this.openedByHand();
+  }
+
+  /** Whether a stopped server may be started now. */
+  canWake() { return !this.isOff() && !this.isClosed(); }
+
+  nextOpen() { return this.hours ? nextOpenAt(this.hours, this.now()) : this.now(); }
+
+  /** What a refused join reads. */
+  refusalText() { return this.isOff() ? TEXT.off : TEXT.closed(this.nextOpen()); }
 
   readCache() {
     try {
@@ -394,7 +540,8 @@ export class ServerGate {
           this.failHolds();
         }
       } else if (this.state === "down" && this.holds.size > 0) {
-        this.wake("held join");
+        // Off or outside opening hours: nobody is waiting for a server that will not start.
+        if (!this.wake("held join")) this.failHolds(this.refusalText());
       }
     } finally {
       this.ticking = false;
@@ -455,12 +602,13 @@ export class ServerGate {
 
   wake(reason) {
     this.lastActivity = Date.now();
+    // Already running (or starting): left alone, even outside opening hours.
+    if (this.state === "up" || this.state === "starting") return true;
+    if (!this.canWake()) return false;
     if (this.state === "stopping") {
       this.wakeAfterStop = true;
       return true;
     }
-    if (this.state === "up" || this.state === "starting") return true;
-    if (this.isOff()) return false;
     this.log(`waking (${reason})`);
     this.setState("starting");
     this.startedAt = Date.now();
@@ -512,14 +660,21 @@ export class ServerGate {
 
   status(socket, handshake, first, rest, wakeAsked) {
     if (wakeAsked && !this.wake("launcher")) {
-      this.answerStatus(socket, handshake, rest, "off");
+      this.answerStatus(socket, handshake, rest, this.gateLabel());
       return;
     }
     if (this.state === "up" && !this.unanswered) {
       this.pipe(socket, first, false);
       return;
     }
-    this.answerStatus(socket, handshake, rest, this.isOff() ? "off" : this.state === "down" ? "sleeping" : "starting");
+    this.answerStatus(socket, handshake, rest, this.gateLabel());
+  }
+
+  /** What a status ping says while the backend is not answering: off, closed (outside opening hours), sleeping or starting. */
+  gateLabel() {
+    if (this.isOff()) return "off";
+    if ((this.state === "down" || this.state === "stopping") && this.isClosed()) return "closed";
+    return this.state === "down" ? "sleeping" : "starting";
   }
 
   statusJson(handshake, gate) {
@@ -529,7 +684,8 @@ export class ServerGate {
       version: cached.version ?? { name: "", protocol: handshake.protocol },
       players: { max: cached.players?.max ?? 20, online: 0 },
       description: cached.description ?? { text: this.entry.name ?? "" },
-      bweeep: { gate }
+      // `nextOpen` (epoch ms) lets the launcher say when the server opens.
+      bweeep: gate === "closed" ? { gate, nextOpen: this.nextOpen() } : { gate }
     });
   }
 
@@ -574,8 +730,10 @@ export class ServerGate {
       this.pipe(socket, first, true);
       return;
     }
-    if (this.state !== "stopping" && !this.wake("join")) {
-      socket.end(loginDisconnect(TEXT.off));
+    // A server that may not start (off, or outside opening hours) turns a join away at once.
+    const refused = this.state === "stopping" ? !this.canWake() : !this.wake("join");
+    if (refused) {
+      socket.end(loginDisconnect(this.refusalText()));
       return;
     }
     this.hold(socket, first);
@@ -661,8 +819,8 @@ export class ServerGate {
     }
   }
 
-  failHolds() {
-    for (const held of [...this.holds]) this.dropHold(held, TEXT.failed);
+  failHolds(text = TEXT.failed) {
+    for (const held of [...this.holds]) this.dropHold(held, text);
   }
 
   handOver(held) {
@@ -710,7 +868,7 @@ export class ServerGate {
         client.removeAllListeners("error");
         client.on("error", () => client.destroy());
         client.resume();
-        if (this.isOff()) client.end(loginDisconnect(TEXT.off));
+        if (!this.canWake()) client.end(loginDisconnect(this.refusalText()));
         else this.hold(client, first);
         return;
       }
@@ -752,8 +910,32 @@ export function readConfig(file) {
     }
     if (typeof server.unit !== "string" || !/^[\w@.-]+$/.test(server.unit)) throw new Error("unit 이름이 올바르지 않습니다.");
     if (server.idleMinutes !== undefined && !(server.idleMinutes > 0)) throw new Error(`${server.unit}: idleMinutes 가 올바르지 않습니다.`);
+    if (server.schedule !== undefined) parseSchedule(server.schedule, `${server.unit}.schedule`);
   }
   return config;
+}
+
+/**
+ * Re-reads gate.json and applies only the opening hours, so they can change
+ * without restarting the gate (a restart would cut every player's connection).
+ * A file that does not check out changes nothing. Returns the units updated.
+ */
+export function reloadSchedules(file, gates, log = console.log) {
+  let config;
+  try {
+    config = readConfig(file);
+  } catch (error) {
+    log(`gate.json reload refused, opening hours unchanged: ${error.message}`);
+    return [];
+  }
+  const updated = [];
+  for (const gate of gates) {
+    const entry = config.servers.find((server) => server.unit === gate.entry.unit);
+    if (!entry) continue;
+    gate.setSchedule(entry.schedule);
+    updated.push(gate.entry.unit);
+  }
+  return updated;
 }
 
 async function main() {
@@ -768,6 +950,8 @@ async function main() {
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  // `systemctl --user kill --kill-whom=main -s HUP bweeep-gate@<unit>`: new opening hours, connections untouched.
+  process.on("SIGHUP", () => reloadSchedules(file, gates, console.log));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
