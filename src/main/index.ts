@@ -631,6 +631,8 @@ app.whenReady().then(async () => {
     let background: BackgroundLane | null = null;
     let settleLeftovers: (() => Promise<void>) | null = null;
     let preparing: Promise<PreparedGame> | null = null;
+    let authorization: Promise<LaunchAuthorization> | null = null;
+    let gameSpawned = false;
     await writeGameLog("launch.started", { packId: request.packId });
     const selectedServer = catalogPresets.get(request.packId)?.server;
     if (selectedServer) {
@@ -653,16 +655,34 @@ app.whenReady().then(async () => {
       // while the pack syncs (different servers, so the two do not slow each other much). The pack sync
       // is the one the screen follows; the game files show up there once it is done. Anything that
       // touches mods/ (and the launch libraries, which a pack may bring itself) waits for the sync.
+      if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
+      const launchUser = sessionUser;
+      const packDir = path.resolve(request.instanceDir, manifest.id);
       const runtimeModule = import("./minecraft-runtime.js");
       background = createBackgroundLane(progress, logProgress);
       const gameFilesLane = background;
       const started = startBesideSync(
         gameFilesLane,
         () => syncModpack({ instanceDir: request.instanceDir, manifest }, progress),
-        () => runtimeModule.then(({ prepareGameFiles }) => prepareGameFiles(manifest, path.resolve(request.instanceDir, manifest.id), gameFilesLane.sink))
+        () => runtimeModule.then(({ prepareGameFiles }) => prepareGameFiles(manifest, packDir, gameFilesLane.sink))
       );
       preparing = started.preparing;
       settleLeftovers = started.settled;
+      // The login token and the login agent copy depend on neither job, so they are fetched now
+      // instead of after them (about a second off every launch). The token lasts hours; if the
+      // launch fails before the game starts, the catch below retires it.
+      // Every server checks players through the Bweeep account API (requireBweeepAccounts above).
+      const authorizing: Promise<LaunchAuthorization> = (async () => {
+        await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
+        const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
+        gameSession.started(identity.accessToken, startedAt);
+        const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), packDir);
+        await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
+        return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
+      })();
+      authorizing.catch(() => undefined);
+      authorization = authorizing;
+      const getLaunchAuthorization = () => authorizing;
       const synced = await started.ready;
       const withoutPersonalMods = request.withoutPersonalMods === true;
       const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, manifest, {
@@ -683,18 +703,7 @@ app.whenReady().then(async () => {
       const guardArgs = connectionGuardEnabled(manifest)
         ? connectionGuardJvmArgs(await ensureConnectionGuard(path.join(app.getAppPath(), "resources", "java-agent"), synced.instanceDir), manifest)
         : [];
-      if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
-      const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: manifest.minecraftVersion, loader: manifest.loader.version });
-      // Every server checks players through the Bweeep account API (requireBweeepAccounts above).
-      const getLaunchAuthorization = async (): Promise<LaunchAuthorization> => {
-        await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
-        const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
-        gameSession.started(identity.accessToken, startedAt);
-        const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
-        await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
-        return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
-      };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
       // The recommendation shown in settings (from the server list) is the one used here.
       const memory = resolveGameMemory({
@@ -736,6 +745,7 @@ app.whenReady().then(async () => {
           crashReportLocation: exit.crashReportLocation
         });
       }, guardArgs, memory, preparing);
+      gameSpawned = true;
       if (gameRunId === runId && gameIsStarting()) {
         setGameStatus({ state: "running", pid: launched.pid, startedAt });
         discordGameStarted(manifest.name, startedAt);
@@ -749,6 +759,11 @@ app.whenReady().then(async () => {
       // so two runs never write the same files, and nothing more of it reaches the screen.
       background?.silence();
       if (settleLeftovers) leftoverWork = settleLeftovers();
+      // A token fetched ahead of a launch that never got the game started is of no use to anyone.
+      const tokenOwner = sessionUser;
+      if (authorization && !gameSpawned && tokenOwner) {
+        void authorization.then(() => auth.revokeGameAuth(tokenOwner)).catch(() => undefined);
+      }
       if (gameRunId === runId) {
         gameSession.stop();
         setGameStatus({ state: "idle" });
