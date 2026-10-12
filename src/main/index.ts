@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { presetsFromManifests, requireBweeepAccounts } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
-import { checkServer, wakeServer } from "./server-status.js";
+import { askToStart, checkServer, START_ANSWER_WAIT_MS } from "./server-status.js";
+import { closedMessage } from "../shared/open-hours.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
 import type { LaunchAuthorization } from "./minecraft-runtime.js";
 import { authlibInjectorJvmArgs, ensureAuthlibInjector } from "./authlib-injector.js";
@@ -622,12 +623,18 @@ app.whenReady().then(async () => {
     };
     await writeGameLog("launch.started", { packId: request.packId });
     const selectedServer = catalogPresets.get(request.packId)?.server;
-    if (selectedServer) {
-      void wakeServer(selectedServer).then((status) => {
-        if (status.sleep) void writeGameLog("launch.server.wake", { state: status.sleep });
-      });
-    }
     try {
+      if (selectedServer) {
+        // Play asks a sleeping server to start. Outside its opening hours the gate says so instead,
+        // and nothing is downloaded or started. A gate that stays silent never blocks a launch.
+        const answer = await askToStart(selectedServer, START_ANSWER_WAIT_MS, (status) => {
+          if (status.sleep) void writeGameLog("launch.server.wake", { state: status.sleep });
+        });
+        if (answer?.closed) {
+          await writeGameLog("launch.server.closed", { nextOpen: answer.closed.nextOpen });
+          throw new Error(closedMessage(answer.closed.nextOpen));
+        }
+      }
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
       progress({ kind: "info", stage: "서버 목록", message: "받는 중" });
       const manifest = await auth.getManifest(sessionUser, request.packId).catch(async (error: unknown) => {

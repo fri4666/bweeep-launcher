@@ -12,13 +12,14 @@ const whatsNewMode = process.env.BWEEP_PREVIEW_WHATS_NEW === "true";
 const patchNotesOffline = process.env.BWEEP_PREVIEW_PATCH_NOTES_OFFLINE === "true";
 const serverOffline = process.env.BWEEP_PREVIEW_SERVER_OFFLINE === "true";
 const serverSleeping = process.env.BWEEP_PREVIEW_SERVER_SLEEPING === "true";
+const serverClosed = process.env.BWEEP_PREVIEW_SERVER_CLOSED === "true";
 const authOutage = process.env.BWEEP_PREVIEW_AUTH_OUTAGE === "true";
 const moveAndModsMode = process.env.BWEEP_PREVIEW_MOVE_AND_MODS === "true";
 const adminMode = process.env.BWEEP_PREVIEW_ADMIN === "true";
 const memberMode = process.env.BWEEP_PREVIEW_MEMBER === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline, previewServerOffline, previewServerSleeping, previewAuthOutage, previewMoveAndMods, previewMember }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline, previewServerOffline, previewServerSleeping, previewServerClosed, previewAuthOutage, previewMoveAndMods, previewMember }) => {
   // A minimized window reports "hidden"; previews switch it with window.__setHidden.
   window.__hidden = false;
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => window.__hidden ? "hidden" : "visible" });
@@ -357,6 +358,10 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       if (server.port === 25566 || (previewServerOffline && !window.__serverBackOnline)) {
         return { online: false, host: server.host, port: server.port, message: "연결 끊김" };
       }
+      if (previewServerClosed) {
+        // Outside opening hours: the gate answers, and says when the server opens (Friday 12:00 Korean time).
+        return { online: true, host: server.host, port: server.port, latencyMs: 18, message: "서버 연결 가능", players: { online: 0, max: 20 }, version: "1.21.1", closed: { nextOpen: Date.UTC(2026, 9, 30, 3, 0, 0) } };
+      }
       if (previewServerSleeping) {
         return { online: true, host: server.host, port: server.port, latencyMs: 18, message: "서버 연결 가능", players: { online: 0, max: 20 }, version: "1.21.1", sleep: "sleeping" };
       }
@@ -539,7 +544,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewServerSleeping: serverSleeping, previewAuthOutage: authOutage, previewMoveAndMods: moveAndModsMode, previewMember: memberMode });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewServerSleeping: serverSleeping, previewServerClosed: serverClosed, previewAuthOutage: authOutage, previewMoveAndMods: moveAndModsMode, previewMember: memberMode });
 
 await page.goto(process.env.BWEEP_PREVIEW_URL ?? "http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 if (testChannelDenied) {
@@ -592,6 +597,21 @@ if (patchNotesOffline) {
   console.log(JSON.stringify({ interactionChecks: ["patch-notes-offline-fallback"], errors }));
   await browser.close();
   process.exit(errors.length ? 1 : 0);
+}
+if (serverClosed) {
+  // Outside opening hours: the top bar says when it opens, one line sits above Play, and Play cannot be pressed.
+  await page.locator(".serverPill.is-closed").waitFor({ timeout: 10000 });
+  if (!(await page.locator(".serverPill").innerText()).includes("금 12:00 열림")) throw new Error("the top bar does not say when the server opens");
+  if (!(await page.locator(".dockHint").innerText()).includes("지금은 닫혀 있어요 · 금 12:00에 열려요")) throw new Error("the line above Play is wrong");
+  if (!(await page.locator(".launchButton").isDisabled())) throw new Error("Play can be pressed on a closed server");
+  await page.screenshot({ path: "previews/bweeep-launcher-server-closed.png" });
+  await page.locator(".launchButton").click({ force: true, timeout: 1000 }).catch(() => undefined);
+  await page.waitForTimeout(300);
+  if (await page.evaluate(() => window.__launchRequests) !== 0) throw new Error("a closed server was launched");
+  if (await page.getByRole("alertdialog").count()) throw new Error("a closed server asked a question");
+  console.log("server-closed-preview=passed");
+  await browser.close();
+  process.exit(0);
 }
 if (serverSleeping) {
   // A server stopped while empty: shown as resting, and Play starts at once without the off-server question.

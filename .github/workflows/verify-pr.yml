@@ -34,6 +34,7 @@ jobs:
       - run: bash scripts/verify-private-notices.sh
       - run: node scripts/verify-notice-relay.mjs
       - run: node scripts/verify-server-gate.mjs
+      - run: node scripts/verify-server-schedule.mjs
       - run: node scripts/verify-notice.mjs
       - run: node scripts/verify-server-errors.mjs
       - run: node scripts/verify-launch-identity.mjs
@@ -56,6 +57,7 @@ jobs:
           BWEEP_PREVIEW_WHATS_NEW=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_PATCH_NOTES_OFFLINE=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_SERVER_SLEEPING=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_SERVER_CLOSED=true node scripts/capture-preview.mjs
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
