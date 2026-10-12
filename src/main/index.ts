@@ -16,7 +16,7 @@ import { getLauncherUpdateStatus, installPendingLauncherUpdate, setLauncherUpdat
 import { isCatalogServer, isSameDocument } from "./navigation.js";
 import { loadPatchNotes } from "./patch-notes.js";
 import { isReleasePageUrl } from "./release-notes.js";
-import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
+import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, sharedContentFolder } from "./user-content.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
 import { findBlockedJars, installMod, listPersonalMods, refetchPreviousMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
@@ -431,6 +431,9 @@ app.whenReady().then(async () => {
     if (typeof folder !== "string") throw new Error("콘텐츠 폴더 정보가 올바르지 않습니다.");
     return removeUserContentFolder(requireInstanceRoot(instanceRoot), requireContentKind(kind), folder);
   });
+  // The launcher's own shader folder, where the player drops zips for every server.
+  ipcMain.handle("content:openFolder", async (_event, instanceRoot: unknown, kind: unknown) =>
+    shell.openPath(await sharedContentFolder(requireInstanceRoot(instanceRoot), requireContentKind(kind))));
   // Only the install folder is opened from the renderer, so anything that is not a folder is refused.
   ipcMain.handle("shell:openPath", async (_event, target: unknown) => {
     const folder = requireInstanceRoot(target);

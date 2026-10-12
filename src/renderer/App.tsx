@@ -615,6 +615,11 @@ function App() {
     }
   }
 
+  async function openPersonalFolder(kind: UserContentKind) {
+    const failure = await window.bweeep.openUserContentFolder(instanceRoot.trim(), kind).catch(() => "failed");
+    if (failure) setProfileNotice("폴더를 열지 못했어요.");
+  }
+
   async function removePersonalFolder(kind: UserContentKind, folder: string) {
     if (contentAction) return;
     setContentAction(kind);
@@ -1209,6 +1214,11 @@ function App() {
                       <button className="secondaryButton contentFolderAdd" disabled={!instanceRoot.trim() || contentAction !== null} onClick={() => void choosePersonalFolders(kind)}>
                         {contentAction === kind ? "저장 중…" : `${kind === "mods" ? "모드" : "셰이더"} 폴더 선택`}
                       </button>
+                      {kind === "shaderpacks" && (
+                        <button className="secondaryButton contentFolderAdd" disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder(kind)}>
+                          폴더 열기
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>

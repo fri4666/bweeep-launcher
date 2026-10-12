@@ -49,6 +49,7 @@ const api = {
   userContentFolders: (instanceRoot: string) => ipcRenderer.invoke("content:folders", instanceRoot) as Promise<UserContentFolders>,
   chooseUserContentFolders: (instanceRoot: string, kind: UserContentKind) => ipcRenderer.invoke("content:chooseFolders", instanceRoot, kind) as Promise<UserContentFolderPickResult>,
   removeUserContentFolder: (instanceRoot: string, kind: UserContentKind, folder: string) => ipcRenderer.invoke("content:removeFolder", instanceRoot, kind, folder) as Promise<UserContentFolders>,
+  openUserContentFolder: (instanceRoot: string, kind: UserContentKind) => ipcRenderer.invoke("content:openFolder", instanceRoot, kind) as Promise<string>,
   login: () => ipcRenderer.invoke("account:login") as Promise<LoginResult>,
   cancelLogin: () => ipcRenderer.invoke("account:cancelLogin") as Promise<LoginCancellationResult>,
   logout: () => ipcRenderer.invoke("account:logout") as Promise<AccessStatus>,

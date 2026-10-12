@@ -195,7 +195,7 @@ async function sha256IfFile(filePath: string): Promise<string | null> {
 }
 
 /** Path → hash the launcher last wrote there; null when not known (older record format). */
-async function readOverrideRecord(filePath: string): Promise<Map<string, string | null>> {
+export async function readOverrideRecord(filePath: string): Promise<Map<string, string | null>> {
   let value: unknown;
   try {
     value = JSON.parse(await fsp.readFile(filePath, "utf8"));
