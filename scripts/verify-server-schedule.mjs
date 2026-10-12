@@ -299,4 +299,126 @@ try {
 } finally {
   fs.rmSync(stateDir, { recursive: true, force: true });
 }
+// ---- the standard hours and the helper that puts them in place (scripts/gate-schedule.mjs)
+
+{
+  const { STANDARD_HOURS, STARTS_ON, standardSchedule, withStandardHours, withoutHours, describeHours } = await import("./gate-schedule.mjs");
+  const { execFileSync, spawn } = await import("node:child_process");
+  const { gateCodeHash } = await import("./server-gate.mjs");
+
+  // 16. The two real servers: parse, start on a Friday, and tile the week exactly.
+  const real = Object.fromEntries(Object.keys(STANDARD_HOURS).map((unit) => [unit, parseSchedule(standardSchedule(unit), unit)]));
+  assert.deepEqual(Object.keys(real).sort(), ["bweeep-cobblemon-fabric", "bweeep-society-server"]);
+  const startsOnMs = real["bweeep-cobblemon-fabric"].startsOnMs;
+  assert.equal(startsOnMs, real["bweeep-society-server"].startsOnMs);
+  assert.equal(formatOpenTime(startsOnMs), "금 00:00", `${STARTS_ON} is a Friday`);
+  for (let ms = startsOnMs - 3_600_000; ms < startsOnMs + 15 * 86_400_000; ms += 60_000) {
+    const [a, b] = [isOpenAt(real["bweeep-cobblemon-fabric"], ms), isOpenAt(real["bweeep-society-server"], ms)];
+    assert.ok(a || b, `a server is open at ${new Date(ms).toISOString()}`);
+    if (ms >= startsOnMs) assert.notEqual(a, b, `exactly one open at ${new Date(ms).toISOString()}`);
+  }
+  assert.equal(isOpenAt(real["bweeep-cobblemon-fabric"], startsOnMs + 12 * 3_600_000), true, "the first Friday noon");
+  assert.equal(isOpenAt(real["bweeep-society-server"], startsOnMs + 12 * 3_600_000), false);
+  pass("standard-hours-tile-the-week");
+
+  // 17. Applying and clearing are pure and repeatable; unknown units are left alone.
+  const before = { stateDir, servers: [
+    { unit: "bweeep-cobblemon-fabric", listen: 25565, backend: 35565 },
+    { unit: "bweeep-society-server", listen: 31234, backend: 41234, schedule: { open: [{ from: "mon 00:00", to: "tue 00:00" }] } },
+    { unit: "bweeep-other", listen: 1, backend: 2 }
+  ] };
+  const applied = withStandardHours(before);
+  assert.deepEqual(applied.changed, ["bweeep-cobblemon-fabric", "bweeep-society-server"]);
+  assert.equal(applied.config.servers[2].schedule, undefined);
+  assert.equal(before.servers[0].schedule, undefined, "the input is not changed");
+  assert.deepEqual(withStandardHours(applied.config).changed, [], "applying twice changes nothing");
+  assert.deepEqual(withoutHours(applied.config).changed, ["bweeep-cobblemon-fabric", "bweeep-society-server"]);
+  assert.deepEqual(withoutHours(withoutHours(applied.config).config).changed, []);
+  assert.match(describeHours(applied.config, kst(2026, 10, 20, 12)).join("\n"), /bweeep-cobblemon-fabric: 2026-10-23 전이라 항상 열림/);
+  assert.match(describeHours(applied.config, kst(2026, 10, 24, 12)).join("\n"), /bweeep-cobblemon-fabric: 지금 열림 · 일 12:00에 닫힘/);
+  assert.match(describeHours(applied.config, kst(2026, 10, 27, 12)).join("\n"), /bweeep-society-server: 지금 열림 · 금 12:00에 닫힘/);
+  assert.match(describeHours(applied.config, kst(2026, 10, 27, 12)).join("\n"), /bweeep-cobblemon-fabric: 지금 닫힘 · 금 12:00에 열림/);
+  assert.match(describeHours(applied.config, kst(2026, 10, 27, 12)).join("\n"), /bweeep-other: 시간표 없음/);
+  pass("apply-and-clear-are-pure");
+
+  // 18. The command line: nothing changes without --write; --write backs up and keeps the file private.
+  const toolDir = fs.mkdtempSync(path.join(os.tmpdir(), "bweeep-gate-tool-"));
+  const toolConfig = path.join(toolDir, "bweeep-cobblemon-fabric.json");
+  const toolState = path.join(toolDir, "state");
+  fs.writeFileSync(toolConfig, JSON.stringify({ stateDir: toolState, servers: [{ unit: "bweeep-cobblemon-fabric", listen: await freePort(), backend: await freePort(), rcon: { port: await freePort(), password: "long-enough-password" } }] }, null, 2), { mode: 0o600 });
+  const tool = (...args) => execFileSync(process.execPath, [path.join(import.meta.dirname, "gate-schedule.mjs"), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const original = fs.readFileSync(toolConfig, "utf8");
+  assert.match(tool("show", "--config", toolConfig), /시간표 없음/);
+  assert.match(tool("apply", "--config", toolConfig), /미리보기/);
+  assert.equal(fs.readFileSync(toolConfig, "utf8"), original, "apply without --write changes nothing");
+  assert.match(tool("apply", "--config", toolConfig, "--write"), /백업/);
+  const written = JSON.parse(fs.readFileSync(toolConfig, "utf8"));
+  assert.deepEqual(written.servers[0].schedule, { startsOn: START, open: [{ from: "fri 12:00", to: "sun 12:00" }] });
+  assert.equal(written.servers[0].rcon.password, "long-enough-password", "other settings are kept");
+  assert.equal(fs.statSync(toolConfig).mode & 0o777, 0o600, "gate.json stays private");
+  assert.equal(fs.readdirSync(toolDir).filter((name) => name.includes(".bak-")).length, 1, "one backup");
+  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-27T10:00+09:00"), /지금 닫힘 · 금 12:00에 열림/);
+  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-24T10:00+09:00"), /지금 열림 · 일 12:00에 닫힘/);
+  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-10T10:00+09:00"), /전이라 항상 열림/);
+  // Opening by hand and ending it.
+  tool("open", "--config", toolConfig, "--hours", "2", "--write");
+  const handFile = path.join(toolState, "bweeep-cobblemon-fabric.open-until");
+  assert.ok(Date.parse(fs.readFileSync(handFile, "utf8").trim()) > Date.now() + 3_000_000);
+  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-27T10:00+09:00"), /손으로 열어 둔/);
+  tool("close-by-hand", "--config", toolConfig, "--write");
+  assert.equal(fs.existsSync(handFile), false);
+  assert.throws(() => tool("open", "--config", toolConfig, "--hours", "0"), /hours/);
+  // install is a preview unless --write; the gate dir here has no copy yet, and nobody is on the (absent) server.
+  const preview = tool("install", "--config", toolConfig);
+  assert.match(preview, /교체/);
+  assert.equal(fs.existsSync(path.join(toolDir, "server-gate.mjs")), false, "install without --write copies nothing");
+  tool("clear", "--config", toolConfig, "--write");
+  assert.equal(JSON.parse(fs.readFileSync(toolConfig, "utf8")).servers[0].schedule, undefined);
+  pass("gate-schedule-tool");
+
+  // 19. A real gate process: it records its code hash, reports closed, and a SIGHUP opens it again without a restart.
+  {
+    // A one-minute window three days from now, so it is closed whenever this runs.
+    const later = Date.now() + 3 * 86_400_000;
+    const day = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"][(Math.floor((later + 9 * 3_600_000) / 86_400_000) + 3) % 7];
+    const closedNow = { open: [{ from: `${day} 03:00`, to: `${day} 03:01` }] };
+    const listenPort = await freePort();
+    const processConfig = path.join(toolDir, "bweeep-e2e-hours.json");
+    const write = (schedule) => fs.writeFileSync(processConfig, JSON.stringify({
+      stateDir: path.join(toolDir, "state2"),
+      servers: [{ unit: "bweeep-e2e-hours", name: "e2e", listen: listenPort, backend: 1, ...(schedule ? { schedule } : {}) }]
+    }));
+    write(closedNow);
+    const child = spawn(process.execPath, [path.join(import.meta.dirname, "server-gate.mjs"), "--config", processConfig], { stdio: ["ignore", "pipe", "pipe"] });
+    const output = [];
+    child.stdout.on("data", (chunk) => output.push(String(chunk)));
+    child.stderr.on("data", (chunk) => output.push(String(chunk)));
+    try {
+      await until(() => output.join("").includes("listening on"), "the gate process listens");
+      assert.equal(fs.readFileSync(path.join(toolDir, "state2", "bweeep-e2e-hours.gate-code"), "utf8").trim(), gateCodeHash(), "it records the code it runs");
+      let status = await statusPing(listenPort);
+      assert.equal(status.bweeep.gate, "closed");
+      assert.ok(status.bweeep.nextOpen > Date.now());
+      const connection = joinClient(listenPort, "seos_py");
+      await until(() => connection.closed, "turned away");
+      assert.match(connection.disconnect, /열려 있지 않아요/);
+      write(null);
+      child.kill("SIGHUP");
+      await until(() => output.join("").includes("opening hours removed"), "hours reloaded");
+      status = await statusPing(listenPort);
+      assert.equal(status.bweeep.gate, "sleeping", "open again after SIGHUP, same process");
+      assert.equal(child.exitCode, null, "the gate was not restarted");
+      write({ open: [] });
+      child.kill("SIGHUP");
+      await until(() => output.join("").includes("reload refused"), "bad file refused");
+      assert.equal((await statusPing(listenPort)).bweeep.gate, "sleeping", "a bad file changes nothing");
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+    pass("real-gate-process-sighup");
+  }
+  fs.rmSync(toolDir, { recursive: true, force: true });
+}
+
 console.log("server schedule: all checks passed");

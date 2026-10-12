@@ -21,6 +21,7 @@
 // SIGHUP re-reads only the schedules (see reloadSchedules).
 // With "rcon" the server is stopped with the console "stop" (saves the world), then systemd.
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -884,6 +885,11 @@ export class ServerGate {
 
 // ---- entry point
 
+/** SHA-256 of this file as it is on disk; a running gate records it at start. */
+export function gateCodeHash(file = fileURLToPath(import.meta.url)) {
+  return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
 function parseArgs(argv) {
   const index = argv.indexOf("--config");
   if (index < 0 || !argv[index + 1]) throw new Error("사용법: node scripts/server-gate.mjs --config <gate.json>");
@@ -944,6 +950,9 @@ async function main() {
   fs.mkdirSync(config.stateDir, { recursive: true });
   const gates = config.servers.map((entry) => new ServerGate(entry, { stateDir: config.stateDir }));
   for (const gate of gates) await gate.listen();
+  // Which code is running, so scripts/gate-schedule.mjs install can tell a gate that still needs a restart.
+  const codeHash = gateCodeHash();
+  for (const gate of gates) fs.writeFileSync(path.join(config.stateDir, `${gate.entry.unit}.gate-code`), `${codeHash}\n`);
   const shutdown = async () => {
     await Promise.all(gates.map((gate) => gate.close()));
     process.exit(0);
