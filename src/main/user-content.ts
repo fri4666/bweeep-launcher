@@ -5,6 +5,7 @@ import type { ModpackManifest, UserContentFolders, UserContentKind, UserContentS
 import { fitsMinecraft, readModMetadata, runsOn, type ModMetadata } from "./mod-metadata.js";
 import { hashFile } from "./hash.js";
 import { readOverrideRecord } from "./mrpack.js";
+import { applyKeyDefaults } from "./key-defaults.js";
 
 const USER_MODS_FILE = ".bweeep-user-mods.json";
 const USER_SHADERS_FILE = ".bweeep-user-shaders.json";
@@ -51,6 +52,8 @@ export async function prepareUserContent(
   // Key bindings, sensitivity, accessibility, chat, sound and video settings
   // are stored in options*.txt. Keep every such base-game file across servers.
   await restoreGameOptions(path.join(root, "settings"), instanceDir);
+  // The restored file hides the pack's own starting keys from YOSBR, so mods fall back to keys that collide.
+  await applyKeyDefaults(instanceDir, path.join(root, "settings"), manifest).catch(() => undefined);
   await restoreShaderSettings(instanceRoot, instanceDir);
   await migrateLegacyShaderpacks(shaderpacksDir);
   if (manifest.id) {
