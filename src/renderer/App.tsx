@@ -920,8 +920,10 @@ function App() {
         <section className="hero">
           <div className="heroBackdrop" />
           {notice.shown && (
-            <div className="heroNotice" role="status">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6l-6 4z" /><path d="M16.5 9.5a3.5 3.5 0 0 1 0 5M19 7a7 7 0 0 1 0 10" /></svg>
+            <div className={`heroNotice${notice.shown.personal ? " isPersonal" : ""}`} role="status" title={notice.shown.personal ? "나에게만 온 공지" : undefined}>
+              {notice.shown.personal
+                ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></svg>
+                : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6l-6 4z" /><path d="M16.5 9.5a3.5 3.5 0 0 1 0 5M19 7a7 7 0 0 1 0 10" /></svg>}
               <p>{notice.shown.text}</p>
               <button className="iconOnly" aria-label="공지 닫기" onClick={notice.dismiss}>×</button>
             </div>
@@ -1242,7 +1244,7 @@ function App() {
         <InstallMoveDialog from={instanceRoot} to={moveTarget} onSwitch={switchInstanceRoot} onClose={() => setMoveTarget(null)} />
       )}
       {adminOpen && access.isAdmin && (
-        <AdminPanel selfId={user.id} onClose={() => setAdminOpen(false)} confirm={setConfirmRequest} shownNotice={notice.current} onNoticeChange={notice.replace} />
+        <AdminPanel selfId={user.id} onClose={() => setAdminOpen(false)} confirm={setConfirmRequest} onNoticeChange={notice.replace} />
       )}
 
       {whatsNew && !confirmRequest && <WhatsNewDialog whatsNew={whatsNew} onClose={closeWhatsNew} />}

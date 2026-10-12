@@ -1,6 +1,6 @@
 import { ipcMain, shell } from "electron";
 import type { AdminDiagnostics, AdminNames, AdminRelease, AuthFailure } from "../shared/admin-types.js";
-import { type LauncherNotice, noticeProblem, parseNotice } from "../shared/notice.js";
+import { type AdminNotice, type LauncherNotice, type NoticeUpdate, noticeProblem, parseAdminNotices, parseNotice } from "../shared/notice.js";
 import type { LauncherUser, MemberSummary } from "../shared/types.js";
 import { isDiagnosticsUrl, readLogTail } from "./diagnostics.js";
 import { GameSessionWatch } from "./game-session-watch.js";
@@ -58,12 +58,43 @@ export function registerAdminIpc(context: AdminIpcContext): GameSessionWatch {
   });
   const notice = async (body: Record<string, unknown>, fallback: string): Promise<LauncherNotice | null> =>
     parseNotice((await auth.call<{ notice?: unknown }>(user(), body, fallback)).notice);
+  const noticeUpdate = async (body: Record<string, unknown>, fallback: string): Promise<NoticeUpdate> => {
+    const reply = await auth.call<{ notice?: unknown; notices?: unknown }>(user(), body, fallback);
+    return { notice: parseNotice(reply.notice), notices: parseAdminNotices(reply.notices) };
+  };
+  const adminNotices = async (): Promise<AdminNotice[]> =>
+    parseAdminNotices((await auth.call<{ notices?: unknown }>(user(), { action: "adminNotices" }, "공지 목록을 불러오지 못했습니다.")).notices);
+  /**
+   * A server that predates personal notices ignores the target and would show the
+   * text to everyone, so the list action (which only newer servers know) must work first.
+   */
+  let personalSupported = false;
+  const requirePersonalSupport = async () => {
+    if (personalSupported) return;
+    await adminNotices();
+    personalSupported = true;
+  };
+  const optionalTarget = (value: unknown): string | undefined => {
+    if (value === undefined || value === null) return undefined;
+    return requireUuid(value, "받는 사람");
+  };
   ipcMain.handle("notice:current", () => notice({ action: "notice" }, "공지를 불러오지 못했습니다."));
-  ipcMain.handle("admin:setNotice", (_event, text: unknown) => {
-    if (typeof text !== "string" || noticeProblem(text) !== null) throw new Error("공지 내용이 올바르지 않습니다.");
-    return notice({ action: "setNotice", text }, "공지를 올리지 못했습니다.");
+  ipcMain.handle("admin:notices", async () => {
+    const notices = await adminNotices();
+    personalSupported = true;
+    return notices;
   });
-  ipcMain.handle("admin:clearNotice", () => notice({ action: "clearNotice" }, "공지를 내리지 못했습니다."));
+  ipcMain.handle("admin:setNotice", async (_event, text: unknown, targetUserId?: unknown) => {
+    if (typeof text !== "string" || noticeProblem(text) !== null) throw new Error("공지 내용이 올바르지 않습니다.");
+    const target = optionalTarget(targetUserId);
+    if (target) await requirePersonalSupport();
+    return noticeUpdate({ action: "setNotice", text, ...(target ? { targetUserId: target } : {}) }, "공지를 올리지 못했습니다.");
+  });
+  ipcMain.handle("admin:clearNotice", async (_event, targetUserId?: unknown) => {
+    const target = optionalTarget(targetUserId);
+    if (target) await requirePersonalSupport();
+    return noticeUpdate({ action: "clearNotice", ...(target ? { targetUserId: target } : {}) }, "공지를 내리지 못했습니다.");
+  });
   ipcMain.handle("diagnostics:send", async () => {
     const [gameLog, launcherLog] = await Promise.all([readLogTail(context.lastGameLogFile()), readLogTail(gameLogPath())]);
     await auth.call<{ ok: boolean }>(user(), { action: "uploadDiagnostics", gameLog, launcherLog }, "진단 정보를 보내지 못했습니다.");

@@ -125,6 +125,18 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     { userId: "00000000-0000-0000-0000-000000000002", name: "나원", gameName: null, role: "member", tester: false, lastPlayedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() },
     { userId: "00000000-0000-0000-0000-000000000004", name: "집가고싶다", gameName: "PSH_1227", role: "member", tester: true, lastPlayedAt: null }
   ];
+  // Notices admins have posted: the one everyone sees (target null) and ones for a single member.
+  // __adminListSupported = false behaves like a server that predates personal notices.
+  let noticeCounter = 0;
+  window.__notices = [];
+  window.__adminListSupported = true;
+  const sortedNotices = () => [...window.__notices].sort((a, b) => Number(a.target !== null) - Number(b.target !== null));
+  const lacksFeature = () => new Error("Error invoking remote method 'admin:notices': Error: 서버가 아직 이 기능을 지원하지 않아요.");
+  // What this PC's member (id "1") is shown: their own notice first, otherwise the one everyone sees.
+  const ownNotice = () => {
+    const mine = window.__notices.find((item) => item.target?.userId === "1") ?? window.__notices.find((item) => item.target === null);
+    return mine ? { id: mine.id, text: mine.text, at: mine.at, ...(mine.target ? { personal: true } : {}) } : null;
+  };
   // Mods installed for the server's previous version, waiting to be fetched again.
   let personalMods = previewMoveAndMods ? [
     { projectId: "AANobbMI", title: "Sodium", versionNumber: "mc1.20.6-0.5.11", fileName: "sodium.jar", explicit: true, previousTarget: "NeoForge 1.20.6" },
@@ -225,17 +237,28 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     adminDiagnostics: async () => adminDiagnostics,
     notice: async () => {
       await adminGate();
-      return window.__notice ?? null;
+      return ownNotice();
     },
-    setNotice: async (text) => {
+    setNotice: async (text, targetUserId) => {
       await adminGate();
-      window.__notice = { id: `notice-${Date.now()}`, text: text.trim(), at: new Date().toISOString() };
-      return window.__notice;
+      if (targetUserId && !window.__adminListSupported) throw lacksFeature();
+      const member = targetUserId ? members.find((item) => item.userId === targetUserId) : null;
+      if (targetUserId && !member) throw new Error("Error invoking remote method 'admin:setNotice': Error: 멤버를 찾지 못했어요.");
+      window.__notices = window.__notices.filter((item) => (item.target?.userId ?? null) !== (targetUserId ?? null));
+      noticeCounter += 1;
+      window.__notices.push({ id: `notice-${noticeCounter}`, text: text.trim(), at: new Date().toISOString(), target: member ? { userId: member.userId, name: member.name, gameName: member.gameName } : null });
+      return { notice: ownNotice(), notices: window.__adminListSupported ? sortedNotices() : [] };
     },
-    clearNotice: async () => {
+    clearNotice: async (targetUserId) => {
       await adminGate();
-      window.__notice = null;
-      return null;
+      if (targetUserId && !window.__adminListSupported) throw lacksFeature();
+      window.__notices = window.__notices.filter((item) => (item.target?.userId ?? null) !== (targetUserId ?? null));
+      return { notice: ownNotice(), notices: window.__adminListSupported ? sortedNotices() : [] };
+    },
+    adminNotices: async () => {
+      await adminGate();
+      if (!window.__adminListSupported) throw lacksFeature();
+      return sortedNotices();
     },
     openDiagnostics: async (id) => {
       await adminGate();
@@ -877,6 +900,96 @@ if (adminMode) {
   await panel.getByRole("tab", { name: "공지" }).click();
   await panel.locator(".adminNoticeShown").filter({ hasText: "10분쯤 걸려요" }).waitFor();
   if (await panel.locator(".adminToast").count()) throw new Error("the old failure is still shown after the tab was reloaded");
+
+  // A notice for one member: chosen in the recipient list, shown beside the one everyone sees, replaced by the next one for the same person, cleared on its own.
+  const recipientSelect = panel.getByLabel("받는 사람");
+  const draft = panel.getByLabel("공지 내용");
+  const items = panel.locator(".adminNoticeItem");
+  if ((await recipientSelect.inputValue()) !== "all") throw new Error("the recipient does not start as everyone");
+  if ((await draft.getAttribute("placeholder")) !== "모든 멤버의 런처 첫 화면에 보여요") throw new Error("the placeholder for everyone changed");
+  await recipientSelect.selectOption({ label: "집가고싶다 · PSH_1227" });
+  if ((await draft.getAttribute("placeholder")) !== "집가고싶다에게만 보여요") throw new Error("the placeholder does not name the recipient");
+  await draft.fill("이건 너한테만 말하는 거예요");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await panel.locator(".adminToast.isOk").filter({ hasText: "개인 공지를 올렸어요" }).waitFor();
+  await items.filter({ hasText: "집가고싶다 · PSH_1227에게만" }).filter({ hasText: "너한테만" }).waitFor();
+  if ((await items.count()) !== 2) throw new Error("the list does not hold the everyone-notice and the personal one");
+  if (!(await items.filter({ hasText: "모두" }).filter({ hasText: "10분쯤 걸려요" }).count())) throw new Error("posting for one member took down the notice everyone sees");
+  if (!(await draft.getAttribute("placeholder"))?.includes("집가고싶다")) throw new Error("the recipient was reset by posting");
+  checks.push("admin-notice-personal-post");
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-notice-personal.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  if (await narrowOverflow(panel)) throw new Error("the personal notice list overflows at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-notice-personal-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // A second notice for the same member replaces the first; nothing piles up.
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+  await draft.fill("다시 한 번 너한테만");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await items.filter({ hasText: "다시 한 번 너한테만" }).waitFor();
+  if ((await items.count()) !== 2 || (await items.filter({ hasText: "이건 너한테만" }).count())) throw new Error("a second notice for the same member did not replace the first");
+  checks.push("admin-notice-personal-replaces");
+  // The admin's own main screen is untouched by a notice meant for someone else.
+  if (await page.evaluate(() => window.__notices.some((item) => item.target === null && item.text.includes("너한테")))) throw new Error("a personal notice leaked into the everyone-notice");
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+  await items.filter({ hasText: "다시 한 번 너한테만" }).getByRole("button", { name: "내리기" }).click();
+  await panel.locator(".adminToast.isOk").filter({ hasText: "개인 공지를 내렸어요" }).waitFor();
+  await items.filter({ hasText: "다시 한 번 너한테만" }).waitFor({ state: "detached" });
+  if ((await items.count()) !== 1 || !(await items.filter({ hasText: "10분쯤 걸려요" }).count())) throw new Error("clearing the personal notice touched the one everyone sees");
+  checks.push("admin-notice-personal-clear");
+  // A notice for the admin themself reaches this screen as a personal notice and wins over the everyone-notice.
+  await recipientSelect.selectOption({ label: "붸에엡 · seos_py · 나" });
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+  await draft.fill("나만 보는 공지예요");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await items.filter({ hasText: "나만 보는 공지예요" }).waitFor();
+  await page.keyboard.press("Escape");
+  const personalBanner = page.locator(".heroNotice.isPersonal");
+  await personalBanner.filter({ hasText: "나만 보는 공지예요" }).waitFor();
+  if ((await page.locator(".heroNotice").count()) !== 1) throw new Error("more than one notice is shown on the main screen");
+  if ((await personalBanner.getAttribute("title")) !== "나에게만 온 공지") throw new Error("the personal notice is not marked");
+  await page.screenshot({ path: "previews/bweeep-launcher-notice-personal.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  const personalCovered = await page.evaluate(() => {
+    const notice = document.querySelector(".heroNotice").getBoundingClientRect();
+    const copy = document.querySelector(".heroCopy").getBoundingClientRect();
+    return notice.bottom > copy.top;
+  });
+  if (personalCovered) throw new Error("the personal notice covers the server text at 920px");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await personalBanner.getByRole("button", { name: "공지 닫기" }).click();
+  if (await page.locator(".heroNotice").count()) throw new Error("the closed personal notice is still shown");
+  checks.push("notice-personal-banner-shown", "notice-personal-banner-closed");
+  await page.getByRole("button", { name: "관리", exact: true }).click();
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await items.filter({ hasText: "나만 보는 공지예요" }).getByRole("button", { name: "내리기" }).click();
+  await items.filter({ hasText: "나만 보는 공지예요" }).waitFor({ state: "detached" });
+  // A server that predates personal notices: only the notice everyone sees, no recipient choice, no error.
+  await page.evaluate(() => { window.__adminListSupported = false; });
+  await panel.getByRole("tab", { name: "멤버" }).click();
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await items.filter({ hasText: "10분쯤 걸려요" }).waitFor();
+  if (!(await recipientSelect.isDisabled())) throw new Error("the recipient can be chosen on a server without personal notices");
+  if (await panel.locator(".adminToast").count()) throw new Error("an older server shows an error in the notice tab");
+  await draft.fill("옛 서버에서도 올려요");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await items.filter({ hasText: "옛 서버에서도 올려요" }).waitFor();
+  if ((await items.count()) !== 1) throw new Error("the older server's list is not one notice");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-notice-older-server.png" });
+  checks.push("admin-notice-older-server");
+  await page.evaluate(() => { window.__adminListSupported = true; });
+  await panel.getByRole("tab", { name: "멤버" }).click();
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await items.filter({ hasText: "옛 서버에서도 올려요" }).waitFor();
+  if (!(await recipientSelect.isEnabled())) throw new Error("the recipient stays locked after the server supports it again");
+  // Put the text of the notice everyone sees back for the checks below.
+  await draft.fill("오늘 밤 9시에 선릿벨리 서버를 점검해요\n10분쯤 걸려요");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await items.filter({ hasText: "10분쯤 걸려요" }).waitFor();
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
 
   await page.keyboard.press("Escape");
   if (await page.getByRole("dialog", { name: "관리" }).count()) throw new Error("Escape did not close the admin tab");

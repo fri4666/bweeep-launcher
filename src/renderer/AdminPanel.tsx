@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import type { AdminDiagnostics, AdminNames, AdminRelease, NameHold, UuidReservation } from "../shared/admin-types.js";
-import { type LauncherNotice, MAX_NOTICE_LENGTH, noticeProblem, tidyNoticeText } from "../shared/notice.js";
+import { type AdminNotice, type LauncherNotice, MAX_NOTICE_LENGTH, noticeProblem, tidyNoticeText } from "../shared/notice.js";
+import { SERVER_LACKS_FEATURE_TEXT } from "../shared/server-errors.js";
 import type { MemberSummary } from "../shared/types.js";
 import { reasonLabel } from "./AuthFailureNotice.js";
-import { ActionMark, FeedbackToast, useActionFeedback } from "./adminFeedback.js";
+import { ActionMark, errorText, FeedbackToast, useActionFeedback } from "./adminFeedback.js";
 import "./admin.css";
 
 type Tab = "members" | "notice" | "names" | "releases" | "diagnostics";
@@ -39,15 +40,19 @@ interface AdminPanelProps {
   selfId: string;
   onClose: () => void;
   confirm: (request: AdminConfirm) => void;
-  /** The notice members see now, and how the main screen learns of a change made here. */
-  shownNotice: LauncherNotice | null;
+  /** How the main screen learns of a change made here: the notice this admin sees now. */
   onNoticeChange: (notice: LauncherNotice | null) => void;
 }
 
 /** Admins only: members, the notice, name holds and reservations, server pack versions and join problems. */
-export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChange }: AdminPanelProps) {
+export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPanelProps) {
   const [tab, setTab] = useState<Tab>("members");
   const [noticeDraft, setNoticeDraft] = useState("");
+  // Who the next notice is for: "all", or a member's id. The list holds every notice shown now.
+  const [recipient, setRecipient] = useState("all");
+  const [notices, setNotices] = useState<AdminNotice[] | null>(null);
+  // False on a server that predates personal notices: only the notice everyone sees can be posted.
+  const [listSupported, setListSupported] = useState(true);
   const [members, setMembers] = useState<MemberSummary[] | null>(null);
   const [names, setNames] = useState<AdminNames | null>(null);
   const [releases, setReleases] = useState<AdminRelease[] | null>(null);
@@ -60,12 +65,28 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
   async function load(which: Tab) {
     try {
       if (which === "members") setMembers(await window.bweeep.listMembers());
-      if (which === "notice") onNoticeChange(await window.bweeep.notice());
+      if (which === "notice") await loadNotices();
       if (which === "names") setNames(await window.bweeep.adminNames());
       if (which === "releases") setReleases(await window.bweeep.adminReleases());
       if (which === "diagnostics") setDiagnostics(await window.bweeep.adminDiagnostics());
     } catch (error) {
       fail(error, "관리 정보를 불러오지 못했어요.");
+    }
+  }
+
+  async function loadNotices() {
+    const own = await window.bweeep.notice();
+    onNoticeChange(own);
+    setMembers(await window.bweeep.listMembers());
+    try {
+      setNotices(await window.bweeep.adminNotices());
+      setListSupported(true);
+    } catch (error) {
+      if (errorText(error, "") !== SERVER_LACKS_FEATURE_TEXT) throw error;
+      // An older server: show the one notice everyone sees, and no recipient choice.
+      setListSupported(false);
+      setRecipient("all");
+      setNotices(own && !own.personal ? [{ id: own.id, text: own.text, at: own.at, target: null }] : []);
     }
   }
 
@@ -103,15 +124,29 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
 
   const draftProblem = noticeProblem(noticeDraft);
 
-  function postNotice() {
-    void act("notice", () => window.bweeep.setNotice(noticeDraft), (posted) => {
-      onNoticeChange(posted);
-      setNoticeDraft("");
-    }, "공지를 올렸어요", "공지를 올리지 못했어요.");
+  const recipientMember = recipient === "all" ? null : members?.find((member) => member.userId === recipient) ?? null;
+  const replacesShown = Boolean(notices?.some((notice) => (notice.target?.userId ?? "all") === recipient));
+
+  /** What the list shows after a change, and the notice the admin's own main screen should now show. */
+  async function afterNoticeChange(update: { notice: LauncherNotice | null; notices: AdminNotice[] }) {
+    const own = await window.bweeep.notice().catch(() => null);
+    return { own, notices: listSupported ? update.notices : update.notice && !update.notice.personal ? [{ id: update.notice.id, text: update.notice.text, at: update.notice.at, target: null }] : [] };
   }
 
-  function takeNoticeDown() {
-    void act("notice", () => window.bweeep.clearNotice(), onNoticeChange, "공지를 내렸어요", "공지를 내리지 못했어요.");
+  function postNotice() {
+    const target = recipient === "all" || !listSupported ? undefined : recipient;
+    void act("notice", async () => afterNoticeChange(await window.bweeep.setNotice(noticeDraft, target)), (result) => {
+      onNoticeChange(result.own);
+      setNotices(result.notices);
+      setNoticeDraft("");
+    }, target ? "개인 공지를 올렸어요" : "공지를 올렸어요", "공지를 올리지 못했어요.");
+  }
+
+  function takeNoticeDown(notice: AdminNotice) {
+    void act(`notice:${notice.id}`, async () => afterNoticeChange(await window.bweeep.clearNotice(notice.target?.userId)), (result) => {
+      onNoticeChange(result.own);
+      setNotices(result.notices);
+    }, notice.target ? "개인 공지를 내렸어요" : "공지를 내렸어요", "공지를 내리지 못했어요.");
   }
 
   function releaseHold(hold: NameHold) {
@@ -212,38 +247,62 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
               <section className={`panel adminPanelState${stateClass("notice")}`}>
                 <div className="panelHeader">
                   <h3>지금 공지</h3>
-                  {shownNotice && <span>{formatWhen(shownNotice.at)}</span>}
+                  <ActionMark state={markOf("notice")} />
                 </div>
-                {shownNotice ? (
-                  <div className="adminNoticeShown">
-                    <p>{shownNotice.text}</p>
-                    <div className="adminRowActions">
-                      <ActionMark state={markOf("notice")} />
-                      <button className="textButton dangerText" disabled={busy !== null} onClick={takeNoticeDown}>내리기</button>
-                    </div>
-                  </div>
-                ) : (
+                {notices === null && <p className="emptyText">불러오는 중…</p>}
+                {notices?.length === 0 && (
                   <div className="adminNoticeShown">
                     <p className="emptyText">올린 공지가 없어요.</p>
-                    <ActionMark state={markOf("notice")} />
                   </div>
                 )}
+                {notices?.map((notice) => (
+                  <div className={`adminNoticeShown adminNoticeItem${stateClass(`notice:${notice.id}`)}`} key={notice.id}>
+                    <div className="adminNoticeBody">
+                      <small className="adminNoticeTarget">
+                        {notice.target ? `${notice.target.name}${notice.target.gameName ? ` · ${notice.target.gameName}` : ""}에게만` : "모두"}
+                        {` · ${formatWhen(notice.at)}`}
+                      </small>
+                      <p>{notice.text}</p>
+                    </div>
+                    <div className="adminRowActions">
+                      <ActionMark state={markOf(`notice:${notice.id}`)} />
+                      <button className="textButton dangerText" disabled={busy !== null} onClick={() => takeNoticeDown(notice)}>내리기</button>
+                    </div>
+                  </div>
+                ))}
               </section>
               <section className="panel">
                 <div className="panelHeader">
                   <h3>새 공지</h3>
                   <span className={draftProblem === "long" ? "isOver" : undefined}>{[...tidyNoticeText(noticeDraft)].length}/{MAX_NOTICE_LENGTH}</span>
                 </div>
+                <div className="adminNoticeTo">
+                  <label htmlFor="adminNoticeTo">받는 사람</label>
+                  <select
+                    id="adminNoticeTo"
+                    className="adminSelect"
+                    value={recipient}
+                    disabled={!listSupported || busy !== null}
+                    onChange={(event) => setRecipient(event.target.value)}
+                  >
+                    <option value="all">모두</option>
+                    {members?.map((member) => (
+                      <option key={member.userId} value={member.userId}>
+                        {member.name}{member.gameName ? ` · ${member.gameName}` : ""}{member.userId === selfId ? " · 나" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <textarea
                   className="adminNoticeInput"
                   aria-label="공지 내용"
                   rows={2}
                   value={noticeDraft}
-                  placeholder="모든 멤버의 런처 첫 화면에 보여요"
+                  placeholder={recipientMember ? `${recipientMember.name}에게만 보여요` : "모든 멤버의 런처 첫 화면에 보여요"}
                   onChange={(event) => setNoticeDraft(event.target.value)}
                 />
                 <div className="adminNoticeActions">
-                  <small>{draftProblem ? noticeProblemText[draftProblem] : shownNotice ? "지금 공지를 바꿔요." : ""}</small>
+                  <small>{draftProblem ? noticeProblemText[draftProblem] : replacesShown ? "지금 공지를 바꿔요." : ""}</small>
                   <div className="adminRowActions">
                     <ActionMark state={markOf("notice")} />
                     <button className="primaryButton" disabled={draftProblem !== null || busy !== null} onClick={postNotice}>올리기</button>

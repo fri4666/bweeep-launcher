@@ -149,6 +149,10 @@
     animation: none;
   }
 
+  .adminNoticeItem {
+    transition: none;
+  }
+
   .adminRow,
   .adminPanelState {
     transition: none;
@@ -282,6 +286,70 @@
 
 .adminNoticeShown .textButton {
   flex: 0 0 auto;
+}
+
+/* One row per notice shown now: who it is for above the text. */
+.adminNoticeItem {
+  padding: 8px 6px 8px 10px;
+  border-radius: 8px;
+  transition: background-color 200ms ease, box-shadow 200ms ease, opacity 150ms ease;
+}
+
+.adminNoticeItem + .adminNoticeItem {
+  margin-top: 4px;
+}
+
+.adminNoticeItem.isBusy {
+  opacity: 0.7;
+}
+
+.adminNoticeItem.isDone {
+  background: rgba(132, 173, 114, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(132, 173, 114, 0.4);
+}
+
+.adminNoticeBody {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.adminNoticeTarget {
+  overflow: hidden;
+  color: var(--subtle);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.adminNoticeTo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.adminNoticeTo label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.adminSelect {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  color: var(--text-strong);
+  font: inherit;
+  font-size: 13px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.adminSelect:disabled {
+  opacity: 0.55;
 }
 
 .adminNoticeInput {
