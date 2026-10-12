@@ -22,7 +22,7 @@ Deno.test("admin requests are checked field by field", () => {
     throw new Error("Release and diagnostics ids are UUIDs.");
   }
   for (const action of ADMIN_ACTIONS) {
-    if (parseAdminRequest({ action }) === null && !["setTester", "setMemberRole", "removeMember", "releaseName", "deleteReservation", "activateRelease", "openDiagnostics"].includes(action)) {
+    if (parseAdminRequest({ action }) === null && !["setTester", "setMemberRole", "removeMember", "releaseName", "deleteReservation", "activateRelease", "openDiagnostics", "setNotice"].includes(action)) {
       throw new Error(`${action} is listed but not parsed.`);
     }
   }

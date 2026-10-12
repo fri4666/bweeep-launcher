@@ -16,6 +16,7 @@ import { createGameTicket, isGameName, isGameTicket, ticketNameProblem } from ".
 import { decideInvite, invitePolicy, isInviteOpen, type InviteRole } from "./invite-policy.ts";
 import { launchGameName } from "./launch-name.ts";
 import { parseStorageObjectUrl } from "./manifest-shape.ts";
+import { currentNotice } from "./notice.ts";
 import { decodeBase64, isSkinModel, MAX_SKIN_BYTES, type SkinModel, validateSkinPng } from "./skin-image.ts";
 
 type RequestBody =
@@ -29,6 +30,7 @@ type RequestBody =
   | { action: "setSkin"; png: string; model: SkinModel }
   | { action: "clearSkin" }
   | { action: "status" }
+  | { action: "notice" }
   | { action: "redeem"; code: string }
   | { action: "createInvite"; maxUses?: number }
   | { action: "listInvites" }
@@ -282,6 +284,10 @@ async function handleRequest(request: Request): Promise<Response> {
         return json({ message: "인게임 이름을 저장하지 못했습니다." }, 500);
       }
       return json({ ok: true, gameName: body.gameName });
+    }
+
+    if (body.action === "notice") {
+      return json({ notice: await currentNotice(supabaseAdmin) });
     }
 
     if (isAdminRequest(body)) {
@@ -598,7 +604,7 @@ function normalizeCode(value: unknown): string | null {
 function isRequestBody(value: unknown): value is RequestBody {
   if (!value || typeof value !== "object" || !("action" in value)) return false;
   const body = value as Record<string, unknown>;
-  if (body.action === "status") return true;
+  if (body.action === "status" || body.action === "notice") return true;
   if (["gameAuth", "revokeGameAuth", "skin", "clearSkin"].includes(String(body.action))) return true;
   if (ADMIN_ACTIONS.has(String(body.action))) return parseAdminRequest(body) !== null;
   if (body.action === "extendGameAuth") return typeof body.accessToken === "string" && /^[A-Za-z0-9_-]{43}$/.test(body.accessToken);

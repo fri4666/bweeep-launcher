@@ -40,7 +40,12 @@ export const DEFAULTS = {
   fastProbeMs: 1_000,
   slowProbeMs: 15_000,
   // How long a server may take to save and exit after the RCON "stop".
-  rconStopMs: 180_000
+  rconStopMs: 180_000,
+  // A server whose unit still runs but that stopped answering is restarted
+  // after this long. A closed port means it crashed or is stopping and has
+  // had time to save; silence can be a busy server, so that waits longer.
+  hungRefusedMs: 45_000,
+  hungSilentMs: 180_000
 };
 
 const TEXT = {
@@ -128,13 +133,19 @@ function loginDisconnect(text) {
 
 /** The server's status JSON, or null when it does not answer one (stopped or still starting). */
 export function probeStatus(port, timeoutMs) {
+  return probeBackend(port, timeoutMs).then((result) => result.status);
+}
+
+/** probeStatus, plus whether the port was closed (`refused`) rather than silent. */
+export function probeBackend(port, timeoutMs) {
   return new Promise((resolve) => {
     const socket = net.connect({ host: "127.0.0.1", port });
     let received = Buffer.alloc(0);
-    const done = (value) => {
+    let refused = false;
+    const done = (status) => {
       clearTimeout(timer);
       socket.destroy();
-      resolve(value);
+      resolve({ status, refused });
     };
     const timer = setTimeout(() => done(null), timeoutMs);
     socket.on("connect", () => {
@@ -154,7 +165,10 @@ export function probeStatus(port, timeoutMs) {
         done(null);
       }
     });
-    socket.on("error", () => done(null));
+    socket.on("error", (error) => {
+      refused = error.code === "ECONNREFUSED";
+      done(null);
+    });
     socket.on("close", () => done(null));
   });
 }
@@ -250,6 +264,9 @@ export class ServerGate {
     this.players = new Set();
     this.holds = new Set();
     this.probeFailures = 0;
+    // While "up": when it stopped answering, and whether every miss was a closed port.
+    this.unansweredSince = 0;
+    this.refusedOnly = true;
     this.cachedStatus = this.readCache();
     this.waitId = WAIT_ID_BASE;
     this.server = null;
@@ -318,12 +335,17 @@ export class ServerGate {
     if (this.state === state) return;
     this.log(`${this.state} -> ${state}`);
     this.state = state;
+    this.probeFailures = 0;
+    this.unansweredSince = 0;
     if (state === "up" || state === "starting") this.lastActivity = Date.now();
   }
 
+  /** Running as far as systemd knows, but not answering. */
+  get unanswered() { return this.state === "up" && this.probeFailures >= 3; }
+
   schedule() {
     if (this.stopped) return;
-    const fast = this.state === "starting" || this.holds.size > 0;
+    const fast = this.state === "starting" || this.holds.size > 0 || this.probeFailures > 0;
     this.timer = setTimeout(() => void this.tick().finally(() => this.schedule()), fast ? this.timing.fastProbeMs : this.timing.slowProbeMs);
   }
 
@@ -338,9 +360,10 @@ export class ServerGate {
     if (this.state === "stopping") return;
     this.ticking = true;
     try {
-      const status = await probeStatus(this.entry.backend, this.timing.probeTimeoutMs);
+      const { status, refused } = await probeBackend(this.entry.backend, this.timing.probeTimeoutMs);
       if (status) {
         this.probeFailures = 0;
+        this.unansweredSince = 0;
         this.writeCache(status);
         if (this.state !== "up") this.setState("up");
         this.releaseHolds();
@@ -350,7 +373,19 @@ export class ServerGate {
       if (this.state === "up") {
         // A busy server can miss one ping; a stopped one misses them all.
         this.probeFailures += 1;
-        if (this.probeFailures >= 3 && !(await this.control.isActive(this.entry.unit))) this.setState("down");
+        if (this.probeFailures === 1) {
+          this.unansweredSince = Date.now();
+          this.refusedOnly = true;
+        }
+        if (!refused) this.refusedOnly = false;
+        if (this.probeFailures < 3) return;
+        if (!(await this.control.isActive(this.entry.unit))) {
+          this.setState("down");
+          return;
+        }
+        // systemd still counts it as running: it crashed and got stuck on the way out, or it hangs.
+        const waited = Date.now() - this.unansweredSince;
+        if (!this.isOff() && waited >= (this.refusedOnly ? this.timing.hungRefusedMs : this.timing.hungSilentMs)) await this.recover(waited);
       } else if (this.state === "starting") {
         const active = await this.control.isActive(this.entry.unit);
         if (Date.now() - this.startedAt > this.timing.startTimeoutMs || (!active && Date.now() - this.startedAt > 5_000)) {
@@ -405,6 +440,17 @@ export class ServerGate {
     }
     const result = await this.control.stop(this.entry.unit);
     if (!result.ok) this.log("stop reported an error");
+  }
+
+  /** Stops what is left of a stuck server and starts it again; joins wait as they do for a start. */
+  async recover(waitedMs) {
+    this.log(`not answering for ${Math.round(waitedMs / 1000)}s with the unit running, restarting`);
+    this.setState("starting");
+    this.startedAt = Date.now();
+    await this.stopServer();
+    this.startedAt = Date.now();
+    const result = await this.control.start(this.entry.unit);
+    if (!result.ok) this.log("start reported an error");
   }
 
   wake(reason) {
@@ -469,7 +515,7 @@ export class ServerGate {
       this.answerStatus(socket, handshake, rest, "off");
       return;
     }
-    if (this.state === "up") {
+    if (this.state === "up" && !this.unanswered) {
       this.pipe(socket, first, false);
       return;
     }
@@ -655,16 +701,17 @@ export class ServerGate {
     });
     backend.on("error", (error) => {
       if (connected) return close();
-      // Nothing answered: the server went away; treat this join like one to a sleeping server.
+      // Nothing answered: the server went away. The join waits while the next
+      // checks tell a stopped server (wake it) from a stuck one (restart it).
       this.log(`backend refused: ${error.code ?? error.message}`);
       if (isPlayer && !closed) {
         closed = true;
         this.players.delete(client);
-        this.setState("down");
         client.removeAllListeners("error");
         client.on("error", () => client.destroy());
         client.resume();
-        this.join(client, first);
+        if (this.isOff()) client.end(loginDisconnect(TEXT.off));
+        else this.hold(client, first);
         return;
       }
       close();

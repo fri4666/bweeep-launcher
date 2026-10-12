@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import type { AdminDiagnostics, AdminNames, AdminRelease, NameHold, UuidReservation } from "../shared/admin-types.js";
+import { type LauncherNotice, MAX_NOTICE_LENGTH, noticeProblem, tidyNoticeText } from "../shared/notice.js";
 import type { MemberSummary } from "../shared/types.js";
 import { reasonLabel } from "./AuthFailureNotice.js";
 import "./admin.css";
 
-type Tab = "members" | "names" | "releases" | "diagnostics";
-const tabs: Array<[Tab, string]> = [["members", "멤버"], ["names", "이름"], ["releases", "서버 팩"], ["diagnostics", "진단"]];
+type Tab = "members" | "notice" | "names" | "releases" | "diagnostics";
+const tabs: Array<[Tab, string]> = [["members", "멤버"], ["notice", "공지"], ["names", "이름"], ["releases", "서버 팩"], ["diagnostics", "진단"]];
+const noticeProblemText = { empty: "", long: `${MAX_NOTICE_LENGTH}자까지 쓸 수 있어요.`, lines: "두 줄까지 쓸 수 있어요." } as const;
 
 export interface AdminConfirm {
   title: string;
@@ -37,9 +39,19 @@ function formatLeft(value: string, now: number): string {
   return minutes < 60 ? `${minutes}분 남음` : `${Math.ceil(minutes / 60)}시간 남음`;
 }
 
-/** Admins only: members, name holds and reservations, server pack versions and join problems. */
-export function AdminPanel({ selfId, onClose, confirm }: { selfId: string; onClose: () => void; confirm: (request: AdminConfirm) => void }) {
+interface AdminPanelProps {
+  selfId: string;
+  onClose: () => void;
+  confirm: (request: AdminConfirm) => void;
+  /** The notice members see now, and how the main screen learns of a change made here. */
+  shownNotice: LauncherNotice | null;
+  onNoticeChange: (notice: LauncherNotice | null) => void;
+}
+
+/** Admins only: members, the notice, name holds and reservations, server pack versions and join problems. */
+export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChange }: AdminPanelProps) {
   const [tab, setTab] = useState<Tab>("members");
+  const [noticeDraft, setNoticeDraft] = useState("");
   const [members, setMembers] = useState<MemberSummary[] | null>(null);
   const [names, setNames] = useState<AdminNames | null>(null);
   const [releases, setReleases] = useState<AdminRelease[] | null>(null);
@@ -51,6 +63,7 @@ export function AdminPanel({ selfId, onClose, confirm }: { selfId: string; onClo
   async function load(which: Tab) {
     try {
       if (which === "members") setMembers(await window.bweeep.listMembers());
+      if (which === "notice") onNoticeChange(await window.bweeep.notice());
       if (which === "names") setNames(await window.bweeep.adminNames());
       if (which === "releases") setReleases(await window.bweeep.adminReleases());
       if (which === "diagnostics") setDiagnostics(await window.bweeep.adminDiagnostics());
@@ -102,6 +115,19 @@ export function AdminPanel({ selfId, onClose, confirm }: { selfId: string; onClo
       danger: true,
       onConfirm: () => void act(member.userId, () => window.bweeep.removeMember(member.userId), setMembers, `${member.name} 내보냄`, "멤버를 내보내지 못했어요.")
     });
+  }
+
+  const draftProblem = noticeProblem(noticeDraft);
+
+  function postNotice() {
+    void act("notice", () => window.bweeep.setNotice(noticeDraft), (posted) => {
+      onNoticeChange(posted);
+      setNoticeDraft("");
+    }, "공지를 올렸어요", "공지를 올리지 못했어요.");
+  }
+
+  function takeNoticeDown() {
+    void act("notice", () => window.bweeep.clearNotice(), onNoticeChange, "공지를 내렸어요", "공지를 내리지 못했어요.");
   }
 
   function releaseHold(hold: NameHold) {
@@ -196,6 +222,43 @@ export function AdminPanel({ selfId, onClose, confirm }: { selfId: string; onClo
                 );
               })}
             </div>
+          )}
+
+          {tab === "notice" && (
+            <>
+              <section className="panel">
+                <div className="panelHeader">
+                  <h3>지금 공지</h3>
+                  {shownNotice && <span>{formatWhen(shownNotice.at)}</span>}
+                </div>
+                {shownNotice ? (
+                  <div className="adminNoticeShown">
+                    <p>{shownNotice.text}</p>
+                    <button className="textButton dangerText" disabled={busy !== null} onClick={takeNoticeDown}>내리기</button>
+                  </div>
+                ) : (
+                  <p className="emptyText">올린 공지가 없어요.</p>
+                )}
+              </section>
+              <section className="panel">
+                <div className="panelHeader">
+                  <h3>새 공지</h3>
+                  <span className={draftProblem === "long" ? "isOver" : undefined}>{[...tidyNoticeText(noticeDraft)].length}/{MAX_NOTICE_LENGTH}</span>
+                </div>
+                <textarea
+                  className="adminNoticeInput"
+                  aria-label="공지 내용"
+                  rows={2}
+                  value={noticeDraft}
+                  placeholder="모든 멤버의 런처 첫 화면에 보여요"
+                  onChange={(event) => setNoticeDraft(event.target.value)}
+                />
+                <div className="adminNoticeActions">
+                  <small>{draftProblem ? noticeProblemText[draftProblem] : shownNotice ? "지금 공지를 바꿔요." : ""}</small>
+                  <button className="primaryButton" disabled={draftProblem !== null || busy !== null} onClick={postNotice}>올리기</button>
+                </div>
+              </section>
+            </>
           )}
 
           {tab === "names" && (
