@@ -29,6 +29,7 @@ jobs:
       - run: node scripts/verify-server-status.mjs
       - run: node scripts/verify-server-gate.mjs
       - run: node scripts/verify-notice.mjs
+      - run: node scripts/verify-server-errors.mjs
       - run: node scripts/verify-launch-identity.mjs
       - run: node scripts/verify-modpack-sync.mjs
       - run: node scripts/verify-install-download.mjs
