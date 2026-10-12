@@ -19,15 +19,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULTS, changesBetween, formatOpenTime, gateCodeHash, isOpenAt, nextCloseAt, nextOpenAt, parseSchedule, probeBackend, readConfig } from "./server-gate.mjs";
 
-// ★ The hours live here and nowhere else. "오후" was never given an exact hour, so noon is used.
-/** The hour both servers hand over on: Friday and Sunday. */
-export const OPEN_HOUR = "12:00";
+// ★ The hours live here and nowhere else (Korean time). Edit the windows below, run `show`, then `apply`.
 /** First day the hours apply (Korean date). Before it every server stays always open. Two weeks after the test weekend of 2026-10-09..11. */
 export const STARTS_ON = "2026-10-23";
-/** Cobblemon: Friday afternoon to Sunday afternoon. Sunlit Valley: Sunday afternoon to Friday afternoon. No overlap, no gap. */
 export const STANDARD_HOURS = {
-  "bweeep-cobblemon-fabric": [{ from: `fri ${OPEN_HOUR}`, to: `sun ${OPEN_HOUR}` }],
-  "bweeep-society-server": [{ from: `sun ${OPEN_HOUR}`, to: `fri ${OPEN_HOUR}` }]
+  // Cobblemon: Friday 17:00 to Sunday 19:30, resting every night from 02:00 to 07:00 so nobody plays all night.
+  "bweeep-cobblemon-fabric": [
+    { from: "fri 17:00", to: "sat 02:00" },
+    { from: "sat 07:00", to: "sun 02:00" },
+    { from: "sun 07:00", to: "sun 19:30" }
+  ],
+  // Sunlit Valley: the rest of the week, Sunday 19:30 to Friday 17:00. It never overlaps Cobblemon; both are closed during Cobblemon's nightly rest.
+  "bweeep-society-server": [
+    { from: "sun 19:30", to: "fri 17:00" }
+  ]
 };
 
 /** The schedule block for a known unit, or undefined. */

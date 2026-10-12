@@ -207,6 +207,10 @@ for (const [gate, online, sleep] of [["sleeping", true, "sleeping"], ["starting"
   assert.equal(formatOpenTime(Date.UTC(2026, 10, 1, 3, 0, 0)), "일 12:00");
   assert.equal(formatOpenTime(Date.UTC(2026, 9, 24, 15, 5, 0)), "일 00:05", "Saturday 15:05 UTC is already Sunday 00:05 in Korean time; midnight reads 00");
   assert.equal(closedMessage(nextOpen), "지금은 닫혀 있어요 · 금 12:00에 열려요");
+  // Cobblemon's nightly rest: Saturday 07:00 Korean time is Friday 22:00 UTC; Sunday 19:30 is 10:30 UTC.
+  assert.equal(formatOpenTime(Date.UTC(2026, 9, 30, 22, 0, 0)), "토 07:00");
+  assert.equal(closedMessage(Date.UTC(2026, 9, 30, 22, 0, 0)), "지금은 닫혀 있어요 · 토 07:00에 열려요");
+  assert.equal(formatOpenTime(Date.UTC(2026, 10, 1, 10, 30, 0)), "일 19:30");
 }
 
 // Pressing Play on a closed server through the real gate: refused, not started. Open: started. A silent gate never refuses.

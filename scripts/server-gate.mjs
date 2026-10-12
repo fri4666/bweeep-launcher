@@ -87,10 +87,10 @@ const TEXT = {
 
 // ---- opening hours
 //
-// gate.json: "schedule": { "startsOn": "2026-10-26", "open": [{ "from": "fri 12:00", "to": "sun 12:00" }], "warn": true }
+// gate.json: "schedule": { "startsOn": "2026-10-23", "open": [{ "from": "fri 17:00", "to": "sat 02:00" }, { "from": "sat 07:00", "to": "sun 02:00" }], "warn": true }
 // Times are Korean time (UTC+9, no daylight saving). A window runs from `from`
 // up to, not including, `to`, and may wrap past the end of the week
-// ("sun 12:00" -> "fri 12:00"). Before `startsOn` (a Korean date) the server is
+// ("sun 19:30" -> "fri 17:00"). Before `startsOn` (a Korean date) the server is
 // always open and the gate does nothing on its own. No `schedule` at all: always open.
 // Inside the schedule the gate keeps the server on the hours: a stopped server
 // is not started outside them, a running one is warned (HOURS_WARNINGS) and

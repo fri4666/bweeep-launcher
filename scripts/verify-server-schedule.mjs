@@ -13,6 +13,7 @@ import path from "node:path";
 import {
   ServerGate, WAKE_MARKER, changesBetween, formatOpenTime, isOpenAt, nextCloseAt, nextOpenAt, parseSchedule, readConfig, reloadSchedules
 } from "./server-gate.mjs";
+import { STANDARD_HOURS, STARTS_ON, standardSchedule } from "./gate-schedule.mjs";
 import { fakeBackend, fakeControl, freePort, joinClient, sleep, statusPing, until } from "./lib/gate-test-kit.mjs";
 
 let step = 0;
@@ -20,7 +21,7 @@ const pass = (name) => console.log(`ok ${++step} ${name}`);
 /** Epoch ms of a Korean-time wall clock. */
 const kst = (year, month, day, hour = 0, minute = 0, second = 0) => Date.UTC(year, month - 1, day, hour, minute, second) - 9 * 3_600_000;
 
-// The two real servers (2026-10-23 is a Friday).
+// A generic Friday-to-Sunday window and its complement, to test the mechanics (the real hours are checked further down; 2026-10-23 is a Friday).
 const START = "2026-10-23";
 const cobblemon = parseSchedule({ startsOn: START, open: [{ from: "fri 12:00", to: "sun 12:00" }] });
 const sunlit = parseSchedule({ startsOn: START, open: [{ from: "sun 12:00", to: "fri 12:00" }] });
@@ -404,28 +405,81 @@ try {
     pass("nothing-before-startsOn-or-without-schedule");
   }
 
-  // 16. Cobblemon closes at the moment Sunlit opens: Sunlit waits for the grace and for Cobblemon to be gone.
-  {
-    clock = kst(2026, 10, 25, 11, 59, 30);
-    const order = [];
-    const cobblemon = await makeRig("bweeep-seq-cobblemon", { running: true, events: order, label: "cobblemon", stopMs: 700, schedule: { ...COBBLEMON, warn: false } });
-    const sunlit = await makeRig("bweeep-seq-sunlit", { schedule: { ...SUNLIT, warn: false }, events: order, label: "sunlit" });
-    clock = kst(2026, 10, 25, 12, 0, 0);
-    await until(() => fs.existsSync(path.join(stateDir, "bweeep-seq-cobblemon.stopping")), "Cobblemon is stopping");
-    clock = kst(2026, 10, 25, 12, 1, 10); // past the grace, but Cobblemon's JVM is still saving
-    await sleep(300);
-    assert.ok(!order.includes("sunlit start"), "Sunlit waits while Cobblemon is still stopping");
-    await until(() => order.includes("sunlit start"), "Sunlit starts once Cobblemon is down");
-    await until(() => sunlit.gate.state === "up", "Sunlit is up");
-    assert.ok(order.indexOf("sunlit start") > order.indexOf("cobblemon systemd stop"), order.join(" | "));
-    assert.equal(fs.existsSync(path.join(stateDir, "bweeep-seq-cobblemon.stopping")), false, "the marker is gone");
-    assert.equal(order.filter((event) => event === "sunlit start").length, 1);
-    await cobblemon.gate.close();
-    await sunlit.gate.close();
-    await cobblemon.backend.close();
-    await sunlit.backend.close();
-    pass("close-and-open-at-the-same-instant");
+  // 16. The real hours. Cobblemon rests every night from 02:00 to 07:00: warned, stopped at 02:00, started at 07:00 (after the grace).
+  for (const [month, day, name, nextOpenText] of [[10, 31, "sat", "토 07:00"], [11, 1, "sun", "일 07:00"]]) {
+    clock = kst(2026, month, day, 1, 40);
+    const events = [];
+    const rig = await makeRig(`bweeep-night-${name}`, { running: true, schedule: standardSchedule("bweeep-cobblemon-fabric"), events, label: "c" });
+    assert.equal(rig.gate.state, "up");
+    clock = kst(2026, month, day, 1, 55, 0);
+    await until(() => events.length === 1, `5-minute warning before ${name} 02:00`);
+    clock = kst(2026, month, day, 1, 59, 0);
+    await until(() => events.length === 2, "1-minute warning");
+    clock = kst(2026, month, day, 1, 59, 50);
+    await until(() => events.length === 3, "10-second warning");
+    clock = kst(2026, month, day, 1, 59, 59);
+    await sleep(150);
+    assert.equal(rig.gate.state, "up", "still up one second before 02:00");
+    clock = kst(2026, month, day, 2, 0, 0);
+    await until(() => rig.gate.state === "down", `stopped at ${name} 02:00`);
+    assert.deepEqual(events, [
+      "c notice warning 8s 5분 뒤 서버가 닫혀요",
+      "c notice warning 8s 1분 뒤 서버가 닫혀요",
+      "c notice urgent 8s 곧 서버가 닫혀요, 지금 저장돼요",
+      "c rcon stop",
+      "c systemd stop"
+    ]);
+    // During the rest the server says when it opens, and a join is turned away with the same time.
+    clock = kst(2026, month, day, 3, 0, 0);
+    const status = await statusPing(rig.listen);
+    assert.deepEqual(status.bweeep, { gate: "closed", nextOpen: kst(2026, month, day, 7, 0, 0) });
+    const refused = joinClient(rig.listen, "seos_py");
+    await until(() => refused.closed, "refused during the rest");
+    assert.equal(refused.disconnect, `지금은 열려 있지 않아요. ${nextOpenText}에 열려요`);
+    clock = kst(2026, month, day, 6, 59, 59);
+    await sleep(150);
+    assert.equal(events.length, 5, "nothing before 07:00");
+    clock = kst(2026, month, day, 7, 0, 30);
+    await sleep(150);
+    assert.equal(events.length, 5, "07:00 itself waits out the grace");
+    clock = kst(2026, month, day, 7, 1, 0);
+    await until(() => rig.gate.state === "up", "started at 07:00");
+    assert.deepEqual(events.slice(5), ["c start"]);
+    await sleep(150);
+    assert.equal(events.length, 6, "started once");
+    await rig.gate.close();
+    await rig.backend.close();
   }
+  pass("cobblemon-nightly-rest-02-to-07");
+
+  // 17. The two weekend hand-overs happen at the same instant: Friday 17:00 Sunlit closes as Cobblemon opens,
+  //     Sunday 19:30 the other way round. The one that opens waits for the grace and for the other to be gone.
+  for (const [name, closingUnit, openingUnit, at] of [
+    ["friday", "bweeep-society-server", "bweeep-cobblemon-fabric", kst(2026, 10, 30, 17)],
+    ["sunday", "bweeep-cobblemon-fabric", "bweeep-society-server", kst(2026, 11, 1, 19, 30)]
+  ]) {
+    clock = at - 30_000;
+    const order = [];
+    const quiet = (unit) => ({ ...standardSchedule(unit), warn: false });
+    const closing = await makeRig(`bweeep-${name}-closing`, { running: true, events: order, label: "closing", stopMs: 700, schedule: quiet(closingUnit) });
+    const opening = await makeRig(`bweeep-${name}-opening`, { events: order, label: "opening", schedule: quiet(openingUnit) });
+    assert.equal(closing.gate.state, "up");
+    clock = at;
+    await until(() => fs.existsSync(path.join(stateDir, `bweeep-${name}-closing.stopping`)), "the closing server is stopping");
+    clock = at + 70_000; // past the grace, but the other JVM is still saving
+    await sleep(300);
+    assert.ok(!order.includes("opening start"), `${name}: the opening server waits while the other is still stopping`);
+    await until(() => order.includes("opening start"), "the opening server starts once the other is down");
+    await until(() => opening.gate.state === "up", "it is up");
+    assert.ok(order.indexOf("opening start") > order.indexOf("closing systemd stop"), order.join(" | "));
+    assert.equal(fs.existsSync(path.join(stateDir, `bweeep-${name}-closing.stopping`)), false, "the marker is gone");
+    assert.equal(order.filter((event) => event === "opening start").length, 1);
+    await closing.gate.close();
+    await opening.gate.close();
+    await closing.backend.close();
+    await opening.backend.close();
+  }
+  pass("weekend-hand-overs-friday-17-and-sunday-1930");
 
   // 17. The console does not answer: the notices are logged as not delivered and the stop falls back to systemd's (SIGTERM; the server saves), never anything harsher.
   {
@@ -538,23 +592,63 @@ try {
 // ---- the standard hours and the helper that puts them in place (scripts/gate-schedule.mjs)
 
 {
-  const { STANDARD_HOURS, STARTS_ON, standardSchedule, withStandardHours, withoutHours, describeHours } = await import("./gate-schedule.mjs");
+  const { withStandardHours, withoutHours, describeHours } = await import("./gate-schedule.mjs");
   const { execFile, execFileSync, spawn } = await import("node:child_process");
   const { gateCodeHash } = await import("./server-gate.mjs");
 
-  // 16. The two real servers: parse, start on a Friday, and tile the week exactly.
+  // The real hours, written out so an accidental edit shows up here.
+  assert.deepEqual(STANDARD_HOURS["bweeep-cobblemon-fabric"], [
+    { from: "fri 17:00", to: "sat 02:00" },
+    { from: "sat 07:00", to: "sun 02:00" },
+    { from: "sun 07:00", to: "sun 19:30" }
+  ]);
+  assert.deepEqual(STANDARD_HOURS["bweeep-society-server"], [{ from: "sun 19:30", to: "fri 17:00" }]);
+  assert.equal(STARTS_ON, "2026-10-23");
+
+  // They parse, start on a Friday, and never overlap; the only time neither is open is Cobblemon's nightly rest (Sat and Sun 02:00-07:00).
   const real = Object.fromEntries(Object.keys(STANDARD_HOURS).map((unit) => [unit, parseSchedule(standardSchedule(unit), unit)]));
   assert.deepEqual(Object.keys(real).sort(), ["bweeep-cobblemon-fabric", "bweeep-society-server"]);
   const startsOnMs = real["bweeep-cobblemon-fabric"].startsOnMs;
   assert.equal(startsOnMs, real["bweeep-society-server"].startsOnMs);
   assert.equal(formatOpenTime(startsOnMs), "금 00:00", `${STARTS_ON} is a Friday`);
-  for (let ms = startsOnMs - 3_600_000; ms < startsOnMs + 15 * 86_400_000; ms += 60_000) {
-    const [a, b] = [isOpenAt(real["bweeep-cobblemon-fabric"], ms), isOpenAt(real["bweeep-society-server"], ms)];
-    assert.ok(a || b, `a server is open at ${new Date(ms).toISOString()}`);
-    if (ms >= startsOnMs) assert.notEqual(a, b, `exactly one open at ${new Date(ms).toISOString()}`);
+  const cob = real["bweeep-cobblemon-fabric"];
+  const sun = real["bweeep-society-server"];
+  let restMinutes = 0;
+  for (let ms = startsOnMs; ms < startsOnMs + 15 * 86_400_000; ms += 60_000) {
+    const label = formatOpenTime(ms);
+    const isRest = (label.startsWith("토") || label.startsWith("일")) && label.slice(2) >= "02:00" && label.slice(2) < "07:00";
+    const [a, b] = [isOpenAt(cob, ms), isOpenAt(sun, ms)];
+    assert.ok(!(a && b), `never both open at ${label}`);
+    if (isRest) { assert.ok(!a && !b, `both closed during the rest at ${label}`); restMinutes += 1; }
+    else assert.ok(a || b, `one of them is open at ${label}`);
   }
-  assert.equal(isOpenAt(real["bweeep-cobblemon-fabric"], startsOnMs + 12 * 3_600_000), true, "the first Friday noon");
-  assert.equal(isOpenAt(real["bweeep-society-server"], startsOnMs + 12 * 3_600_000), false);
+  assert.equal(restMinutes, 4 * 300, "two 5-hour rests a week, for two weeks");
+  // Boundaries to the second.
+  const at = (day, ...time) => kst(2026, 10, day, ...time);
+  const state = (...time) => [isOpenAt(cob, kst(...time)), isOpenAt(sun, kst(...time))];
+  assert.deepEqual(state(2026, 10, 30, 16, 59, 59), [false, true], "Friday 16:59:59: Sunlit's");
+  assert.deepEqual(state(2026, 10, 30, 17, 0, 0), [true, false], "Friday 17:00: hand-over to Cobblemon");
+  assert.deepEqual(state(2026, 10, 31, 1, 59, 59), [true, false]);
+  assert.deepEqual(state(2026, 10, 31, 2, 0, 0), [false, false], "Saturday 02:00: rest");
+  assert.deepEqual(state(2026, 10, 31, 6, 59, 59), [false, false]);
+  assert.deepEqual(state(2026, 10, 31, 7, 0, 0), [true, false], "Saturday 07:00: Cobblemon again");
+  assert.deepEqual(state(2026, 11, 1, 1, 59, 59), [true, false]);
+  assert.deepEqual(state(2026, 11, 1, 2, 0, 0), [false, false], "Sunday 02:00: rest");
+  assert.deepEqual(state(2026, 11, 1, 6, 59, 59), [false, false]);
+  assert.deepEqual(state(2026, 11, 1, 7, 0, 0), [true, false], "Sunday 07:00");
+  assert.deepEqual(state(2026, 11, 1, 19, 29, 59), [true, false]);
+  assert.deepEqual(state(2026, 11, 1, 19, 30, 0), [false, true], "Sunday 19:30: hand-over to Sunlit");
+  assert.deepEqual(state(2026, 11, 2, 0, 0, 0), [false, true], "Sunday night into Monday: week wrap");
+  assert.deepEqual(state(2026, 11, 5, 12), [false, true]);
+  // The first weekend: nothing at startsOn itself, then Cobblemon opens Friday 17:00.
+  assert.deepEqual(state(2026, 10, 23, 0, 0, 0), [false, true], "startsOn Friday morning: Sunlit still open");
+  assert.deepEqual(state(2026, 10, 23, 17, 0, 0), [true, false]);
+  // What is said when it opens next, including from the rest hours.
+  assert.equal(formatOpenTime(nextOpenAt(cob, kst(2026, 10, 31, 3))), "토 07:00");
+  assert.equal(formatOpenTime(nextOpenAt(cob, kst(2026, 11, 1, 3))), "일 07:00");
+  assert.equal(formatOpenTime(nextOpenAt(cob, kst(2026, 11, 1, 20))), "금 17:00");
+  assert.equal(formatOpenTime(nextOpenAt(sun, kst(2026, 10, 31, 3))), "일 19:30", "Sunlit during Cobblemon's rest");
+  assert.equal(formatOpenTime(nextCloseAt(cob, kst(2026, 10, 31, 12))), "일 02:00");
   pass("standard-hours-tile-the-week");
 
   // 17. Applying and clearing are pure and repeatable; unknown units are left alone.
@@ -571,9 +665,9 @@ try {
   assert.deepEqual(withoutHours(applied.config).changed, ["bweeep-cobblemon-fabric", "bweeep-society-server"]);
   assert.deepEqual(withoutHours(withoutHours(applied.config).config).changed, []);
   assert.match(describeHours(applied.config, kst(2026, 10, 20, 12)).join("\n"), /bweeep-cobblemon-fabric: 2026-10-23 전이라 항상 열림/);
-  assert.match(describeHours(applied.config, kst(2026, 10, 24, 12)).join("\n"), /bweeep-cobblemon-fabric: 지금 열림 · 일 12:00에 닫힘/);
-  assert.match(describeHours(applied.config, kst(2026, 10, 27, 12)).join("\n"), /bweeep-society-server: 지금 열림 · 금 12:00에 닫힘/);
-  assert.match(describeHours(applied.config, kst(2026, 10, 27, 12)).join("\n"), /bweeep-cobblemon-fabric: 지금 닫힘 · 금 12:00에 열림/);
+  assert.match(describeHours(applied.config, kst(2026, 10, 24, 12)).join("\n"), /bweeep-cobblemon-fabric: 지금 열림 · 일 02:00에 닫힘/);
+  assert.match(describeHours(applied.config, kst(2026, 10, 27, 12)).join("\n"), /bweeep-society-server: 지금 열림 · 금 17:00에 닫힘/);
+  assert.match(describeHours(applied.config, kst(2026, 10, 27, 12)).join("\n"), /bweeep-cobblemon-fabric: 지금 닫힘 · 금 17:00에 열림/);
   assert.match(describeHours(applied.config, kst(2026, 10, 27, 12)).join("\n"), /bweeep-other: 시간표 없음/);
   pass("apply-and-clear-are-pure");
 
@@ -589,12 +683,13 @@ try {
   assert.equal(fs.readFileSync(toolConfig, "utf8"), original, "apply without --write changes nothing");
   assert.match(tool("apply", "--config", toolConfig, "--write"), /백업/);
   const written = JSON.parse(fs.readFileSync(toolConfig, "utf8"));
-  assert.deepEqual(written.servers[0].schedule, { startsOn: START, open: [{ from: "fri 12:00", to: "sun 12:00" }] });
+  assert.deepEqual(written.servers[0].schedule, { startsOn: START, open: STANDARD_HOURS["bweeep-cobblemon-fabric"] });
   assert.equal(written.servers[0].rcon.password, "long-enough-password", "other settings are kept");
   assert.equal(fs.statSync(toolConfig).mode & 0o777, 0o600, "gate.json stays private");
   assert.equal(fs.readdirSync(toolDir).filter((name) => name.includes(".bak-")).length, 1, "one backup");
-  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-27T10:00+09:00"), /지금 닫힘 · 금 12:00에 열림/);
-  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-24T10:00+09:00"), /지금 열림 · 일 12:00에 닫힘/);
+  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-27T10:00+09:00"), /지금 닫힘 · 금 17:00에 열림/);
+  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-24T10:00+09:00"), /지금 열림 · 일 02:00에 닫힘/);
+  assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-31T03:00+09:00"), /지금 닫힘 · 토 07:00에 열림/);
   assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-10T10:00+09:00"), /전이라 항상 열림/);
   // `show` says what a gate would do on reading the hours: nothing for a stopped server, a warned stop for a running one.
   assert.match(tool("show", "--config", toolConfig, "--at", "2026-10-27T10:00+09:00"), /bweeep-cobblemon-fabric: 서버가 꺼져 있어 아무것도 하지 않음/);
@@ -603,9 +698,9 @@ try {
   const forecastRun = await new Promise((resolve, reject) => {
     execFile(process.execPath, [path.join(import.meta.dirname, "gate-schedule.mjs"), "show", "--config", toolConfig, "--at", "2026-10-27T10:00+09:00"], { encoding: "utf8" }, (error, stdout) => error ? reject(error) : resolve(stdout));
   });
-  assert.match(forecastRun, /서버가 켜져 있어 경고 후 끕니다\(일 12:00에 닫혔어야 함\)/);
+  assert.match(forecastRun, /서버가 켜져 있어 경고 후 끕니다\(일 19:30에 닫혔어야 함\)/);
   const forecastOpen = await new Promise((resolve, reject) => {
-    execFile(process.execPath, [path.join(import.meta.dirname, "gate-schedule.mjs"), "show", "--config", toolConfig, "--at", "2026-10-30T12:00:30+09:00"], { encoding: "utf8" }, (error, stdout) => error ? reject(error) : resolve(stdout));
+    execFile(process.execPath, [path.join(import.meta.dirname, "gate-schedule.mjs"), "show", "--config", toolConfig, "--at", "2026-10-30T17:00:30+09:00"], { encoding: "utf8" }, (error, stdout) => error ? reject(error) : resolve(stdout));
   });
   assert.match(forecastOpen, /이미 켜져 있음/);
   await runningBackend.close();
