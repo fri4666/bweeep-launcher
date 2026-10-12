@@ -20,11 +20,18 @@ export type AdminRequest =
   | { action: "activateRelease"; releaseId: string }
   | { action: "adminDiagnostics" }
   | { action: "openDiagnostics"; diagnosticId: string }
-  | { action: "setNotice"; text: string }
-  | { action: "clearNotice" };
+  | { action: "setNotice"; text: string; targetUserId?: string }
+  | { action: "clearNotice"; targetUserId?: string }
+  | { action: "adminNotices" };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value: unknown): value is string => typeof value === "string" && uuidPattern.test(value);
+
+/** Who a notice is for: null for everyone (field missing), a member id, or undefined when the field is malformed. */
+function noticeTarget(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  return isUuid(value) ? value : undefined;
+}
 
 export function parseAdminRequest(body: Record<string, unknown>): AdminRequest | null {
   switch (body.action) {
@@ -32,11 +39,17 @@ export function parseAdminRequest(body: Record<string, unknown>): AdminRequest |
     case "adminNames":
     case "adminReleases":
     case "adminDiagnostics":
-    case "clearNotice":
+    case "adminNotices":
       return { action: body.action };
+    case "clearNotice": {
+      const target = noticeTarget(body.targetUserId);
+      return target === undefined ? null : target === null ? { action: "clearNotice" } : { action: "clearNotice", targetUserId: target };
+    }
     case "setNotice": {
       const text = normalizeNoticeText(body.text);
-      return text ? { action: "setNotice", text } : null;
+      const target = noticeTarget(body.targetUserId);
+      if (!text || target === undefined) return null;
+      return target === null ? { action: "setNotice", text } : { action: "setNotice", text, targetUserId: target };
     }
     case "setTester":
       return isUuid(body.userId) && typeof body.tester === "boolean" ? { action: "setTester", userId: body.userId, tester: body.tester } : null;
@@ -61,7 +74,7 @@ export function parseAdminRequest(body: Record<string, unknown>): AdminRequest |
 
 export const ADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "listMembers", "setTester", "setMemberRole", "removeMember", "adminNames", "releaseName", "deleteReservation",
-  "adminReleases", "activateRelease", "adminDiagnostics", "openDiagnostics", "setNotice", "clearNotice"
+  "adminReleases", "activateRelease", "adminDiagnostics", "openDiagnostics", "setNotice", "clearNotice", "adminNotices"
 ]);
 
 /** For a body that already passed parseAdminRequest. */
@@ -102,7 +115,7 @@ function rows<T>(result: { data: T[] | null; error: unknown }, what: string): T[
 }
 
 /** Discord display names, looked up once per request. */
-class Names {
+export class Names {
   private cache = new Map<string, Promise<string>>();
   constructor(private db: Db) {}
   get(userId: string): Promise<string> {
@@ -237,6 +250,41 @@ function reachable(url: string, publicUrl: string | undefined): string {
   return address.toString();
 }
 
+export interface AdminNotice {
+  id: string;
+  text: string;
+  at: string;
+  /** Null for the notice everyone sees. */
+  target: { userId: string; name: string; gameName: string | null } | null;
+}
+
+/** Every notice shown now: the everyone-notice first, then the personal ones, oldest first. */
+export async function activeNotices(db: Db, names: Names): Promise<AdminNotice[]> {
+  const found = rows<{ id: string; body: string; created_at: string; target_user_id: string | null }>(
+    await db.from("launcher_notices").select("id, body, created_at, target_user_id").is("ended_at", null).order("created_at"),
+    "notices"
+  );
+  const targetIds = [...new Set(found.map((row) => row.target_user_id).filter((id): id is string => Boolean(id)))];
+  const gameNames = new Map<string, string>();
+  if (targetIds.length > 0) {
+    const [profiles, accounts] = await Promise.all([
+      db.from("launcher_profiles").select("user_id, game_name").in("user_id", targetIds),
+      db.from("launcher_minecraft_accounts").select("user_id, game_name").in("user_id", targetIds)
+    ]);
+    for (const row of rows<{ user_id: string; game_name: string }>(accounts, "accounts")) gameNames.set(row.user_id, row.game_name);
+    for (const row of rows<{ user_id: string; game_name: string }>(profiles, "profiles")) gameNames.set(row.user_id, row.game_name);
+  }
+  const notices = await Promise.all(found.map(async (row) => ({
+    id: row.id,
+    text: row.body,
+    at: row.created_at,
+    target: row.target_user_id
+      ? { userId: row.target_user_id, name: await names.get(row.target_user_id), gameName: gameNames.get(row.target_user_id) ?? null }
+      : null
+  })));
+  return notices.sort((a, b) => Number(a.target !== null) - Number(b.target !== null));
+}
+
 export async function handleAdminRequest(db: Db, actorId: string, body: AdminRequest, publicUrl?: string): Promise<Response> {
   const names = new Names(db);
   try {
@@ -300,15 +348,20 @@ export async function handleAdminRequest(db: Db, actorId: string, body: AdminReq
         // The request body arrives as sent, so the stored text is normalized here too.
         const text = normalizeNoticeText(body.text);
         if (!text) return json({ message: "공지 내용이 올바르지 않아요." }, 400);
-        const { data, error } = await db.rpc("launcher_admin_set_notice", { p_actor: actorId, p_body: text });
+        // Without a target the call has the same shape as before personal notices existed.
+        const args = body.targetUserId ? { p_actor: actorId, p_body: text, p_target: body.targetUserId } : { p_actor: actorId, p_body: text };
+        const { data, error } = await db.rpc("launcher_admin_set_notice", args);
         if (error) return refusal(error, "공지를 올리지 못했습니다.");
-        return json({ notice: toNotice(data?.[0]) });
+        return json({ notice: toNotice(data?.[0]), notices: await activeNotices(db, names) });
       }
       case "clearNotice": {
-        const { error } = await db.rpc("launcher_admin_clear_notice", { p_actor: actorId });
+        const args = body.targetUserId ? { p_actor: actorId, p_target: body.targetUserId } : { p_actor: actorId };
+        const { error } = await db.rpc("launcher_admin_clear_notice", args);
         if (error) return refusal(error, "공지를 내리지 못했습니다.");
-        return json({ notice: null });
+        return json({ notice: null, notices: await activeNotices(db, names) });
       }
+      case "adminNotices":
+        return json({ notices: await activeNotices(db, names) });
     }
   } catch (error) {
     if (error instanceof ReadError) return json({ message: "관리 정보를 불러오지 못했습니다." }, 500);
