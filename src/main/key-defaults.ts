@@ -30,8 +30,10 @@ export interface KeyDefaultsResult {
   text: string;
   /** Keys the player's file lacked, now set to the pack's default. */
   filled: string[];
-  /** Colliding keys moved to the pack's default. */
+  /** Keys moved to the pack's choice: colliding ones, and keys the manifest names. */
   repaired: KeyRepair[];
+  /** Keys that were settled this time and must not be moved again (moved ones plus manifest keys already on their value). */
+  settled: string[];
 }
 
 /** `key_` option name (without the prefix) → value, from an options.txt; lines that are not safe key bindings are ignored. */
@@ -51,9 +53,12 @@ interface Entry {
 
 /**
  * Pure part: the new options.txt text for `text`, the pack's `defaults`, and the
- * keys already moved once (`applied`). Returns the same text when nothing applies.
+ * keys already settled once (`applied`). `enforced` are the keys the manifest
+ * names: they are put on their value once even without a collision (a new player's
+ * YOSBR file has none, yet the server owner wants those exact keys), as long as
+ * that value is free. Returns the same text when nothing applies.
  */
-export function applyKeyDefaultsToText(text: string, defaults: ReadonlyMap<string, string>, applied: ReadonlySet<string>): KeyDefaultsResult {
+export function applyKeyDefaultsToText(text: string, defaults: ReadonlyMap<string, string>, applied: ReadonlySet<string>, enforced: ReadonlyMap<string, string> = new Map()): KeyDefaultsResult {
   const parts = text.split(/(\r\n|\n)/);
   const entries: Entry[] = [];
   for (let index = 0; index < parts.length; index += 2) entries.push({ line: parts[index], sep: parts[index + 1] ?? "" });
@@ -92,22 +97,46 @@ export function applyKeyDefaultsToText(text: string, defaults: ReadonlyMap<strin
   }
 
   const repaired: KeyRepair[] = [];
+  const settled = new Set<string>();
+  // A few passes, so the result does not depend on the order of the names
+  // (summary leaves M before the map can take it).
+  for (let pass = 0; pass < 3; pass += 1) {
+    let moved = false;
+    for (const [name, want] of enforced) {
+      if (applied.has(name) || settled.has(name)) continue;
+      const current = value.get(name);
+      if (current === undefined) continue;
+      if (current === want) {
+        settled.add(name);
+        continue;
+      }
+      if (want !== UNBOUND && holders(want).length > 0) continue;
+      setLine(name, want);
+      repaired.push({ key: name, from: current, to: want });
+      settled.add(name);
+      moved = true;
+    }
+    if (!moved) break;
+  }
   for (const name of [...value.keys()]) {
     const current = value.get(name)!;
     const pack = defaults.get(name);
-    if (!pack || pack === current || current === UNBOUND || current === "" || applied.has(name)) continue;
+    if (!pack || pack === current || current === UNBOUND || current === "" || applied.has(name) || settled.has(name)) continue;
     if (holders(current).length < 2) continue;
     // The pack's choice must itself be free, or the move only shifts the clash.
     if (pack !== UNBOUND && holders(pack).length > 0) continue;
     setLine(name, pack);
     repaired.push({ key: name, from: current, to: pack });
+    settled.add(name);
   }
+  // A key the manifest names that was just filled in is on its value from now on.
+  for (const name of filled) if (enforced.has(name)) settled.add(name);
 
-  if (filled.length === 0 && repaired.length === 0) return { text, filled, repaired };
+  if (filled.length === 0 && repaired.length === 0) return { text, filled, repaired, settled: [...settled] };
   // Without a trailing newline in the original, the last line keeps none.
   const last = entries.length - 1;
   const out = entries.map((entry, index) => entry.line + (index === last && !trailing ? "" : entry.sep)).join("");
-  return { text: out, filled, repaired };
+  return { text: out, filled, repaired, settled: [...settled] };
 }
 
 async function readAppliedRecord(file: string): Promise<Record<string, string[]>> {
@@ -150,21 +179,26 @@ export async function applyKeyDefaults(instanceDir: string, sharedSettingsDir: s
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  // The manifest is the server owner's own word, so it wins over the pack author's yosbr file.
+  const enforced = new Map<string, string>();
   for (const [name, value] of Object.entries(manifest.defaultKeys ?? {})) {
-    if (PACK_VALUE.test(value)) defaults.set(name, value);
+    if (!PACK_VALUE.test(value)) continue;
+    defaults.set(name, value);
+    enforced.set(name, value);
   }
   if (defaults.size === 0) return null;
 
   const recordFile = path.join(instanceDir, ".bweeep", APPLIED_FILE);
   const record = await readAppliedRecord(recordFile);
-  const result = applyKeyDefaultsToText(current, defaults, new Set(record[manifest.id] ?? []));
-  if (result.text === current) return result;
-
-  await writeAtomic(optionsFile, result.text);
-  const sharedOptions = path.join(sharedSettingsDir, "options.txt");
-  if ((await fsp.stat(sharedOptions).catch(() => null))?.isFile()) await writeAtomic(sharedOptions, result.text);
-  if (result.repaired.length > 0) {
-    record[manifest.id] = [...new Set([...(record[manifest.id] ?? []), ...result.repaired.map((item) => item.key)])].sort();
+  const result = applyKeyDefaultsToText(current, defaults, new Set(record[manifest.id] ?? []), enforced);
+  if (result.text !== current) {
+    await writeAtomic(optionsFile, result.text);
+    const sharedOptions = path.join(sharedSettingsDir, "options.txt");
+    if ((await fsp.stat(sharedOptions).catch(() => null))?.isFile()) await writeAtomic(sharedOptions, result.text);
+  }
+  const known = new Set(record[manifest.id] ?? []);
+  if (result.settled.some((name) => !known.has(name))) {
+    record[manifest.id] = [...new Set([...known, ...result.settled])].sort();
     await fsp.mkdir(path.dirname(recordFile), { recursive: true });
     await writeAtomic(recordFile, JSON.stringify(record, null, 2));
   }
