@@ -29,6 +29,7 @@ jobs:
       - run: node scripts/verify-user-content.mjs
       - run: node scripts/verify-shader-settings.mjs
       - run: node scripts/verify-key-defaults.mjs
+      - run: node scripts/verify-sound-options.mjs
       - run: node scripts/verify-server-status.mjs
       - run: node scripts/verify-server-gate.mjs
       - run: node scripts/verify-notice.mjs

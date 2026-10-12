@@ -289,6 +289,8 @@ export interface UserContentStatus {
   removedManagedMods: number;
   /** Personal jars left out of this launch and why. */
   skippedMods: Array<{ name: string; reason: string }>;
+  /** Where this launch's options.txt came from, e.g. `options.shared` or `options.seeded-from:<pack>`. */
+  optionsSource?: string;
 }
 
 /** What moving the install location would carry over; `problem` says why it cannot. */

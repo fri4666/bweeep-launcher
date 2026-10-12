@@ -6,6 +6,7 @@ import { fitsMinecraft, readModMetadata, runsOn, type ModMetadata } from "./mod-
 import { hashFile } from "./hash.js";
 import { readOverrideRecord } from "./mrpack.js";
 import { applyKeyDefaults } from "./key-defaults.js";
+import { optionsSourceLabel, prepareSharedOptions, sharedOptionsUsable, type OptionsSource } from "./shared-options.js";
 
 const USER_MODS_FILE = ".bweeep-user-mods.json";
 const USER_SHADERS_FILE = ".bweeep-user-shaders.json";
@@ -51,6 +52,9 @@ export async function prepareUserContent(
 
   // Key bindings, sensitivity, accessibility, chat, sound and video settings
   // are stored in options*.txt. Keep every such base-game file across servers.
+  // The shared copy first gets the player's volumes and settings from their other servers if it lacks them.
+  const optionsSource = await prepareSharedOptions(instanceRoot, instanceDir, path.join(root, "settings"))
+    .catch((): OptionsSource => ({ source: "options.fresh-yosbr" }));
   await restoreGameOptions(path.join(root, "settings"), instanceDir);
   // The restored file hides the pack's own starting keys from YOSBR, so mods fall back to keys that collide.
   await applyKeyDefaults(instanceDir, path.join(root, "settings"), manifest).catch(() => undefined);
@@ -91,7 +95,7 @@ export async function prepareUserContent(
     await fsp.copyFile(file.source, path.join(instanceShaders, file.targetName));
   }
   await fsp.writeFile(path.join(instanceDir, ".bweeep", USER_SHADERS_FILE), JSON.stringify([...desiredShaderNames].sort(), null, 2), "utf8");
-  return { userModsDir, shaderpacksDir, sharedOptionsPath, copiedMods: desiredMods.length, copiedShaders: desiredShaders.length, removedManagedMods, skippedMods };
+  return { userModsDir, shaderpacksDir, sharedOptionsPath, copiedMods: desiredMods.length, copiedShaders: desiredShaders.length, removedManagedMods, skippedMods, optionsSource: optionsSourceLabel(optionsSource) };
 }
 
 type ContentFile = { source: string; targetName: string };
@@ -406,7 +410,10 @@ async function readStringArray(filePath: string): Promise<string[]> {
 }
 
 async function restoreGameOptions(settingsDir: string, instanceDir: string): Promise<void> {
+  // An empty or half-written shared options.txt would wipe the instance's own file, so it stays out.
+  const sharedUsable = await sharedOptionsUsable(settingsDir);
   for (const fileName of await gameOptionFiles(settingsDir)) {
+    if (fileName.toLowerCase() === "options.txt" && !sharedUsable) continue;
     await fsp.copyFile(path.join(settingsDir, fileName), path.join(instanceDir, fileName));
   }
 }
