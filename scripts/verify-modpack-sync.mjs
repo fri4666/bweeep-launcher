@@ -16,6 +16,7 @@ await fsp.mkdir(path.join(homedir(), ".cache"), { recursive: true });
 const root = await fsp.mkdtemp(path.join(homedir(), ".cache", "bweeep-sync-check-"));
 const sha = (algorithm, bytes) => crypto.createHash(algorithm).update(bytes).digest("hex");
 const quiet = () => undefined;
+const readJson = async (file) => JSON.parse(await fsp.readFile(file, "utf8"));
 
 // --- Local file server ------------------------------------------------------
 const bodies = new Map();
@@ -237,6 +238,72 @@ try {
   await syncOverrides("o5", { "config/a.toml": "A4", "config/b.toml": "B4", "config/c.toml": "C5" });
   assert.equal(await read("config/c.toml"), "C5", "a file that matched the pack under the old record follows updates again");
   console.log("modpack-overrides-keep-player-edits=passed");
+
+  // --- An unchanged archive is not opened again ---------------------------------
+  const statePath = path.join(instance, ".bweeep", "mrpack-state.json");
+  const tempDirPath = path.join(instance, ".bweeep", "mrpack-tmp");
+  const cdnFetch = (url, init) => fetch(url.replace("https://cdn.test", base), init);
+  const bigText = "0123456789abcdef".repeat(256 * 1024 / 16 * 3); // 3 MB: streamed, not buffered
+  const modBytes = crypto.randomBytes(20 * 1024);
+  bodies.set("pack-mod.jar", modBytes);
+  const packMod = { path: "mods/pack-mod.jar", hashes: { sha512: sha("sha512", modBytes) }, downloads: ["https://cdn.test/pack-mod.jar"], fileSize: modBytes.length };
+  const archiveNames = async () => (await fsp.readdir(archives)).filter((name) => name.endsWith(".mrpack"));
+  const syncArchive = async (version, overrides, { fetchWith = cdnFetch } = {}) => {
+    const entries = {
+      "modrinth.index.json": strToU8(JSON.stringify({ formatVersion: 1, game: "minecraft", versionId: version, name: "pack", dependencies: { minecraft: "26.3", "fabric-loader": "0.19.5" }, files: [packMod] }))
+    };
+    for (const [name, text] of Object.entries(overrides)) entries[`overrides/${name}`] = strToU8(text);
+    const zip = Buffer.from(zipSync(entries, { level: 0 }));
+    const sha512 = sha("sha512", zip);
+    await fsp.mkdir(archives, { recursive: true });
+    const archivePath = path.join(archives, `${sha512}.mrpack`);
+    // The archive lands on disk like a finished download; a launch that keeps it never fetches it.
+    await fsp.writeFile(archivePath, zip);
+    return { sha512, archivePath, result: await syncModpack({ instanceDir: root, manifest: { ...manifestBase, version, files: [], mrpack: { url: "https://cdn.test/pack.mrpack", size: zip.length, sha512 } } }, quiet, { ...options, fetch: fetchWith }) };
+  };
+  const overridesV1 = { "config/x.toml": "X1", "config/y.toml": "Y1", "saves/world/big.dat": bigText };
+  let pass = await syncArchive("s1", overridesV1);
+  assert.equal(await read("config/x.toml"), "X1");
+  assert.equal(await read("saves/world/big.dat"), bigText, "a big override is streamed into place intact");
+  assert.equal(await fsp.access(tempDirPath).then(() => true, () => false), false, "no temporary files are left behind");
+  assert.ok(await fsp.access(statePath).then(() => true, () => false), "a finished run leaves its state");
+  assert.equal((await readJson(statePath)).overrides.length, 3);
+  assert.equal((await archiveNames()).length, 1, "only the archive in use is kept");
+  await fsp.access(path.join(instance, "mods", "pack-mod.jar"));
+
+  // Player edit + same archive again with the archive file gone: nothing is fetched, nothing reopened.
+  await fsp.writeFile(path.join(instance, "config/x.toml"), "X-player");
+  await fsp.rm(pass.archivePath);
+  requests.length = 0;
+  const offline = async () => assert.fail("an unchanged launch must not fetch the archive");
+  const again = await syncModpack({ instanceDir: root, manifest: { ...manifestBase, version: "s1b", files: [], mrpack: { url: "https://cdn.test/pack.mrpack", size: 1, sha512: pass.sha512 } } }, quiet, { ...options, fetch: offline });
+  assert.equal(again.downloaded, 0);
+  assert.equal(again.skipped, 1, "the mod list comes from the saved state");
+  assert.equal(await read("config/x.toml"), "X-player");
+  assert.equal(requests.length, 0);
+  assert.equal((await archiveNames()).length, 0, "the fast path did not bring the archive back");
+
+  // A different loader version in the manifest is not waved through by the saved state.
+  await assert.rejects(syncModpack({ instanceDir: root, manifest: { ...manifestBase, loader: { kind: "fabric", version: "9.9.9" }, version: "s1c", files: [], mrpack: { url: "https://cdn.test/pack.mrpack", size: 1, sha512: pass.sha512 } } }, quiet, { ...options, fetch: offline }), /모드팩을 내려받지 못했습니다|offline|unchanged/);
+
+  // A deleted default comes back, which needs the archive again.
+  pass = await syncArchive("s1", overridesV1);
+  await fsp.rm(path.join(instance, "config/y.toml"));
+  await syncArchive("s1", overridesV1);
+  assert.equal(await read("config/y.toml"), "Y1", "a deleted default is restored on the next launch");
+  assert.equal(await read("config/x.toml"), "X-player", "a player's edit still wins");
+
+  // A changed archive applies again: untouched files follow, edited ones stay, the old archive goes.
+  const oldArchive = pass.archivePath;
+  const overridesV2 = { "config/x.toml": "X2", "config/y.toml": "Y2", "saves/world/big.dat": `${bigText}!` };
+  pass = await syncArchive("s2", overridesV2);
+  assert.equal(await read("config/y.toml"), "Y2");
+  assert.equal(await read("config/x.toml"), "X-player");
+  assert.equal(await read("saves/world/big.dat"), `${bigText}!`);
+  assert.equal(await fsp.access(oldArchive).then(() => true, () => false), false, "the previous archive is removed");
+  assert.equal((await archiveNames()).length, 1);
+  assert.equal((await readJson(statePath)).archive, pass.sha512);
+  console.log("modpack-unchanged-archive-skipped=passed");
 } finally {
   server.close();
   await fsp.rm(root, { recursive: true, force: true });
