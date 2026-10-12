@@ -27,6 +27,7 @@ jobs:
       - run: node scripts/verify-game-exit.mjs
       - run: node scripts/verify-personal-content.mjs
       - run: node scripts/verify-server-status.mjs
+      - run: node scripts/verify-notice-relay.mjs
       - run: node scripts/verify-server-gate.mjs
       - run: node scripts/verify-notice.mjs
       - run: node scripts/verify-server-errors.mjs
