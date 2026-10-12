@@ -62,6 +62,15 @@ export interface ModpackManifest {
   blockedModrinthProjects?: string[];
   /** Java heap the pack needs, in MB; without it the launcher estimates one from the loader and mods. */
   recommendedMemoryMb?: number;
+  /**
+   * Key bindings the pack wants to start with, on top of the pack's own
+   * `config/yosbr/options.txt`: option name without the `key_` prefix → value
+   * (`key.keyboard.h`, `key.mouse.left`, `key.keyboard.unknown`). They fill keys
+   * a player's shared options.txt does not have yet and, once per key, move a
+   * key that collides with another one; a key the player rebinds is never
+   * overridden again.
+   */
+  defaultKeys?: Record<string, string>;
   /** A pinned Modrinth .mrpack whose indexed files and overrides are installed safely. */
   mrpack?: MrpackSource;
   files: PackFile[];
@@ -280,6 +289,8 @@ export interface UserContentStatus {
   removedManagedMods: number;
   /** Personal jars left out of this launch and why. */
   skippedMods: Array<{ name: string; reason: string }>;
+  /** Where this launch's options.txt came from, e.g. `options.shared` or `options.seeded-from:<pack>`. */
+  optionsSource?: string;
 }
 
 /** What moving the install location would carry over; `problem` says why it cannot. */

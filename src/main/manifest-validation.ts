@@ -46,6 +46,13 @@ export function assertManifest(manifest: ModpackManifest): void {
   if (memoryMb !== undefined && !(Number.isSafeInteger(memoryMb) && memoryMb >= 1024 && memoryMb <= 65536)) {
     throw new Error("권장 메모리 값이 올바르지 않습니다.");
   }
+  if (manifest.defaultKeys !== undefined) {
+    const keys = manifest.defaultKeys as unknown;
+    if (!keys || typeof keys !== "object" || Array.isArray(keys) || !Object.entries(keys).every(([name, value]) =>
+      /^[A-Za-z0-9_.-]{1,96}$/.test(name) && typeof value === "string" && /^key\.(?:keyboard|mouse)\.[a-z0-9._-]{1,40}$/.test(value))) {
+      throw new Error("기본 키 설정 형식이 올바르지 않습니다.");
+    }
+  }
   if (manifest.mrpack && (!/^https:\/\//.test(manifest.mrpack.url) || !Number.isSafeInteger(manifest.mrpack.size) || manifest.mrpack.size < 1 || !/^[a-f0-9]{128}$/i.test(manifest.mrpack.sha512))) {
     throw new Error("Modrinth 모드팩 정보가 올바르지 않습니다.");
   }
