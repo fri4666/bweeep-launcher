@@ -1,11 +1,15 @@
 #!/usr/bin/env node
-// Turns the notice an admin posts in the launcher into an in-game banner: every
-// ~15 s it reads the one notice that is currently shown (public.launcher_notices,
+// Turns the notices an admin posts in the launcher into in-game banners: every
+// ~15 s it reads the notices that are currently shown (public.launcher_notices,
 // ended_at is null) and, for a notice it has not announced yet, sends it with
-// scripts/bweeep-notify.mjs to every server whose backend is RUNNING right now.
+// scripts/bweeep-notify.mjs to servers whose backend is RUNNING right now.
+//   - the notice everyone sees (target_user_id is null) goes to every player;
+//   - a personal notice goes only to its member, by game name, on the running
+//     servers where RCON `list` shows that player online (a player who is not
+//     on a server is simply skipped there; the launcher still shows the notice).
 // Servers that are asleep or stopped are skipped; nothing is ever woken. The
-// banner reaches the players of a server once per notice (state file survives
-// restarts), and a notice older than 10 minutes is never replayed.
+// banner reaches a server once per notice (state file survives restarts), and a
+// notice older than 10 minutes is never replayed.
 //
 //   node scripts/notice-relay.mjs                 run forever (systemd unit)
 //   node scripts/notice-relay.mjs --once          one poll, then exit
@@ -19,7 +23,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildNoticeCommand } from "./bweeep-notify.mjs";
+import { buildNoticeCommand, PLAYER_NAME } from "./bweeep-notify.mjs";
 import { readConfig, rconCommand } from "./server-gate.mjs";
 
 export const PROJECT_REF = "tmwvrglzjfzauuygofpp";
@@ -93,24 +97,85 @@ function writeState(file, state) {
   fs.renameSync(part, file);
 }
 
-/** The notice that is shown right now, or null; throws on a failed read. */
-export async function fetchCurrentNotice({ url, key, fetchImpl = fetch, timeoutMs = 10_000 }) {
-  const response = await fetchImpl(`${url}/rest/v1/launcher_notices?ended_at=is.null&select=id,body,created_at&order=created_at.desc&limit=1`, {
-    headers: { apikey: key, authorization: `Bearer ${key}`, accept: "application/json" },
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function restHeaders(key) {
+  return { apikey: key, authorization: `Bearer ${key}`, accept: "application/json" };
+}
+
+/** The in-game names of members (saved profile first, then the account they played with). */
+export async function fetchGameNames({ url, key, userIds, fetchImpl = fetch, timeoutMs = 10_000 }) {
+  const ids = [...new Set(userIds)].filter((id) => UUID.test(id));
+  const names = new Map();
+  if (ids.length === 0) return names;
+  const list = encodeURIComponent(`(${ids.join(",")})`);
+  for (const table of ["launcher_minecraft_accounts", "launcher_profiles"]) { // later wins: the saved profile
+    const response = await fetchImpl(`${url}/rest/v1/${table}?user_id=in.${list}&select=user_id,game_name`, {
+      headers: restHeaders(key),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    for (const row of await response.json()) if (typeof row.game_name === "string") names.set(row.user_id, row.game_name);
+  }
+  return names;
+}
+
+/**
+ * Every notice that is shown right now: the one everyone sees (or null) and the
+ * personal ones, each with the in-game name of its member (null when unknown).
+ * Throws on a failed read. Before the personal-notice migration the table has
+ * no target column; that answer is read as "only the notice everyone sees".
+ */
+export async function fetchActiveNotices({ url, key, fetchImpl = fetch, timeoutMs = 10_000 }) {
+  const request = (query) => fetchImpl(`${url}/rest/v1/launcher_notices?${query}`, { headers: restHeaders(key), signal: AbortSignal.timeout(timeoutMs) });
+  let response = await request("ended_at=is.null&select=id,body,created_at,target_user_id&order=created_at.desc&limit=200");
+  if (response.status === 400 && /target_user_id/.test(await response.clone().text().catch(() => ""))) {
+    response = await request("ended_at=is.null&select=id,body,created_at&order=created_at.desc&limit=1");
+  }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const rows = await response.json();
-  return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  if (!Array.isArray(rows)) return { everyone: null, personal: [] };
+  const everyone = rows.find((row) => !row.target_user_id) ?? null;
+  const personalRows = rows.filter((row) => row.target_user_id);
+  const names = personalRows.length > 0
+    ? await fetchGameNames({ url, key, userIds: personalRows.map((row) => row.target_user_id), fetchImpl, timeoutMs })
+    : new Map();
+  return {
+    everyone,
+    personal: personalRows.map((row) => ({
+      id: row.id,
+      body: row.body,
+      created_at: row.created_at,
+      target: { userId: row.target_user_id, gameName: names.get(row.target_user_id) ?? null }
+    }))
+  };
+}
+
+/** The notice everyone sees, or null; throws on a failed read. */
+export async function fetchCurrentNotice(options) {
+  return (await fetchActiveNotices(options)).everyone;
+}
+
+/** The players RCON `list` reports, or null when the server did not answer. */
+export function parseOnlinePlayers(reply) {
+  if (typeof reply !== "string") return null;
+  const match = /players?\s+online:\s*(.*)$/is.exec(reply.trim());
+  if (!match) return reply.trim() === "" ? [] : null;
+  return match[1].split(",").map((name) => name.trim()).filter(Boolean);
 }
 
 /**
  * One relay. `tick()` polls once and delivers; it never throws. Delivery is per
  * (notice, server): a server that was asleep gets the banner later if it wakes
  * within the notice's 10 minutes, and "no player was found" counts as not
- * delivered so a player who joins soon after still sees it.
+ * delivered so a player who joins soon after still sees it. A personal notice
+ * is sent only on a server whose `list` shows its member online.
+ *
+ * `readNotices` answers { everyone, personal }; `readNotice` (older shape, only
+ * the notice everyone sees) still works for callers that have just that.
  */
 export function createRelay({
+  readNotices,
   readNotice,
   gateDir = DEFAULT_GATE_DIR,
   stateFile = DEFAULT_STATE,
@@ -121,32 +186,25 @@ export function createRelay({
   maxAgeMs = MAX_AGE_MS
 }) {
   let failures = 0;
+  const read = readNotices ?? (async () => ({ everyone: await readNotice(), personal: [] }));
 
-  async function tick() {
-    let notice;
-    try {
-      notice = await readNotice();
-    } catch (error) {
-      failures += 1;
-      log(`공지를 읽지 못했습니다(${failures}번째): ${error.message}`);
-      return { ok: false, delivered: [] };
-    }
-    if (failures > 0) log("공지 읽기가 다시 됩니다.");
-    failures = 0;
-    if (!notice) return { ok: true, delivered: [] };
-
-    const state = readState(stateFile);
-    const record = (state.notices[notice.id] ??= { units: [], seenAt: now() });
+  /** Marks a notice that cannot be sent right now, once; false when it is fresh and sendable. */
+  function skipped(state, record, notice, what) {
     const age = now() - Date.parse(notice.created_at);
     if (!Number.isFinite(age) || age > maxAgeMs) {
       if (!record.stale) {
         record.stale = true;
         writeState(stateFile, state);
-        log(`오래된 공지라 보내지 않습니다 (${Number.isFinite(age) ? Math.round(age / 60_000) : "?"}분 전)`);
+        log(`오래된 ${what}라 보내지 않습니다 (${Number.isFinite(age) ? Math.round(age / 60_000) : "?"}분 전)`);
       }
-      return { ok: true, delivered: [] };
+      return true;
     }
+    return false;
+  }
 
+  async function sendEveryone(state, notice) {
+    const record = (state.notices[notice.id] ??= { units: [], seenAt: now() });
+    if (skipped(state, record, notice, "공지")) return [];
     let command;
     try {
       command = buildNoticeCommand({ level: BANNER_LEVEL, seconds: BANNER_SECONDS, text: notice.body }).command;
@@ -156,9 +214,8 @@ export function createRelay({
         writeState(stateFile, state);
         log(`보낼 수 없는 공지입니다: ${error.message}`);
       }
-      return { ok: true, delivered: [] };
+      return [];
     }
-
     const delivered = [];
     let changed = false;
     for (const server of loadServers(gateDir, log)) {
@@ -181,7 +238,77 @@ export function createRelay({
       }
     }
     if (changed) writeState(stateFile, state);
-    return { ok: true, delivered };
+    return delivered;
+  }
+
+  async function sendPersonal(state, notice) {
+    const record = (state.notices[notice.id] ??= { units: [], seenAt: now(), personal: true });
+    if (skipped(state, record, notice, "개인 공지")) return [];
+    const tag = `개인 공지 ${String(notice.id).slice(0, 8)}`; // the text itself is never logged
+    const name = notice.target?.gameName;
+    let command;
+    try {
+      if (!name) throw new Error("받는 사람의 게임 이름을 모릅니다");
+      // `@a` is a valid banner target but would turn a personal notice into a broadcast.
+      if (!PLAYER_NAME.test(name)) throw new Error("받는 사람의 게임 이름이 올바르지 않습니다");
+      command = buildNoticeCommand({ level: BANNER_LEVEL, seconds: BANNER_SECONDS, text: notice.body, target: name }).command;
+    } catch (error) {
+      if (!record.invalid) {
+        record.invalid = true;
+        writeState(stateFile, state);
+        log(`${tag}: 보낼 수 없습니다 (${error.message})`);
+      }
+      return [];
+    }
+    const delivered = [];
+    let changed = false;
+    for (const server of loadServers(gateDir, log)) {
+      if (record.units.includes(server.unit)) continue;
+      try {
+        if (!(await listening(server.port))) continue;
+        const online = parseOnlinePlayers(await rcon(server.port, server.password, "list"));
+        if (online === null) {
+          log(`${server.unit}: 실패 (접속자 목록을 읽지 못함)`);
+          continue;
+        }
+        if (!online.some((player) => player.toLowerCase() === name.toLowerCase())) continue; // not on this server: skip quietly
+        const reply = await rcon(server.port, server.password, command);
+        if (reply === null) {
+          log(`${server.unit}: 실패 (RCON 응답 없음)`);
+        } else if (/no player was found|no entity was found/i.test(reply)) {
+          log(`${server.unit}: ${tag} 받는 사람이 방금 나가 보류`);
+        } else {
+          record.units.push(server.unit);
+          delivered.push(server.unit);
+          changed = true;
+          log(`${server.unit}: ${tag} → ${name} 보냄`);
+        }
+      } catch (error) {
+        log(`${server.unit}: 실패 (${error.message})`);
+      }
+    }
+    if (changed) writeState(stateFile, state);
+    return delivered;
+  }
+
+  async function tick() {
+    let notices;
+    try {
+      notices = await read();
+    } catch (error) {
+      failures += 1;
+      log(`공지를 읽지 못했습니다(${failures}번째): ${error.message}`);
+      return { ok: false, delivered: [], personalDelivered: [] };
+    }
+    if (failures > 0) log("공지 읽기가 다시 됩니다.");
+    failures = 0;
+    const state = readState(stateFile);
+    const delivered = notices.everyone ? await sendEveryone(state, notices.everyone) : [];
+    const personalDelivered = [];
+    for (const notice of notices.personal ?? []) {
+      for (const unit of await sendPersonal(state, notice)) personalDelivered.push({ id: notice.id, unit });
+    }
+    return { ok: true, delivered, personalDelivered };
   }
 
   return { tick, get failures() { return failures; } };
@@ -258,14 +385,14 @@ export async function main(argv) {
     return 1;
   }
   const relay = createRelay({
-    readNotice: () => fetchCurrentNotice({ url, key }),
+    readNotices: () => fetchActiveNotices({ url, key }),
     gateDir: options.gateDir,
     stateFile: options.stateFile,
     log: (line) => console.log(line)
   });
   if (options.once) {
     const result = await relay.tick();
-    console.log(`한 번 확인했습니다: ${result.ok ? "정상" : "읽기 실패"}, 보낸 서버 ${result.delivered.length}개`);
+    console.log(`한 번 확인했습니다: ${result.ok ? "정상" : "읽기 실패"}, 보낸 서버 ${result.delivered.length}개, 개인 공지 ${result.personalDelivered.length}건`);
     return result.ok ? 0 : 1;
   }
   console.log(`공지 중계를 시작합니다 (${options.pollMs / 1000}초마다 확인)`);
