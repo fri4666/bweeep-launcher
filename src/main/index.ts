@@ -17,6 +17,7 @@ import { isCatalogServer, isSameDocument } from "./navigation.js";
 import { loadPatchNotes } from "./patch-notes.js";
 import { isReleasePageUrl } from "./release-notes.js";
 import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, sharedContentFolder } from "./user-content.js";
+import { createSharedOptionsSync } from "./shared-options.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
 import { findBlockedJars, installMod, listPersonalMods, refetchPreviousMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
@@ -644,6 +645,10 @@ app.whenReady().then(async () => {
         findBlocked: (jars) => findBlockedJars(jars, manifest.blockedModrinthProjects ?? []),
         launcherJars: bundledClientMods.map((mod) => mod.sourcePath)
       });
+      void writeGameLog("launch.options", { packId: request.packId, source: userContent.optionsSource ?? null });
+      // While the game runs the player's settings are also copied to the shared store, not only when it closes,
+      // so a crash or a closed launcher does not lose them.
+      const optionsSync = createSharedOptionsSync(synced.instanceDir, () => captureSharedOptions(request.instanceDir, synced.instanceDir));
       progress({
         kind: "info",
         stage: "개인 파일",
@@ -701,6 +706,7 @@ app.whenReady().then(async () => {
         // The game token only matters while joining; once the game is gone it is retired.
         void auth.revokeGameAuth(launchUser).catch((error: unknown) =>
           writeGameLog("launch.token.revoke-failed", { message: error instanceof Error ? error.message : String(error) }));
+        optionsSync.stop();
         void captureSharedOptions(request.instanceDir, synced.instanceDir);
         void writeGameLog("launch.minecraft.exited", {
           packId: request.packId,
@@ -712,6 +718,7 @@ app.whenReady().then(async () => {
       }, guardArgs, memory);
       if (gameRunId === runId && gameIsStarting()) {
         setGameStatus({ state: "running", pid: launched.pid, startedAt });
+        optionsSync.start();
         discordGameStarted(manifest.name, startedAt);
         await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
       } else {
