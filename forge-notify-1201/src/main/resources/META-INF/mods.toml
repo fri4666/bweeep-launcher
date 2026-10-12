@@ -1,0 +1,26 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="bweeep_notify"
+version="${version}"
+displayName="Bweeep Notify"
+description="Shows server notices as a banner at the top of the screen with a ding."
+authors="fri4666"
+# Client-only: a server without this mod must not block the connection, and a server may not require it.
+displayTest="IGNORE_SERVER_VERSION"
+
+[[dependencies.bweeep_notify]]
+modId="forge"
+mandatory=true
+versionRange="[47.4.0,)"
+ordering="NONE"
+side="CLIENT"
+
+[[dependencies.bweeep_notify]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.20.2)"
+ordering="NONE"
+side="CLIENT"

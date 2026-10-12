@@ -1,0 +1,84 @@
+plugins {
+    id 'java-library'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+group = 'com.fri4666.bweeep'
+version = '0.1.0'
+
+base {
+    archivesName = 'bweeep-notify-forge-1.20.1'
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+// The Fabric module owns the shared code. Nothing is copied: this module reads
+// the Minecraft-free core, the banner drawing and the message reader (both only
+// use calls that 1.20.1 and 1.21.1 share) and the sound file from there, and
+// adds only the Forge entry point, event wiring and ding.
+def shared = '../fabric-notify-1211/src'
+
+sourceSets {
+    main {
+        java {
+            srcDir "${shared}/main/java"
+            include 'com/fri4666/bweeep/notify/core/**',
+                    'com/fri4666/bweeep/notify/BannerRenderer.java',
+                    'com/fri4666/bweeep/notify/NoticeMessages.java',
+                    'com/fri4666/bweeep/notify/BweeepNotifyMod.java',
+                    'com/fri4666/bweeep/notify/ForgeNotifyClient.java',
+                    'com/fri4666/bweeep/notify/ForgeNoticeSound.java'
+        }
+        resources {
+            srcDir "${shared}/main/resources"
+            include 'assets/**', 'META-INF/**', 'pack.mcmeta'
+        }
+    }
+    test {
+        java {
+            srcDir "${shared}/test/java"
+        }
+    }
+}
+
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+    copyIdeResources = true
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.0'
+
+    // The core package has no Minecraft imports, so its tests run on a plain JVM.
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events 'failed'
+        exceptionFormat 'full'
+    }
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('META-INF/mods.toml') {
+        expand 'version': project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+tasks.named('jar', Jar).configure {
+    finalizedBy 'reobfJar'
+}

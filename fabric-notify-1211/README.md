@@ -39,10 +39,12 @@ node scripts/bweeep-notify.mjs <server-unit> <level> "<text>" [--seconds N] --se
 ## Layout
 
 - `core/` has no Minecraft imports (levels, parser, text cleaning, timeline,
-  queue, icon shapes) and is covered by JUnit tests. A Forge 1.20.1 adapter only
-  needs to reuse `core/` and re-implement the four small classes outside it:
-  `NotifyClient` (events), `NoticeMessages` (component to strings),
-  `BannerRenderer` (drawing with plain fills, no textures) and `NoticeSound`.
+  queue, icon shapes) and is covered by JUnit tests. The Forge 1.20.1 build in
+  `../forge-notify-1201` reads `core/`, `NoticeMessages`, `BannerRenderer` and
+  the sound files from here (nothing is copied) and adds its own entry point,
+  events and `NoticeSound`. `NotifyClient` (events) and `NoticeSound` are the
+  Fabric-only classes; keep `core/`, `NoticeMessages` and `BannerRenderer` free
+  of calls that exist only in Minecraft 1.21, or the Forge build stops compiling.
 - Icons are drawn from rectangles in code; the ding is a synthesized original
   tone (`tools/make-notice-sound.py`, needs ffmpeg with libvorbis; without
   ffmpeg keep the committed `notice.ogg`). The sound event is created, not
