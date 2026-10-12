@@ -183,4 +183,69 @@ for (const [gate, online, sleep] of [["sleeping", true, "sleeping"], ["starting"
   await gate.close();
 }
 
+// Opening hours: "closed" with a usable nextOpen marks the server closed (still reachable); a gate that
+// sends no usable time, or an old gate, is never treated as closed.
+{
+  const nextOpen = Date.UTC(2026, 9, 30, 3, 0, 0); // Friday 12:00 Korean time
+  for (const [bweeep, closed] of [
+    [{ gate: "closed", nextOpen }, { nextOpen }],
+    [{ gate: "closed" }, undefined],
+    [{ gate: "closed", nextOpen: "soon" }, undefined],
+    [{ gate: "closed", nextOpen: -5 }, undefined],
+    [{ gate: "closed", nextOpen: 1.5 }, undefined],
+    [{ gate: "sleeping", nextOpen }, undefined]
+  ]) {
+    const server = await fakeServer((socket) => socket.end(statusReply({ version: { name: "26.3" }, players: { online: 0, max: 10 }, bweeep })));
+    const status = await checkServer({ host: "127.0.0.1", port: server.port });
+    assert.equal(status.online, true, "a closed server still answers");
+    assert.deepEqual(status.closed, closed, JSON.stringify(bweeep));
+    await server.close();
+  }
+
+  const { formatOpenTime, closedMessage } = await import("../dist/src/shared/open-hours.js");
+  assert.equal(formatOpenTime(nextOpen), "금 12:00");
+  assert.equal(formatOpenTime(Date.UTC(2026, 10, 1, 3, 0, 0)), "일 12:00");
+  assert.equal(formatOpenTime(Date.UTC(2026, 9, 24, 15, 5, 0)), "일 00:05", "Saturday 15:05 UTC is already Sunday 00:05 in Korean time; midnight reads 00");
+  assert.equal(closedMessage(nextOpen), "지금은 닫혀 있어요 · 금 12:00에 열려요");
+}
+
+// Pressing Play on a closed server through the real gate: refused, not started. Open: started. A silent gate never refuses.
+{
+  const { askToStart } = await import("../dist/src/main/server-status.js");
+  const { ServerGate } = await import("./server-gate.mjs");
+  const freePort = () => new Promise((resolve) => {
+    const probe = net.createServer().listen(0, "127.0.0.1", () => {
+      const { port: free } = probe.address();
+      probe.close(() => resolve(free));
+    });
+  });
+  const kstMs = (day, hour) => Date.UTC(2026, 9, day, hour) - 9 * 3_600_000;
+  let clock = kstMs(26, 9); // Monday 09:00
+  const starts = [];
+  const port = await freePort();
+  const gate = new ServerGate({ name: "t", unit: "bweeep-hours", listen: port, backend: 1, schedule: { startsOn: "2026-10-23", open: [{ from: "fri 12:00", to: "sun 12:00" }] } }, {
+    stateDir: path.join(os.tmpdir(), `bweeep-status-hours-${process.pid}`),
+    control: { start: async (unit) => { starts.push(unit); return { ok: true }; }, stop: async () => ({ ok: true }), isActive: async () => false },
+    log: () => undefined,
+    now: () => clock,
+    timing: { slowProbeMs: 60_000, fastProbeMs: 60_000, probeTimeoutMs: 100 }
+  });
+  await gate.listen();
+  const closedAnswer = await askToStart({ host: "127.0.0.1", port });
+  assert.deepEqual(closedAnswer?.closed, { nextOpen: kstMs(30, 12) });
+  assert.deepEqual(starts, [], "Play does not start a closed server");
+  clock = kstMs(24, 15); // Saturday
+  const openAnswer = await askToStart({ host: "127.0.0.1", port });
+  assert.equal(openAnswer?.closed, undefined);
+  assert.deepEqual(starts, ["bweeep-hours"], "inside its hours Play starts it");
+  await gate.close();
+
+  const silent = await fakeServer(() => undefined);
+  const seen = [];
+  const { result, ms } = await timed(() => askToStart({ host: "127.0.0.1", port: silent.port }, 300, (status) => seen.push(status)));
+  assert.equal(result, null, "no answer in time: no verdict");
+  assert.ok(ms >= 250 && ms < 1500, `waited about 300 ms (${Math.round(ms)})`);
+  await silent.close();
+}
+
 console.log("server-status-regression=passed");

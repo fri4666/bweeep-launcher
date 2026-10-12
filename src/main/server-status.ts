@@ -40,6 +40,31 @@ export function wakeServer(server: { host: string; port: number }): Promise<Serv
   return pingServer(server.host, server.port, {}, true);
 }
 
+/** How long a launch waits for the gate's answer to Play before going on without it. */
+export const START_ANSWER_WAIT_MS = 2000;
+
+/**
+ * Presses Play for a server: asks a sleeping one to start (wakeServer) and
+ * returns the answer, or null when the gate does not answer in time. A closed
+ * server (outside its opening hours) comes back with `closed` set and is not
+ * started; the caller refuses the launch then. Silence is never a refusal.
+ */
+export async function askToStart(
+  server: { host: string; port: number },
+  waitMs = START_ANSWER_WAIT_MS,
+  onAnswer?: (status: ServerStatus) => void
+): Promise<ServerStatus | null> {
+  const answer = wakeServer(server);
+  void answer.then((status) => onAnswer?.(status));
+  let timer: NodeJS.Timeout | undefined;
+  const silence = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), waitMs); });
+  try {
+    return await Promise.race([answer, silence]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function pingServer(host: string, port: number, options: CheckServerOptions, wake = false): Promise<ServerStatus> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -150,11 +175,11 @@ export function readStatusReply(buffer: Buffer, maxBytes: number): string | null
  * Player counts, version name and the server gate's state; fields that are
  * missing or malformed are left out. `off` means the gate refuses joins.
  */
-export function parseStatusJson(text: string): Pick<ServerStatus, "players" | "version" | "sleep"> & { off?: true } {
+export function parseStatusJson(text: string): Pick<ServerStatus, "players" | "version" | "sleep" | "closed"> & { off?: true } {
   const status = JSON.parse(text) as unknown;
   if (!status || typeof status !== "object") throw new Error("status is not an object");
-  const { players, version, bweeep } = status as { players?: { online?: unknown; max?: unknown }; version?: { name?: unknown }; bweeep?: { gate?: unknown } };
-  const result: Pick<ServerStatus, "players" | "version" | "sleep"> & { off?: true } = {};
+  const { players, version, bweeep } = status as { players?: { online?: unknown; max?: unknown }; version?: { name?: unknown }; bweeep?: { gate?: unknown; nextOpen?: unknown } };
+  const result: Pick<ServerStatus, "players" | "version" | "sleep" | "closed"> & { off?: true } = {};
   if (isCount(players?.online) && isCount(players?.max)) result.players = { online: players.online, max: players.max };
   if (typeof version?.name === "string") {
     const name = version.name.replace(/§./g, "").trim().slice(0, 64);
@@ -163,6 +188,9 @@ export function parseStatusJson(text: string): Pick<ServerStatus, "players" | "v
   const gate = bweeep && typeof bweeep === "object" ? bweeep.gate : undefined;
   if (gate === "sleeping" || gate === "starting") result.sleep = gate;
   if (gate === "off") result.off = true;
+  // Outside opening hours. A gate that sent no usable time is not trusted to lock anyone out.
+  const nextOpen = bweeep && typeof bweeep === "object" ? bweeep.nextOpen : undefined;
+  if (gate === "closed" && typeof nextOpen === "number" && Number.isSafeInteger(nextOpen) && nextOpen > 0) result.closed = { nextOpen };
   return result;
 }
 

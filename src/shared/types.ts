@@ -97,6 +97,8 @@ export interface ServerStatus {
   version?: string;
   /** Stopped while empty to save memory (server gate); pressing Play starts it. */
   sleep?: "sleeping" | "starting";
+  /** Outside the server's opening hours (server gate): it will not start. `nextOpen` is epoch milliseconds. */
+  closed?: { nextOpen: number };
 }
 
 export interface ServerConnection {

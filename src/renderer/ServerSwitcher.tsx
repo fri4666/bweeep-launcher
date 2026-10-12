@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { ServerPreset, ServerStatus } from "../shared/types.js";
 import type { ServerStatuses } from "./useServerStatuses.js";
+import { formatOpenTime } from "../shared/open-hours.js";
 import "./play.css";
 
-export type ServerState = "catalogError" | "loading" | "checking" | "online" | "sleeping" | "starting" | "offline";
+export type ServerState = "catalogError" | "loading" | "checking" | "online" | "sleeping" | "starting" | "closed" | "offline";
 
 export function serverState(catalogState: "loading" | "ready" | "error", server: ServerPreset | undefined, status: ServerStatus | undefined): ServerState {
   if (catalogState === "error") return "catalogError";
@@ -12,8 +13,9 @@ export function serverState(catalogState: "loading" | "ready" | "error", server:
   return statusState(status);
 }
 
-function statusState(status: ServerStatus): "online" | "sleeping" | "starting" | "offline" {
+function statusState(status: ServerStatus): "online" | "sleeping" | "starting" | "closed" | "offline" {
   if (!status.online) return "offline";
+  if (status.closed) return "closed";
   return status.sleep ?? "online";
 }
 
@@ -23,6 +25,7 @@ const SLEEP_TEXT = { sleeping: "쉬는 중", starting: "켜는 중" } as const;
 function playerCount(status: ServerStatus | undefined): string {
   if (!status) return "";
   if (!status.online) return "꺼짐";
+  if (status.closed) return "닫힘";
   if (status.sleep) return SLEEP_TEXT[status.sleep];
   return status.players ? `${status.players.online}/${status.players.max}` : "켜짐";
 }
@@ -74,6 +77,7 @@ export function ServerSwitcher({ servers, selected, statuses, catalogState, lock
   const detail = state === "online" && status
     ? [status.players ? `${status.players.online}/${status.players.max}명` : null, `${status.latencyMs ?? "-"}ms`].filter(Boolean).join(" · ")
     : state === "sleeping" || state === "starting" ? SLEEP_TEXT[state]
+    : state === "closed" && status?.closed ? `${formatOpenTime(status.closed.nextOpen)} 열림`
     : state === "offline" ? "꺼짐"
     : state === "checking" ? "확인 중"
     : state === "catalogError" ? "목록을 못 받았어요"

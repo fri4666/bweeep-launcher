@@ -28,6 +28,7 @@ import { MemoryPanel, savedMemoryMb } from "./MemoryPanel.js";
 import { useNotice } from "./useNotice.js";
 import { useOfflineLaunchConsent, useServerStatuses } from "./useServerStatuses.js";
 import { authOutageFromMessage, authOutageMessages } from "../shared/auth-outage.js";
+import { closedMessage } from "../shared/open-hours.js";
 
 // The 3D skin preview brings in three.js, so it loads when the skin tab first opens.
 const SkinPanel = lazy(() => import("./SkinPanel.js").then((module) => ({ default: module.SkinPanel })));
@@ -707,7 +708,7 @@ function App() {
    * only after one confirmation.
    */
   async function requestLaunch() {
-    if (!selected || gameBusy || syncing) return;
+    if (!selected || gameBusy || syncing || serverState === "closed") return;
     if (access?.outage) {
       const status = await window.bweeep.accessStatus().catch(() => null);
       if (status) setAccess(status);
@@ -973,6 +974,9 @@ function App() {
             {!dockError && !gameBusy && !syncing && access.outage && (
               <p className="dockHint">{access.outage === "auth" ? "인증 서버 점검 중" : "인터넷 연결 끊김"}</p>
             )}
+            {!dockError && !gameBusy && !syncing && serverState === "closed" && selected && serverStatuses.byId[selected.id]?.closed && (
+              <p className="dockHint">{closedMessage(serverStatuses.byId[selected.id].closed!.nextOpen)}</p>
+            )}
             {showLaunchProgress && (
               <div className={`launchProgress${gameRunning && joinedServer ? " isPlaying" : ""}`} role="status">
                 <div className="launchProgressHeading">
@@ -984,7 +988,7 @@ function App() {
               </div>
             )}
             <div className="launchRow">
-              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={showLaunchProgress} onClick={() => void requestLaunch()}>
+              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy || serverState === "closed"} aria-busy={showLaunchProgress} onClick={() => void requestLaunch()}>
                 {gameRunning ? "게임 실행 중" : showLaunchProgress ? <><Spinner />게임 시작 중</> : serverState === "offline" ? <><ServerOffIcon />게임 시작</> : "게임 시작"}
               </button>
               {gameRunning && gameStatus.pid && (
