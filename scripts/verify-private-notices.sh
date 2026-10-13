@@ -12,10 +12,14 @@ trap 'docker rm -f "$NAME" >/dev/null 2>&1' EXIT
 IMG=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^postgres:' | head -1)
 IMG=${IMG:-postgres:17-alpine}
 docker run -d --rm --name "$NAME" -e POSTGRES_PASSWORD=pw -e POSTGRES_HOST_AUTH_METHOD=trust "$IMG" >/dev/null || { echo "Postgres 컨테이너를 켜지 못했습니다."; exit 2; }
-for _ in $(seq 1 60); do
-  docker exec "$NAME" pg_isready -U postgres >/dev/null 2>&1 && break
+# The image starts a temporary server (socket only) to set itself up, stops it and starts the real
+# one. Only the real one listens on TCP, so waiting on TCP never catches the temporary one.
+ready=0
+for _ in $(seq 1 90); do
+  if docker exec "$NAME" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then ready=1; break; fi
   sleep 1
 done
+[ "$ready" = 1 ] || { echo "Postgres가 준비되지 않았습니다."; exit 2; }
 run() { docker exec -i "$NAME" psql -U postgres -v ON_ERROR_STOP=1 -q "$@"; }
 
 run <<'SQL' || exit 1
