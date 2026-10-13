@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import type { AdminDiagnostics, AdminNames, AdminRelease, NameHold, UuidReservation } from "../shared/admin-types.js";
-import { type LauncherNotice, MAX_NOTICE_LENGTH, noticeProblem, tidyNoticeText } from "../shared/notice.js";
+import { type AdminNotice, type LauncherNotice, MAX_NOTICE_LENGTH, noticeProblem, tidyNoticeText } from "../shared/notice.js";
+import { SERVER_LACKS_FEATURE_TEXT } from "../shared/server-errors.js";
 import type { MemberSummary } from "../shared/types.js";
 import { reasonLabel } from "./AuthFailureNotice.js";
+import { ActionMark, errorText, FeedbackToast, useActionFeedback } from "./adminFeedback.js";
 import "./admin.css";
 
 type Tab = "members" | "notice" | "names" | "releases" | "diagnostics";
@@ -15,11 +17,6 @@ export interface AdminConfirm {
   confirmLabel: string;
   danger?: boolean;
   onConfirm: () => void;
-}
-
-function message(error: unknown, fallback: string): string {
-  const text = error instanceof Error ? error.message : String(error ?? "");
-  return text.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, "") || fallback;
 }
 
 function formatWhen(value: string): string {
@@ -43,52 +40,60 @@ interface AdminPanelProps {
   selfId: string;
   onClose: () => void;
   confirm: (request: AdminConfirm) => void;
-  /** The notice members see now, and how the main screen learns of a change made here. */
-  shownNotice: LauncherNotice | null;
+  /** How the main screen learns of a change made here: the notice this admin sees now. */
   onNoticeChange: (notice: LauncherNotice | null) => void;
 }
 
 /** Admins only: members, the notice, name holds and reservations, server pack versions and join problems. */
-export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChange }: AdminPanelProps) {
+export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPanelProps) {
   const [tab, setTab] = useState<Tab>("members");
   const [noticeDraft, setNoticeDraft] = useState("");
+  // Who the next notice is for: "all", or a member's id. The list holds every notice shown now.
+  const [recipient, setRecipient] = useState("all");
+  const [notices, setNotices] = useState<AdminNotice[] | null>(null);
+  // False on a server that predates personal notices: only the notice everyone sees can be posted.
+  const [listSupported, setListSupported] = useState(true);
   const [members, setMembers] = useState<MemberSummary[] | null>(null);
   const [names, setNames] = useState<AdminNames | null>(null);
   const [releases, setReleases] = useState<AdminRelease[] | null>(null);
   const [diagnostics, setDiagnostics] = useState<AdminDiagnostics | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
+  // Every request goes through `act`: busy while it runs, a green check when it worked, red text when it failed.
+  const { busy, doneKey, feedback, run: act, fail, clear, stateClass } = useActionFeedback();
+  const markOf = (key: string) => (busy === key ? "busy" : doneKey === key ? "done" : null);
   const now = Date.now();
 
   async function load(which: Tab) {
     try {
       if (which === "members") setMembers(await window.bweeep.listMembers());
-      if (which === "notice") onNoticeChange(await window.bweeep.notice());
+      if (which === "notice") await loadNotices();
       if (which === "names") setNames(await window.bweeep.adminNames());
       if (which === "releases") setReleases(await window.bweeep.adminReleases());
       if (which === "diagnostics") setDiagnostics(await window.bweeep.adminDiagnostics());
     } catch (error) {
-      setNotice({ text: message(error, "관리 정보를 불러오지 못했어요."), error: true });
+      fail(error, "관리 정보를 불러오지 못했어요.");
+    }
+  }
+
+  async function loadNotices() {
+    const own = await window.bweeep.notice();
+    onNoticeChange(own);
+    setMembers(await window.bweeep.listMembers());
+    try {
+      setNotices(await window.bweeep.adminNotices());
+      setListSupported(true);
+    } catch (error) {
+      if (errorText(error, "") !== SERVER_LACKS_FEATURE_TEXT) throw error;
+      // An older server: show the one notice everyone sees, and no recipient choice.
+      setListSupported(false);
+      setRecipient("all");
+      setNotices(own && !own.personal ? [{ id: own.id, text: own.text, at: own.at, target: null }] : []);
     }
   }
 
   useEffect(() => {
-    setNotice(null);
+    clear();
     void load(tab);
   }, [tab]);
-
-  async function act<T>(key: string, action: () => Promise<T>, apply: (value: T) => void, done: string, fallback: string) {
-    setBusy(key);
-    setNotice(null);
-    try {
-      apply(await action());
-      setNotice({ text: done, error: false });
-    } catch (error) {
-      setNotice({ text: message(error, fallback), error: true });
-    } finally {
-      setBusy(null);
-    }
-  }
 
   function toggleTester(member: MemberSummary) {
     void act(member.userId, () => window.bweeep.setTester(member.userId, !member.tester), setMembers,
@@ -119,15 +124,29 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
 
   const draftProblem = noticeProblem(noticeDraft);
 
-  function postNotice() {
-    void act("notice", () => window.bweeep.setNotice(noticeDraft), (posted) => {
-      onNoticeChange(posted);
-      setNoticeDraft("");
-    }, "공지를 올렸어요", "공지를 올리지 못했어요.");
+  const recipientMember = recipient === "all" ? null : members?.find((member) => member.userId === recipient) ?? null;
+  const replacesShown = Boolean(notices?.some((notice) => (notice.target?.userId ?? "all") === recipient));
+
+  /** What the list shows after a change, and the notice the admin's own main screen should now show. */
+  async function afterNoticeChange(update: { notice: LauncherNotice | null; notices: AdminNotice[] }) {
+    const own = await window.bweeep.notice().catch(() => null);
+    return { own, notices: listSupported ? update.notices : update.notice && !update.notice.personal ? [{ id: update.notice.id, text: update.notice.text, at: update.notice.at, target: null }] : [] };
   }
 
-  function takeNoticeDown() {
-    void act("notice", () => window.bweeep.clearNotice(), onNoticeChange, "공지를 내렸어요", "공지를 내리지 못했어요.");
+  function postNotice() {
+    const target = recipient === "all" || !listSupported ? undefined : recipient;
+    void act("notice", async () => afterNoticeChange(await window.bweeep.setNotice(noticeDraft, target)), (result) => {
+      onNoticeChange(result.own);
+      setNotices(result.notices);
+      setNoticeDraft("");
+    }, target ? "개인 공지를 올렸어요" : "공지를 올렸어요", "공지를 올리지 못했어요.");
+  }
+
+  function takeNoticeDown(notice: AdminNotice) {
+    void act(`notice:${notice.id}`, async () => afterNoticeChange(await window.bweeep.clearNotice(notice.target?.userId)), (result) => {
+      onNoticeChange(result.own);
+      setNotices(result.notices);
+    }, notice.target ? "개인 공지를 내렸어요" : "공지를 내렸어요", "공지를 내리지 못했어요.");
   }
 
   function releaseHold(hold: NameHold) {
@@ -182,15 +201,13 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
               <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>
             ))}
           </div>
-          {notice && <p className={`noticeBar${notice.error ? "" : " isInfo"}`} role={notice.error ? "alert" : "status"}>{notice.text}</p>}
-
           {tab === "members" && (
             <div className="adminList">
               {members === null && <p className="emptyText">불러오는 중…</p>}
               {members?.map((member) => {
                 const self = member.userId === selfId;
                 return (
-                  <article className="adminRow" key={member.userId}>
+                  <article className={`adminRow${stateClass(member.userId)}`} key={member.userId}>
                     <div className="adminRowText">
                       <strong>{member.name}{self ? " · 나" : ""}</strong>
                       <small>
@@ -199,6 +216,7 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
                       </small>
                     </div>
                     <div className="adminRowActions">
+                      <ActionMark state={markOf(member.userId)} />
                       <button
                         className={`adminToggle${member.tester ? " isOn" : ""}`}
                         aria-pressed={member.tester}
@@ -226,36 +244,69 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
 
           {tab === "notice" && (
             <>
-              <section className="panel">
+              <section className={`panel adminPanelState${stateClass("notice")}`}>
                 <div className="panelHeader">
                   <h3>지금 공지</h3>
-                  {shownNotice && <span>{formatWhen(shownNotice.at)}</span>}
+                  <ActionMark state={markOf("notice")} />
                 </div>
-                {shownNotice ? (
+                {notices === null && <p className="emptyText">불러오는 중…</p>}
+                {notices?.length === 0 && (
                   <div className="adminNoticeShown">
-                    <p>{shownNotice.text}</p>
-                    <button className="textButton dangerText" disabled={busy !== null} onClick={takeNoticeDown}>내리기</button>
+                    <p className="emptyText">올린 공지가 없어요.</p>
                   </div>
-                ) : (
-                  <p className="emptyText">올린 공지가 없어요.</p>
                 )}
+                {notices?.map((notice) => (
+                  <div className={`adminNoticeShown adminNoticeItem${stateClass(`notice:${notice.id}`)}`} key={notice.id}>
+                    <div className="adminNoticeBody">
+                      <small className="adminNoticeTarget">
+                        {notice.target ? `${notice.target.name}${notice.target.gameName ? ` · ${notice.target.gameName}` : ""}에게만` : "모두"}
+                        {` · ${formatWhen(notice.at)}`}
+                      </small>
+                      <p>{notice.text}</p>
+                    </div>
+                    <div className="adminRowActions">
+                      <ActionMark state={markOf(`notice:${notice.id}`)} />
+                      <button className="textButton dangerText" disabled={busy !== null} onClick={() => takeNoticeDown(notice)}>내리기</button>
+                    </div>
+                  </div>
+                ))}
               </section>
               <section className="panel">
                 <div className="panelHeader">
                   <h3>새 공지</h3>
                   <span className={draftProblem === "long" ? "isOver" : undefined}>{[...tidyNoticeText(noticeDraft)].length}/{MAX_NOTICE_LENGTH}</span>
                 </div>
+                <div className="adminNoticeTo">
+                  <label htmlFor="adminNoticeTo">받는 사람</label>
+                  <select
+                    id="adminNoticeTo"
+                    className="adminSelect"
+                    value={recipient}
+                    disabled={!listSupported || busy !== null}
+                    onChange={(event) => setRecipient(event.target.value)}
+                  >
+                    <option value="all">모두</option>
+                    {members?.map((member) => (
+                      <option key={member.userId} value={member.userId}>
+                        {member.name}{member.gameName ? ` · ${member.gameName}` : ""}{member.userId === selfId ? " · 나" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <textarea
                   className="adminNoticeInput"
                   aria-label="공지 내용"
                   rows={2}
                   value={noticeDraft}
-                  placeholder="모든 멤버의 런처 첫 화면에 보여요"
+                  placeholder={recipientMember ? `${recipientMember.name}에게만 보여요` : "모든 멤버의 런처 첫 화면에 보여요"}
                   onChange={(event) => setNoticeDraft(event.target.value)}
                 />
                 <div className="adminNoticeActions">
-                  <small>{draftProblem ? noticeProblemText[draftProblem] : shownNotice ? "지금 공지를 바꿔요." : ""}</small>
-                  <button className="primaryButton" disabled={draftProblem !== null || busy !== null} onClick={postNotice}>올리기</button>
+                  <small>{draftProblem ? noticeProblemText[draftProblem] : replacesShown ? "지금 공지를 바꿔요." : ""}</small>
+                  <div className="adminRowActions">
+                    <ActionMark state={markOf("notice")} />
+                    <button className="primaryButton" disabled={draftProblem !== null || busy !== null} onClick={postNotice}>올리기</button>
+                  </div>
                 </div>
               </section>
             </>
@@ -272,12 +323,15 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
                   {names === null && <p className="emptyText">불러오는 중…</p>}
                   {names?.holds.length === 0 && <p className="emptyText">보호 중인 이름이 없어요.</p>}
                   {names?.holds.map((hold) => (
-                    <article className="adminRow" key={`${hold.userId}:${hold.gameName}`}>
+                    <article className={`adminRow${stateClass(`${hold.userId}:${hold.gameName}`)}`} key={`${hold.userId}:${hold.gameName}`}>
                       <div className="adminRowText">
                         <strong>{hold.gameName}</strong>
                         <small>{hold.owner}{hold.kind === "removed" ? " · 나간 멤버" : ""} · {formatLeft(hold.heldUntil, now)}</small>
                       </div>
-                      <button className="secondaryButton" disabled={busy !== null} onClick={() => releaseHold(hold)}>지금 풀기</button>
+                      <div className="adminRowActions">
+                        <ActionMark state={markOf(`${hold.userId}:${hold.gameName}`)} />
+                        <button className="secondaryButton" disabled={busy !== null} onClick={() => releaseHold(hold)}>지금 풀기</button>
+                      </div>
                     </article>
                   ))}
                 </div>
@@ -290,12 +344,15 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
                 <div className="adminList">
                   {names?.reservations.length === 0 && <p className="emptyText">예약이 없어요.</p>}
                   {names?.reservations.map((reservation) => (
-                    <article className="adminRow" key={reservation.minecraftUuid}>
+                    <article className={`adminRow${stateClass(reservation.minecraftUuid)}`} key={reservation.minecraftUuid}>
                       <div className="adminRowText">
                         <strong>{reservation.gameName}</strong>
                         <small title={reservation.minecraftUuid}>{reservation.owner ?? "주인 없음"} · {reservation.minecraftUuid.slice(0, 8)}</small>
                       </div>
-                      <button className="textButton dangerText" disabled={busy !== null} onClick={() => deleteReservation(reservation)}>예약 해제</button>
+                      <div className="adminRowActions">
+                        <ActionMark state={markOf(reservation.minecraftUuid)} />
+                        <button className="textButton dangerText" disabled={busy !== null} onClick={() => deleteReservation(reservation)}>예약 해제</button>
+                      </div>
                     </article>
                   ))}
                 </div>
@@ -317,7 +374,7 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
                     </div>
                     <div className="adminList">
                       {list.map((release) => (
-                        <article className={`adminRow${release.active ? " isActive" : ""}`} key={release.id}>
+                        <article className={`adminRow${release.active ? " isActive" : ""}${stateClass(release.id)}`} key={release.id}>
                           <div className="adminRowText">
                             <strong>{release.version}</strong>
                             <small>
@@ -327,16 +384,22 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
                             </small>
                           </div>
                           {release.active ? (
-                            <span className="adminActive">사용 중</span>
+                            <div className="adminRowActions">
+                              <ActionMark state={markOf(release.id)} />
+                              <span className="adminActive">사용 중</span>
+                            </div>
                           ) : (
-                            <button
-                              className="secondaryButton"
-                              disabled={release.gameAuth !== "yggdrasil" || busy !== null}
-                              title={release.gameAuth !== "yggdrasil" ? "붸에엡 계정 접속이 아닌 버전은 켤 수 없어요" : undefined}
-                              onClick={() => activate(release, current)}
-                            >
-                              이 버전으로
-                            </button>
+                            <div className="adminRowActions">
+                              <ActionMark state={markOf(release.id)} />
+                              <button
+                                className="secondaryButton"
+                                disabled={release.gameAuth !== "yggdrasil" || busy !== null}
+                                title={release.gameAuth !== "yggdrasil" ? "붸에엡 계정 접속이 아닌 버전은 켤 수 없어요" : undefined}
+                                onClick={() => activate(release, current)}
+                              >
+                                이 버전으로
+                              </button>
+                            </div>
                           )}
                         </article>
                       ))}
@@ -380,14 +443,17 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
                 <div className="adminList">
                   {diagnostics?.uploads.length === 0 && <p className="emptyText">받은 진단 정보가 없어요.</p>}
                   {diagnostics?.uploads.map((upload) => (
-                    <article className="adminRow" key={upload.id}>
+                    <article className={`adminRow${stateClass(upload.id)}`} key={upload.id}>
                       <div className="adminRowText">
                         <strong>{upload.owner}</strong>
                         <small>{formatWhen(upload.at)} · {Math.max(1, Math.round(upload.sizeBytes / 1024))}KB</small>
                       </div>
-                      <button className="secondaryButton" disabled={busy !== null} onClick={() => void act(upload.id, () => window.bweeep.openDiagnostics(upload.id), () => undefined, "브라우저에서 열었어요", "진단 정보를 열지 못했어요.")}>
-                        열기
-                      </button>
+                      <div className="adminRowActions">
+                        <ActionMark state={markOf(upload.id)} />
+                        <button className="secondaryButton" disabled={busy !== null} onClick={() => void act(upload.id, () => window.bweeep.openDiagnostics(upload.id), () => undefined, "브라우저에서 열었어요", "진단 정보를 열지 못했어요.")}>
+                          열기
+                        </button>
+                      </div>
                     </article>
                   ))}
                 </div>
@@ -395,6 +461,7 @@ export function AdminPanel({ selfId, onClose, confirm, shownNotice, onNoticeChan
             </>
           )}
         </div>
+        <FeedbackToast feedback={feedback} onClose={clear} />
       </section>
     </div>
   );

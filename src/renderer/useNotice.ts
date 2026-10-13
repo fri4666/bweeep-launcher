@@ -4,13 +4,23 @@ import type { LauncherNotice } from "../shared/notice.js";
 const POLL_MS = 5 * 60_000;
 /** Coming back to the window checks again, but not more often than this. */
 const MIN_GAP_MS = 60_000;
-const dismissedStorageKey = "bweeep.notice-dismissed-id";
+const dismissedStorageKey = "bweeep.notice-dismissed-ids";
+/** Before personal notices only the last closed notice was remembered. */
+const legacyDismissedKey = "bweeep.notice-dismissed-id";
+/** A closed personal notice that ends must not bring back an everyone-notice that was closed earlier. */
+const KEEP_DISMISSED = 20;
 
-function readDismissed(): string | null {
+function readDismissed(): string[] {
   try {
-    return window.localStorage.getItem(dismissedStorageKey);
+    const stored = window.localStorage.getItem(dismissedStorageKey);
+    if (stored) {
+      const ids: unknown = JSON.parse(stored);
+      if (Array.isArray(ids)) return ids.filter((id): id is string => typeof id === "string").slice(-KEEP_DISMISSED);
+    }
+    const legacy = window.localStorage.getItem(legacyDismissedKey);
+    return legacy ? [legacy] : [];
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -31,7 +41,7 @@ export interface NoticeState {
  */
 export function useNotice(enabled: boolean): NoticeState {
   const [current, setCurrent] = useState<LauncherNotice | null>(null);
-  const [dismissedId, setDismissedId] = useState<string | null>(readDismissed);
+  const [dismissedIds, setDismissedIds] = useState<string[]>(readDismissed);
   const checkedAt = useRef(0);
   const inFlight = useRef(false);
 
@@ -65,14 +75,15 @@ export function useNotice(enabled: boolean): NoticeState {
   }, [enabled, check]);
 
   const dismiss = useCallback(() => {
-    if (!current) return;
-    setDismissedId(current.id);
+    if (!current || dismissedIds.includes(current.id)) return;
+    const next = [...dismissedIds, current.id].slice(-KEEP_DISMISSED);
+    setDismissedIds(next);
     try {
-      window.localStorage.setItem(dismissedStorageKey, current.id);
+      window.localStorage.setItem(dismissedStorageKey, JSON.stringify(next));
     } catch {
       // Closed for this run only.
     }
-  }, [current]);
+  }, [current, dismissedIds]);
 
-  return { current, shown: current && current.id !== dismissedId ? current : null, dismiss, replace: setCurrent };
+  return { current, shown: current && !dismissedIds.includes(current.id) ? current : null, dismiss, replace: setCurrent };
 }

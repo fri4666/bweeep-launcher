@@ -1,0 +1,27 @@
+# Systemd USER unit: turns the notice an admin posts in the launcher into an
+# in-game banner on every running server (scripts/notice-relay.mjs).
+#
+# Install (see the header of scripts/notice-relay.mjs):
+#   node scripts/notice-relay.mjs --install        # key file + scripts next to the gate
+#   cp scripts/bweeep-notice-relay.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now bweeep-notice-relay
+#   systemctl --user stop bweeep-notice-relay      # stop it
+#   systemctl --user disable --now bweeep-notice-relay
+#
+# The description deliberately avoids the word the desktop-shortcut sync looks
+# for, so no on/off shortcut is made for this helper.
+[Unit]
+Description=Bweeep notice relay (launcher notices become in-game banners)
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/bweeep/notice-relay.env
+ExecStart=/opt/node-v24.18.0/bin/node /home/dev/servers/bweeep-gate/notice-relay.mjs
+Restart=always
+RestartSec=5
+Nice=10
+MemoryMax=64M
+
+[Install]
+WantedBy=default.target

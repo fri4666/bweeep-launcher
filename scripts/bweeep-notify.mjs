@@ -68,13 +68,17 @@ export function normalizeSeconds(value) {
 }
 
 /** The console command; pure ASCII so no charset between here and the server can change it. */
-export function buildNoticeCommand({ level, seconds, text }) {
+/** Who a banner goes to: everyone online (`@a`) or one player by name, which must look like a Minecraft name. */
+export const PLAYER_NAME = /^[A-Za-z0-9_]{3,16}$/;
+
+export function buildNoticeCommand({ level, seconds, text, target = "@a" }) {
+  if (target !== "@a" && !PLAYER_NAME.test(target)) throw new Error("받는 사람 이름이 올바르지 않습니다.");
   if (!LEVELS.includes(level)) throw new Error(`등급은 ${LEVELS.join(", ")} 중 하나여야 합니다.`);
   const clean = sanitizeText(text);
   if (!clean) throw new Error("문구가 비어 있습니다.");
   const component = { translate: NOTICE_KEY, fallback: FALLBACK, with: [level, String(normalizeSeconds(seconds)), clean] };
   const json = JSON.stringify(component).replace(/[\u0080-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-  return { command: `tellraw @a ${json}`, text: clean, truncated: clean !== sanitizeText(text, Infinity) };
+  return { command: `tellraw ${target} ${json}`, text: clean, truncated: clean !== sanitizeText(text, Infinity) };
 }
 
 export function loadRcon(unit, gateDir = DEFAULT_GATE_DIR) {

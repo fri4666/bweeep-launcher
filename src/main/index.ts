@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { presetsFromManifests, requireBweeepAccounts } from "./catalog.js";
 import { assertManifest, syncModpack } from "./sync.js";
-import { checkServer, wakeServer } from "./server-status.js";
+import { askToStart, checkServer, START_ANSWER_WAIT_MS } from "./server-status.js";
+import { closedMessage } from "../shared/open-hours.js";
 import { LoginCancelledError, SupabaseAuth } from "./supabase-auth.js";
 import type { LaunchAuthorization } from "./minecraft-runtime.js";
 import { authlibInjectorJvmArgs, ensureAuthlibInjector } from "./authlib-injector.js";
@@ -16,7 +17,10 @@ import { getLauncherUpdateStatus, installPendingLauncherUpdate, setLauncherUpdat
 import { isCatalogServer, isSameDocument } from "./navigation.js";
 import { loadPatchNotes } from "./patch-notes.js";
 import { isReleasePageUrl } from "./release-notes.js";
-import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder } from "./user-content.js";
+import { addUserContentFolders, captureSharedOptions, getUserContentFolders, prepareUserContent, removeUserContentFolder, sharedContentFolder } from "./user-content.js";
+import { createSharedOptionsSync } from "./shared-options.js";
+import { createBackgroundLane, startBesideSync, type BackgroundLane } from "./launch-progress.js";
+import type { PreparedGame } from "./minecraft-runtime.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
 import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
 import { findBlockedJars, installMod, listPersonalMods, refetchPreviousMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
@@ -431,6 +435,9 @@ app.whenReady().then(async () => {
     if (typeof folder !== "string") throw new Error("콘텐츠 폴더 정보가 올바르지 않습니다.");
     return removeUserContentFolder(requireInstanceRoot(instanceRoot), requireContentKind(kind), folder);
   });
+  // The launcher's own shader folder, where the player drops zips for every server.
+  ipcMain.handle("content:openFolder", async (_event, instanceRoot: unknown, kind: unknown) =>
+    shell.openPath(await sharedContentFolder(requireInstanceRoot(instanceRoot), requireContentKind(kind))));
   // Only the install folder is opened from the renderer, so anything that is not a folder is refused.
   ipcMain.handle("shell:openPath", async (_event, target: unknown) => {
     const folder = requireInstanceRoot(target);
@@ -592,6 +599,8 @@ app.whenReady().then(async () => {
     await writeGameLog("launch.minecraft.stop-requested", { pid: gameStatus.pid });
     process.kill(gameStatus.pid);
   });
+  // Work a failed launch left running (pack sync or game files); the next launch waits for it.
+  let leftoverWork: Promise<void> | null = null;
   ipcMain.handle("game:launch", async (event, raw: unknown) => {
     const request = requireLaunchRequest(raw);
     if (gameStatus.state !== "idle") {
@@ -602,9 +611,11 @@ app.whenReady().then(async () => {
     const startedAt = Date.now();
     lastGameLogFile = null;
     setGameStatus({ state: "starting", startedAt });
-    const progress = (payload: SyncProgress) => {
-      if (!event.sender.isDestroyed()) event.sender.send("modpack:progress", payload);
-      gameSession.observe(payload);
+    if (leftoverWork) {
+      await leftoverWork;
+      leftoverWork = null;
+    }
+    const logProgress = (payload: SyncProgress) => {
       void writeGameLog("launch.progress", {
         kind: payload.kind,
         stage: payload.stage ?? null,
@@ -616,14 +627,31 @@ app.whenReady().then(async () => {
         filePath: payload.filePath ?? null
       });
     };
+    const progress = (payload: SyncProgress) => {
+      if (!event.sender.isDestroyed()) event.sender.send("modpack:progress", payload);
+      gameSession.observe(payload);
+      logProgress(payload);
+    };
+    // The game files are prepared while the pack syncs; see below.
+    let background: BackgroundLane | null = null;
+    let settleLeftovers: (() => Promise<void>) | null = null;
+    let preparing: Promise<PreparedGame> | null = null;
+    let authorization: Promise<LaunchAuthorization> | null = null;
+    let gameSpawned = false;
     await writeGameLog("launch.started", { packId: request.packId });
     const selectedServer = catalogPresets.get(request.packId)?.server;
-    if (selectedServer) {
-      void wakeServer(selectedServer).then((status) => {
-        if (status.sleep) void writeGameLog("launch.server.wake", { state: status.sleep });
-      });
-    }
     try {
+      if (selectedServer) {
+        // Play asks a sleeping server to start. Outside its opening hours the gate says so instead,
+        // and nothing is downloaded or started. A gate that stays silent never blocks a launch.
+        const answer = await askToStart(selectedServer, START_ANSWER_WAIT_MS, (status) => {
+          if (status.sleep) void writeGameLog("launch.server.wake", { state: status.sleep });
+        });
+        if (answer?.closed) {
+          await writeGameLog("launch.server.closed", { nextOpen: answer.closed.nextOpen });
+          throw new Error(closedMessage(answer.closed.nextOpen));
+        }
+      }
       await writeGameLog("launch.manifest.requested", { packId: request.packId });
       progress({ kind: "info", stage: "서버 목록", message: "받는 중" });
       const manifest = await auth.getManifest(sessionUser, request.packId).catch(async (error: unknown) => {
@@ -634,13 +662,49 @@ app.whenReady().then(async () => {
       requireBweeepAccounts(manifest);
       const bundledClientMods = bundledFeatureMods(path.join(app.getAppPath(), "resources", "client-mods"), manifest);
       await writeGameLog("launch.modpack.syncing", { packId: request.packId, files: manifest.files.length });
-      const synced = await syncModpack({ instanceDir: request.instanceDir, manifest }, progress);
+      // Java, the Minecraft files and the loader do not depend on the pack's files, so they are fetched
+      // while the pack syncs (different servers, so the two do not slow each other much). The pack sync
+      // is the one the screen follows; the game files show up there once it is done. Anything that
+      // touches mods/ (and the launch libraries, which a pack may bring itself) waits for the sync.
+      if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
+      const launchUser = sessionUser;
+      const packDir = path.resolve(request.instanceDir, manifest.id);
+      const runtimeModule = import("./minecraft-runtime.js");
+      background = createBackgroundLane(progress, logProgress);
+      const gameFilesLane = background;
+      const started = startBesideSync(
+        gameFilesLane,
+        () => syncModpack({ instanceDir: request.instanceDir, manifest }, progress),
+        () => runtimeModule.then(({ prepareGameFiles }) => prepareGameFiles(manifest, packDir, gameFilesLane.sink))
+      );
+      preparing = started.preparing;
+      settleLeftovers = started.settled;
+      // The login token and the login agent copy depend on neither job, so they are fetched now
+      // instead of after them (about a second off every launch). The token lasts hours; if the
+      // launch fails before the game starts, the catch below retires it.
+      // Every server checks players through the Bweeep account API (requireBweeepAccounts above).
+      const authorizing: Promise<LaunchAuthorization> = (async () => {
+        await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
+        const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
+        gameSession.started(identity.accessToken, startedAt);
+        const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), packDir);
+        await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
+        return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
+      })();
+      authorizing.catch(() => undefined);
+      authorization = authorizing;
+      const getLaunchAuthorization = () => authorizing;
+      const synced = await started.ready;
       const withoutPersonalMods = request.withoutPersonalMods === true;
       const userContent = await prepareUserContent(request.instanceDir, synced.instanceDir, manifest, {
         withoutPersonalMods,
         findBlocked: (jars) => findBlockedJars(jars, manifest.blockedModrinthProjects ?? []),
         launcherJars: bundledClientMods.map((mod) => mod.sourcePath)
       });
+      void writeGameLog("launch.options", { packId: request.packId, source: userContent.optionsSource ?? null });
+      // While the game runs the player's settings are also copied to the shared store, not only when it closes,
+      // so a crash or a closed launcher does not lose them.
+      const optionsSync = createSharedOptionsSync(synced.instanceDir, () => captureSharedOptions(request.instanceDir, synced.instanceDir));
       progress({
         kind: "info",
         stage: "개인 파일",
@@ -654,18 +718,7 @@ app.whenReady().then(async () => {
       const guardArgs = connectionGuardEnabled(manifest)
         ? connectionGuardJvmArgs(await ensureConnectionGuard(path.join(app.getAppPath(), "resources", "java-agent"), synced.instanceDir), manifest)
         : [];
-      if (!sessionUser) throw new Error("로그인 세션이 없습니다.");
-      const launchUser = sessionUser;
       await writeGameLog("launch.minecraft.installing", { minecraft: manifest.minecraftVersion, loader: manifest.loader.version });
-      // Every server checks players through the Bweeep account API (requireBweeepAccounts above).
-      const getLaunchAuthorization = async (): Promise<LaunchAuthorization> => {
-        await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
-        const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
-        gameSession.started(identity.accessToken, startedAt);
-        const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), synced.instanceDir);
-        await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });
-        return { identity, ticket: "", yggdrasil: { jvmArgs: authlibInjectorJvmArgs(agent, launch) } };
-      };
       lastGameLogFile = path.join(synced.instanceDir, "logs", "latest.log");
       // The recommendation shown in settings (from the server list) is the one used here.
       const memory = resolveGameMemory({
@@ -675,7 +728,7 @@ app.whenReady().then(async () => {
       });
       await writeGameLog("launch.memory", { ...memory, totalMb: totalMemoryMb() });
       // The Minecraft installer libraries are a large module graph, so they load on the first launch, not at startup.
-      const { installAndLaunch } = await import("./minecraft-runtime.js");
+      const { installAndLaunch } = await runtimeModule;
       const launched = await installAndLaunch(manifest, synced.instanceDir, getLaunchAuthorization, bundledClientMods, progress, (exit) => {
         if (exit.crashReportLocation) lastGameLogFile = path.resolve(synced.instanceDir, exit.crashReportLocation);
         const stoppedByPlayer = stopRequestedRunId === runId;
@@ -698,6 +751,7 @@ app.whenReady().then(async () => {
         // The game token only matters while joining; once the game is gone it is retired.
         void auth.revokeGameAuth(launchUser).catch((error: unknown) =>
           writeGameLog("launch.token.revoke-failed", { message: error instanceof Error ? error.message : String(error) }));
+        optionsSync.stop();
         void captureSharedOptions(request.instanceDir, synced.instanceDir);
         void writeGameLog("launch.minecraft.exited", {
           packId: request.packId,
@@ -706,9 +760,11 @@ app.whenReady().then(async () => {
           abnormal: exit.abnormal,
           crashReportLocation: exit.crashReportLocation
         });
-      }, guardArgs, memory);
+      }, guardArgs, memory, preparing);
+      gameSpawned = true;
       if (gameRunId === runId && gameIsStarting()) {
         setGameStatus({ state: "running", pid: launched.pid, startedAt });
+        optionsSync.start();
         discordGameStarted(manifest.name, startedAt);
         await writeGameLog("launch.succeeded", { packId: request.packId, version: launched.version });
       } else {
@@ -716,6 +772,15 @@ app.whenReady().then(async () => {
       }
       return { ...launched, instanceDir: synced.instanceDir };
     } catch (error) {
+      // Whichever of the two jobs is still running keeps going; the next launch waits for it
+      // so two runs never write the same files, and nothing more of it reaches the screen.
+      background?.silence();
+      if (settleLeftovers) leftoverWork = settleLeftovers();
+      // A token fetched ahead of a launch that never got the game started is of no use to anyone.
+      const tokenOwner = sessionUser;
+      if (authorization && !gameSpawned && tokenOwner) {
+        void authorization.then(() => auth.revokeGameAuth(tokenOwner)).catch(() => undefined);
+      }
       if (gameRunId === runId) {
         gameSession.stop();
         setGameStatus({ state: "idle" });

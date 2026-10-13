@@ -3,12 +3,24 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { ModpackManifest, UserContentFolders, UserContentKind, UserContentStatus } from "../shared/types.js";
 import { fitsMinecraft, readModMetadata, runsOn, type ModMetadata } from "./mod-metadata.js";
+import { hashFile } from "./hash.js";
+import { readOverrideRecord } from "./mrpack.js";
+import { applyKeyDefaults } from "./key-defaults.js";
+import { optionsSourceLabel, prepareSharedOptions, sharedOptionsUsable, type OptionsSource } from "./shared-options.js";
 
 const USER_MODS_FILE = ".bweeep-user-mods.json";
 const USER_SHADERS_FILE = ".bweeep-user-shaders.json";
 const USER_FOLDERS_FILE = "folders.json";
 const PACK_TARGETS_FILE = "pack-targets.json";
 const GAME_OPTION_FILE = /^options(?:[a-z0-9_-]+)?\.txt$/i;
+// Shader mod settings that live outside options*.txt (Iris on Fabric/NeoForge,
+// Oculus on Forge) plus the per-pack option files the shader mods write next
+// to the packs (`shaderpacks/<pack>.zip.txt`). `optionsshaders.txt` already
+// matches GAME_OPTION_FILE.
+const SHADER_SETTING_FILES = ["config/iris.properties", "config/oculus.properties"];
+const SHADER_PACK_OPTION_FILE = /^[^\\/]+\.txt$/i;
+// Old launchers kept shader zips per loader and version: shaderpacks/<loader>-<mc>/.
+const LEGACY_SHADER_DIR = /^(?:vanilla|fabric|forge|neoforge)-[A-Za-z0-9._-]+$/;
 
 interface UserContentPaths {
   userModsDir: string;
@@ -40,7 +52,14 @@ export async function prepareUserContent(
 
   // Key bindings, sensitivity, accessibility, chat, sound and video settings
   // are stored in options*.txt. Keep every such base-game file across servers.
+  // The shared copy first gets the player's volumes and settings from their other servers if it lacks them.
+  const optionsSource = await prepareSharedOptions(instanceRoot, instanceDir, path.join(root, "settings"))
+    .catch((): OptionsSource => ({ source: "options.fresh-yosbr" }));
   await restoreGameOptions(path.join(root, "settings"), instanceDir);
+  // The restored file hides the pack's own starting keys from YOSBR, so mods fall back to keys that collide.
+  await applyKeyDefaults(instanceDir, path.join(root, "settings"), manifest).catch(() => undefined);
+  await restoreShaderSettings(instanceRoot, instanceDir);
+  await migrateLegacyShaderpacks(shaderpacksDir);
   if (manifest.id) {
     await rememberModCompatibility(instanceRoot, manifest.id, { loader: manifest.loader.kind, minecraftVersion: manifest.minecraftVersion }, { onlyIfMissing: true }).catch(() => undefined);
   }
@@ -76,7 +95,7 @@ export async function prepareUserContent(
     await fsp.copyFile(file.source, path.join(instanceShaders, file.targetName));
   }
   await fsp.writeFile(path.join(instanceDir, ".bweeep", USER_SHADERS_FILE), JSON.stringify([...desiredShaderNames].sort(), null, 2), "utf8");
-  return { userModsDir, shaderpacksDir, sharedOptionsPath, copiedMods: desiredMods.length, copiedShaders: desiredShaders.length, removedManagedMods, skippedMods };
+  return { userModsDir, shaderpacksDir, sharedOptionsPath, copiedMods: desiredMods.length, copiedShaders: desiredShaders.length, removedManagedMods, skippedMods, optionsSource: optionsSourceLabel(optionsSource) };
 }
 
 type ContentFile = { source: string; targetName: string };
@@ -152,6 +171,76 @@ export async function captureSharedOptions(instanceRoot: string, instanceDir: st
   for (const fileName of await gameOptionFiles(instanceDir)) {
     await fsp.copyFile(path.join(instanceDir, fileName), path.join(settingsDir, fileName));
   }
+  await captureShaderSettings(instanceRoot, instanceDir);
+}
+
+function shaderSettingsStore(instanceRoot: string): string {
+  return path.join(userContentRoot(instanceRoot), "settings", "shaders");
+}
+
+/** Relative paths (forward slashes) of the shader settings found under `base`, the instance or the shared store. */
+async function shaderSettingFiles(base: string): Promise<string[]> {
+  const found: string[] = [];
+  for (const relative of SHADER_SETTING_FILES) {
+    if ((await fsp.stat(path.join(base, relative)).catch(() => null))?.isFile()) found.push(relative);
+  }
+  try {
+    for (const entry of await fsp.readdir(path.join(base, "shaderpacks"), { withFileTypes: true })) {
+      if (entry.isFile() && SHADER_PACK_OPTION_FILE.test(entry.name)) found.push(`shaderpacks/${entry.name}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return found;
+}
+
+async function copyKeepingTime(source: string, target: string): Promise<void> {
+  await fsp.mkdir(path.dirname(target), { recursive: true });
+  await fsp.copyFile(source, target);
+  const { atime, mtime } = await fsp.stat(source);
+  await fsp.utimes(target, atime, mtime);
+}
+
+/** After the game closes, what the player picked and tuned in this instance becomes the shared copy. */
+export async function captureShaderSettings(instanceRoot: string, instanceDir: string): Promise<void> {
+  const store = shaderSettingsStore(instanceRoot);
+  for (const relative of await shaderSettingFiles(instanceDir)) {
+    await copyKeepingTime(path.join(instanceDir, relative), path.join(store, relative));
+  }
+}
+
+/**
+ * Brings the player's shader choice and per-pack options into an instance
+ * before the game starts. Files copy with their modification time, so "which
+ * one is newer" stays meaningful. The shared copy wins, as options.txt does,
+ * with one exception: an instance file that is newer than the shared copy and
+ * that the pack did not write itself is a change the last session never got
+ * to share (the launcher or the game was killed), so it is kept and shared
+ * instead of being overwritten. A file the pack's own defaults wrote (it still
+ * has the hash recorded in .bweeep/mrpack-overrides.json) never counts as the
+ * player's, because a pack update rewrites it with a fresh time.
+ */
+async function restoreShaderSettings(instanceRoot: string, instanceDir: string): Promise<void> {
+  const store = shaderSettingsStore(instanceRoot);
+  const shared = await shaderSettingFiles(store);
+  if (shared.length === 0) return;
+  const packWritten = await readOverrideRecord(path.join(instanceDir, ".bweeep", "mrpack-overrides.json"));
+  for (const relative of shared) {
+    const source = path.join(store, relative);
+    const target = path.join(instanceDir, relative);
+    const [sourceStat, targetStat] = await Promise.all([fsp.stat(source), fsp.stat(target).catch(() => null)]);
+    if (targetStat?.isFile()) {
+      const [sourceBytes, targetBytes] = await Promise.all([fsp.readFile(source), fsp.readFile(target)]);
+      if (sourceBytes.equals(targetBytes)) continue;
+      const packHash = packWritten.get(relative);
+      const writtenByPack = Boolean(packHash) && await hashFile(target, "sha256") === packHash;
+      if (targetStat.mtimeMs > sourceStat.mtimeMs && !writtenByPack) {
+        await copyKeepingTime(target, source);
+        continue;
+      }
+    }
+    await copyKeepingTime(source, target);
+  }
 }
 
 function userContentRoot(instanceRoot: string): string {
@@ -226,8 +315,36 @@ function userContentPaths(instanceRoot: string, loaderKind: ModpackManifest["loa
   const compatibilityId = `${loaderKind}-${minecraftVersion}`;
   return {
     userModsDir: path.join(root, "mods", compatibilityId),
-    shaderpacksDir: path.join(root, "shaderpacks", compatibilityId)
+    // Shader packs are the same zips for every loader and version, so one folder serves all servers.
+    shaderpacksDir: path.join(root, "shaderpacks")
   };
+}
+
+/** The shared folder the player drops shader zips into; created when missing. */
+export async function sharedContentFolder(instanceRoot: string, kind: UserContentKind): Promise<string> {
+  if (kind !== "shaderpacks") throw new Error("이 폴더는 열 수 없습니다.");
+  const folder = path.join(userContentRoot(instanceRoot), "shaderpacks");
+  await fsp.mkdir(folder, { recursive: true });
+  return folder;
+}
+
+/** Zips left in the old per-loader folders move up into the shared one; same-name files stay where they are. */
+async function migrateLegacyShaderpacks(sharedDir: string): Promise<void> {
+  let entries;
+  try { entries = await fsp.readdir(sharedDir, { withFileTypes: true }); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries.filter((item) => item.isDirectory() && LEGACY_SHADER_DIR.test(item.name))) {
+    const legacy = path.join(sharedDir, entry.name);
+    for (const file of await fsp.readdir(legacy, { withFileTypes: true })) {
+      if (!file.isFile() || !file.name.toLowerCase().endsWith(".zip")) continue;
+      const target = path.join(sharedDir, file.name);
+      if (await fsp.stat(target).then(() => true, () => false)) continue;
+      await fsp.rename(path.join(legacy, file.name), target);
+    }
+    await fsp.rmdir(legacy).catch(() => undefined); // only goes when nothing is left in it
+  }
 }
 
 export async function getUserContentFolders(instanceRoot: string): Promise<UserContentFolders> {
@@ -293,7 +410,10 @@ async function readStringArray(filePath: string): Promise<string[]> {
 }
 
 async function restoreGameOptions(settingsDir: string, instanceDir: string): Promise<void> {
+  // An empty or half-written shared options.txt would wipe the instance's own file, so it stays out.
+  const sharedUsable = await sharedOptionsUsable(settingsDir);
   for (const fileName of await gameOptionFiles(settingsDir)) {
+    if (fileName.toLowerCase() === "options.txt" && !sharedUsable) continue;
     await fsp.copyFile(path.join(settingsDir, fileName), path.join(instanceDir, fileName));
   }
 }

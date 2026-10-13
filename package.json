@@ -1,6 +1,6 @@
 {
   "name": "bweeep-launcher",
-  "version": "0.1.38",
+  "version": "0.1.39",
   "private": true,
   "description": "붸에엡 Minecraft modpack launcher",
   "author": "fri4666",
@@ -22,6 +22,7 @@
     "verify:launch-identity": "npm run build && node scripts/verify-launch-identity.mjs",
     "verify:user-content": "npm run build && node scripts/verify-user-content.mjs",
     "verify:personal-content": "npm run build && node scripts/verify-personal-content.mjs",
+    "verify:shader-settings": "npm run build && node scripts/verify-shader-settings.mjs",
     "verify:update-copy": "npm run build && node scripts/verify-update-copy.mjs",
     "verify:launcher-update": "npm run build && node scripts/verify-launcher-update.mjs",
     "verify:game-exit": "npm run build && node scripts/verify-game-exit.mjs",

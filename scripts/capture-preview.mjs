@@ -12,13 +12,14 @@ const whatsNewMode = process.env.BWEEP_PREVIEW_WHATS_NEW === "true";
 const patchNotesOffline = process.env.BWEEP_PREVIEW_PATCH_NOTES_OFFLINE === "true";
 const serverOffline = process.env.BWEEP_PREVIEW_SERVER_OFFLINE === "true";
 const serverSleeping = process.env.BWEEP_PREVIEW_SERVER_SLEEPING === "true";
+const serverClosed = process.env.BWEEP_PREVIEW_SERVER_CLOSED === "true";
 const authOutage = process.env.BWEEP_PREVIEW_AUTH_OUTAGE === "true";
 const moveAndModsMode = process.env.BWEEP_PREVIEW_MOVE_AND_MODS === "true";
 const adminMode = process.env.BWEEP_PREVIEW_ADMIN === "true";
 const memberMode = process.env.BWEEP_PREVIEW_MEMBER === "true";
 page.on("pageerror", (error) => errors.push(error.message));
 
-await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline, previewServerOffline, previewServerSleeping, previewAuthOutage, previewMoveAndMods, previewMember }) => {
+await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAccessDenied, previewCatalogUnavailable, previewTestChannelDenied, previewWhatsNew, previewPatchNotesOffline, previewServerOffline, previewServerSleeping, previewServerClosed, previewAuthOutage, previewMoveAndMods, previewMember }) => {
   // A minimized window reports "hidden"; previews switch it with window.__setHidden.
   window.__hidden = false;
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => window.__hidden ? "hidden" : "visible" });
@@ -35,6 +36,15 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   window.__authFailure = (reason) => authFailureListeners.forEach((listener) => listener({ reason, at: new Date().toISOString() }));
   window.__diagnosticsSent = 0;
   window.__openedDiagnostics = null;
+  // Admin requests can be slowed (__adminDelayMs) or made to fail (__adminFail = the server's message).
+  // "unsupported" is what the main process turns launcher-access's unknown-action answer into.
+  window.__adminDelayMs = 0;
+  window.__adminFail = null;
+  const adminGate = async () => {
+    if (window.__adminDelayMs) await new Promise((resolve) => setTimeout(resolve, window.__adminDelayMs));
+    if (window.__adminFail === "unsupported") throw new Error("Error invoking remote method 'notice:current': Error: 서버가 아직 이 기능을 지원하지 않아요.");
+    if (window.__adminFail) throw new Error(`Error invoking remote method 'admin:request': Error: ${window.__adminFail}`);
+  };
   const hoursFromNow = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();
   let adminNames = {
     holds: [
@@ -116,6 +126,18 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     { userId: "00000000-0000-0000-0000-000000000002", name: "나원", gameName: null, role: "member", tester: false, lastPlayedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() },
     { userId: "00000000-0000-0000-0000-000000000004", name: "집가고싶다", gameName: "PSH_1227", role: "member", tester: true, lastPlayedAt: null }
   ];
+  // Notices admins have posted: the one everyone sees (target null) and ones for a single member.
+  // __adminListSupported = false behaves like a server that predates personal notices.
+  let noticeCounter = 0;
+  window.__notices = [];
+  window.__adminListSupported = true;
+  const sortedNotices = () => [...window.__notices].sort((a, b) => Number(a.target !== null) - Number(b.target !== null));
+  const lacksFeature = () => new Error("Error invoking remote method 'admin:notices': Error: 서버가 아직 이 기능을 지원하지 않아요.");
+  // What this PC's member (id "1") is shown: their own notice first, otherwise the one everyone sees.
+  const ownNotice = () => {
+    const mine = window.__notices.find((item) => item.target?.userId === "1") ?? window.__notices.find((item) => item.target === null);
+    return mine ? { id: mine.id, text: mine.text, at: mine.at, ...(mine.target ? { personal: true } : {}) } : null;
+  };
   // Mods installed for the server's previous version, waiting to be fetched again.
   let personalMods = previewMoveAndMods ? [
     { projectId: "AANobbMI", title: "Sodium", versionNumber: "mc1.20.6-0.5.11", fileName: "sodium.jar", explicit: true, previousTarget: "NeoForge 1.20.6" },
@@ -181,43 +203,68 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     systemMemory: async () => ({ totalMb: 16384 }),
     listMembers: async () => members,
     setTester: async (userId, tester) => {
+      await adminGate();
       members = members.map((member) => member.userId === userId ? { ...member, tester } : member);
       return members;
     },
     setMemberRole: async (userId, role) => {
+      await adminGate();
       members = members.map((member) => member.userId === userId ? { ...member, role, tester: role === "admin" || member.tester } : member);
       return members;
     },
     removeMember: async (userId) => {
+      await adminGate();
       members = members.filter((member) => member.userId !== userId);
       return members;
     },
     adminNames: async () => adminNames,
     releaseName: async (userId, gameName) => {
+      await adminGate();
       adminNames = { ...adminNames, holds: adminNames.holds.filter((hold) => hold.userId !== userId || hold.gameName !== gameName) };
       return adminNames;
     },
     deleteReservation: async (uuid) => {
+      await adminGate();
       adminNames = { ...adminNames, reservations: adminNames.reservations.filter((item) => item.minecraftUuid !== uuid) };
       return adminNames;
     },
     adminReleases: async () => adminReleases,
     activateRelease: async (releaseId) => {
+      await adminGate();
       const target = adminReleases.find((release) => release.id === releaseId);
       adminReleases = adminReleases.map((release) => release.packId === target.packId ? { ...release, active: release.id === releaseId } : release);
       return adminReleases;
     },
     adminDiagnostics: async () => adminDiagnostics,
-    notice: async () => window.__notice ?? null,
-    setNotice: async (text) => {
-      window.__notice = { id: `notice-${Date.now()}`, text: text.trim(), at: new Date().toISOString() };
-      return window.__notice;
+    notice: async () => {
+      await adminGate();
+      return ownNotice();
     },
-    clearNotice: async () => {
-      window.__notice = null;
-      return null;
+    setNotice: async (text, targetUserId) => {
+      await adminGate();
+      if (targetUserId && !window.__adminListSupported) throw lacksFeature();
+      const member = targetUserId ? members.find((item) => item.userId === targetUserId) : null;
+      if (targetUserId && !member) throw new Error("Error invoking remote method 'admin:setNotice': Error: 멤버를 찾지 못했어요.");
+      window.__notices = window.__notices.filter((item) => (item.target?.userId ?? null) !== (targetUserId ?? null));
+      noticeCounter += 1;
+      window.__notices.push({ id: `notice-${noticeCounter}`, text: text.trim(), at: new Date().toISOString(), target: member ? { userId: member.userId, name: member.name, gameName: member.gameName } : null });
+      return { notice: ownNotice(), notices: window.__adminListSupported ? sortedNotices() : [] };
     },
-    openDiagnostics: async (id) => { window.__openedDiagnostics = id; },
+    clearNotice: async (targetUserId) => {
+      await adminGate();
+      if (targetUserId && !window.__adminListSupported) throw lacksFeature();
+      window.__notices = window.__notices.filter((item) => (item.target?.userId ?? null) !== (targetUserId ?? null));
+      return { notice: ownNotice(), notices: window.__adminListSupported ? sortedNotices() : [] };
+    },
+    adminNotices: async () => {
+      await adminGate();
+      if (!window.__adminListSupported) throw lacksFeature();
+      return sortedNotices();
+    },
+    openDiagnostics: async (id) => {
+      await adminGate();
+      window.__openedDiagnostics = id;
+    },
     sendDiagnostics: async () => {
       window.__diagnosticsSent += 1;
       if (window.__diagnosticsSent > 1) throw new Error("Error invoking remote method 'diagnostics:send': Error: 진단 정보는 10분에 한 번만 보낼 수 있어요.");
@@ -310,6 +357,10 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       window.__serverStatusCalls += 1;
       if (server.port === 25566 || (previewServerOffline && !window.__serverBackOnline)) {
         return { online: false, host: server.host, port: server.port, message: "연결 끊김" };
+      }
+      if (previewServerClosed) {
+        // Outside opening hours: the gate answers, and says when the server opens (Friday 12:00 Korean time).
+        return { online: true, host: server.host, port: server.port, latencyMs: 18, message: "서버 연결 가능", players: { online: 0, max: 20 }, version: "1.21.1", closed: { nextOpen: Date.UTC(2026, 9, 30, 3, 0, 0) } };
       }
       if (previewServerSleeping) {
         return { online: true, host: server.host, port: server.port, latencyMs: 18, message: "서버 연결 가능", players: { online: 0, max: 20 }, version: "1.21.1", sleep: "sleeping" };
@@ -493,9 +544,9 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       };
     }
   };
-}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewServerSleeping: serverSleeping, previewAuthOutage: authOutage, previewMoveAndMods: moveAndModsMode, previewMember: memberMode });
+}, { previewSignedIn: signedIn, previewAccessUnavailable: accessUnavailable, previewAccessDenied: accessDenied, previewCatalogUnavailable: catalogUnavailable, previewTestChannelDenied: testChannelDenied, previewWhatsNew: whatsNewMode, previewPatchNotesOffline: patchNotesOffline, previewServerOffline: serverOffline, previewServerSleeping: serverSleeping, previewServerClosed: serverClosed, previewAuthOutage: authOutage, previewMoveAndMods: moveAndModsMode, previewMember: memberMode });
 
-await page.goto("http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
+await page.goto(process.env.BWEEP_PREVIEW_URL ?? "http://127.0.0.1:5173/", { waitUntil: "domcontentloaded" });
 if (testChannelDenied) {
   await page.getByText("지정된 테스터만 쓸 수 있어요").waitFor({ timeout: 10000 });
   if (await page.locator(".launchButton").count()) throw new Error("the test build opened for a member who is not a tester");
@@ -546,6 +597,21 @@ if (patchNotesOffline) {
   console.log(JSON.stringify({ interactionChecks: ["patch-notes-offline-fallback"], errors }));
   await browser.close();
   process.exit(errors.length ? 1 : 0);
+}
+if (serverClosed) {
+  // Outside opening hours: the top bar says when it opens, one line sits above Play, and Play cannot be pressed.
+  await page.locator(".serverPill.is-closed").waitFor({ timeout: 10000 });
+  if (!(await page.locator(".serverPill").innerText()).includes("금 12:00 열림")) throw new Error("the top bar does not say when the server opens");
+  if (!(await page.locator(".dockHint").innerText()).includes("지금은 닫혀 있어요 · 금 12:00에 열려요")) throw new Error("the line above Play is wrong");
+  if (!(await page.locator(".launchButton").isDisabled())) throw new Error("Play can be pressed on a closed server");
+  await page.screenshot({ path: "previews/bweeep-launcher-server-closed.png" });
+  await page.locator(".launchButton").click({ force: true, timeout: 1000 }).catch(() => undefined);
+  await page.waitForTimeout(300);
+  if (await page.evaluate(() => window.__launchRequests) !== 0) throw new Error("a closed server was launched");
+  if (await page.getByRole("alertdialog").count()) throw new Error("a closed server asked a question");
+  console.log("server-closed-preview=passed");
+  await browser.close();
+  process.exit(0);
 }
 if (serverSleeping) {
   // A server stopped while empty: shown as resting, and Play starts at once without the off-server question.
@@ -771,10 +837,179 @@ if (adminMode) {
   await panel.locator(".adminNoticeShown").filter({ hasText: "10분쯤 걸려요" }).waitFor();
   if (await noticeInput.inputValue() !== "") throw new Error("the draft stays after posting");
   checks.push("admin-notice-limits", "admin-notice-post");
+  // The post is confirmed twice: a green toast with a check, and a check beside the notice that is now shown.
+  const okToast = panel.locator(".adminToast.isOk");
+  await okToast.filter({ hasText: "공지를 올렸어요" }).waitFor();
+  if ((await okToast.getAttribute("role")) !== "status") throw new Error("the success toast is not announced as a status");
+  await panel.locator(".adminPanelState.isDone .adminMark.isDone").waitFor();
+  checks.push("admin-notice-post-confirmed");
+  // Let the toast's 160ms fade-in and the row's 200ms colour change finish before the picture is taken.
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-success.png" });
+  // The green state goes away by itself.
+  await page.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+  if (await panel.locator(".adminMark").count()) throw new Error("the check mark does not go away");
+  checks.push("admin-feedback-clears-itself");
   await page.screenshot({ path: "previews/bweeep-launcher-admin-notice.png" });
   if (await narrowOverflow(panel)) throw new Error("admin notice overflows at 920px");
   await page.screenshot({ path: "previews/bweeep-launcher-admin-notice-narrow.png" });
   await page.setViewportSize({ width: 1440, height: 900 });
+
+  // Busy, failure and "the server does not know this yet" look different from success and never change the layout.
+  await panel.getByRole("tab", { name: "멤버" }).click();
+  const friend = panel.locator(".adminRow").filter({ hasText: "집가고싶다" });
+  await friend.waitFor();
+  const rowBox = await friend.boundingBox();
+  await page.evaluate(() => { window.__adminDelayMs = 1500; });
+  await friend.getByRole("button", { name: "테스터" }).click();
+  await friend.locator(".adminMark.isBusy").waitFor();
+  if (!(await friend.evaluate((row) => row.classList.contains("isBusy")))) throw new Error("the busy row is not marked");
+  if (!(await friend.getByRole("button", { name: "관리자" }).isDisabled())) throw new Error("other buttons stay clickable while a request runs");
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-busy.png" });
+  await friend.locator(".adminMark.isDone").waitFor({ timeout: 4000 });
+  await panel.locator(".adminToast.isOk").filter({ hasText: "집가고싶다 테스터 해제" }).waitFor();
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-row-done.png" });
+  const afterBox = await friend.boundingBox();
+  if (Math.abs(afterBox.y - rowBox.y) > 0.5 || Math.abs(afterBox.height - rowBox.height) > 0.5) throw new Error("the rows moved while feedback appeared");
+  checks.push("admin-feedback-busy-then-done", "admin-feedback-no-layout-jump");
+  await page.evaluate(() => { window.__adminDelayMs = 0; });
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+
+  await page.evaluate(() => { window.__adminFail = "저장하지 못했어요 (시험용 오류)"; });
+  await friend.getByRole("button", { name: "테스터" }).click();
+  const errorToast = panel.locator(".adminToast.isError");
+  await errorToast.filter({ hasText: "시험용 오류" }).waitFor();
+  if ((await errorToast.getAttribute("role")) !== "alert") throw new Error("the failure is not announced as an alert");
+  if (await panel.locator(".adminMark.isDone").count()) throw new Error("a failed request shows a check");
+  if (await friend.getByRole("button", { name: "테스터" }).isDisabled()) throw new Error("the button stays locked after a failure");
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-failure.png" });
+  // The toast sits in the title row: inside the panel and clear of the title and the close button, also at the smallest window.
+  const toastClear = () => panel.evaluate((modal) => {
+    const toast = modal.querySelector(".adminToast").getBoundingClientRect();
+    const box = modal.getBoundingClientRect();
+    const others = [modal.querySelector(".modalHeader h2"), modal.querySelector(".closeButton")].map((element) => element.getBoundingClientRect());
+    const inside = toast.left >= box.left && toast.right <= box.right && toast.top >= box.top && toast.bottom <= box.bottom;
+    const apart = others.every((other) => toast.right <= other.left || other.right <= toast.left || toast.bottom <= other.top || other.bottom <= toast.top);
+    return inside && apart;
+  });
+  if (!(await toastClear())) throw new Error("the toast covers the title or the close button");
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(150);
+  if (!(await toastClear())) throw new Error("the toast covers the title or the close button at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-failure-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  checks.push("admin-feedback-toast-clear-of-title");
+  await page.waitForTimeout(3200);
+  if (!(await errorToast.count())) throw new Error("the failure disappears before it is read");
+  await errorToast.getByRole("button", { name: "닫기" }).click();
+  await errorToast.waitFor({ state: "detached" });
+  checks.push("admin-feedback-failure-stays-until-closed");
+
+  await page.evaluate(() => { window.__adminFail = "unsupported"; });
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await panel.locator(".adminToast.isError").filter({ hasText: "서버가 아직 이 기능을 지원하지 않아요." }).waitFor();
+  if ((await panel.innerText()).includes("지원하지 않는 요청입니다")) throw new Error("the raw server message reaches the notice tab");
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-feedback-unsupported.png" });
+  checks.push("admin-notice-unsupported-message");
+  await page.evaluate(() => { window.__adminFail = null; });
+  await panel.getByRole("tab", { name: "멤버" }).click();
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await panel.locator(".adminNoticeShown").filter({ hasText: "10분쯤 걸려요" }).waitFor();
+  if (await panel.locator(".adminToast").count()) throw new Error("the old failure is still shown after the tab was reloaded");
+
+  // A notice for one member: chosen in the recipient list, shown beside the one everyone sees, replaced by the next one for the same person, cleared on its own.
+  const recipientSelect = panel.getByLabel("받는 사람");
+  const draft = panel.getByLabel("공지 내용");
+  const items = panel.locator(".adminNoticeItem");
+  if ((await recipientSelect.inputValue()) !== "all") throw new Error("the recipient does not start as everyone");
+  if ((await draft.getAttribute("placeholder")) !== "모든 멤버의 런처 첫 화면에 보여요") throw new Error("the placeholder for everyone changed");
+  await recipientSelect.selectOption({ label: "집가고싶다 · PSH_1227" });
+  if ((await draft.getAttribute("placeholder")) !== "집가고싶다에게만 보여요") throw new Error("the placeholder does not name the recipient");
+  await draft.fill("이건 너한테만 말하는 거예요");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await panel.locator(".adminToast.isOk").filter({ hasText: "개인 공지를 올렸어요" }).waitFor();
+  await items.filter({ hasText: "집가고싶다 · PSH_1227에게만" }).filter({ hasText: "너한테만" }).waitFor();
+  if ((await items.count()) !== 2) throw new Error("the list does not hold the everyone-notice and the personal one");
+  if (!(await items.filter({ hasText: "모두" }).filter({ hasText: "10분쯤 걸려요" }).count())) throw new Error("posting for one member took down the notice everyone sees");
+  if (!(await draft.getAttribute("placeholder"))?.includes("집가고싶다")) throw new Error("the recipient was reset by posting");
+  checks.push("admin-notice-personal-post");
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-notice-personal.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  if (await narrowOverflow(panel)) throw new Error("the personal notice list overflows at 920px");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-notice-personal-narrow.png" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // A second notice for the same member replaces the first; nothing piles up.
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+  await draft.fill("다시 한 번 너한테만");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await items.filter({ hasText: "다시 한 번 너한테만" }).waitFor();
+  if ((await items.count()) !== 2 || (await items.filter({ hasText: "이건 너한테만" }).count())) throw new Error("a second notice for the same member did not replace the first");
+  checks.push("admin-notice-personal-replaces");
+  // The admin's own main screen is untouched by a notice meant for someone else.
+  if (await page.evaluate(() => window.__notices.some((item) => item.target === null && item.text.includes("너한테")))) throw new Error("a personal notice leaked into the everyone-notice");
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+  await items.filter({ hasText: "다시 한 번 너한테만" }).getByRole("button", { name: "내리기" }).click();
+  await panel.locator(".adminToast.isOk").filter({ hasText: "개인 공지를 내렸어요" }).waitFor();
+  await items.filter({ hasText: "다시 한 번 너한테만" }).waitFor({ state: "detached" });
+  if ((await items.count()) !== 1 || !(await items.filter({ hasText: "10분쯤 걸려요" }).count())) throw new Error("clearing the personal notice touched the one everyone sees");
+  checks.push("admin-notice-personal-clear");
+  // A notice for the admin themself reaches this screen as a personal notice and wins over the everyone-notice.
+  await recipientSelect.selectOption({ label: "붸에엡 · seos_py · 나" });
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
+  await draft.fill("나만 보는 공지예요");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await items.filter({ hasText: "나만 보는 공지예요" }).waitFor();
+  await page.keyboard.press("Escape");
+  const personalBanner = page.locator(".heroNotice.isPersonal");
+  await personalBanner.filter({ hasText: "나만 보는 공지예요" }).waitFor();
+  if ((await page.locator(".heroNotice").count()) !== 1) throw new Error("more than one notice is shown on the main screen");
+  if ((await personalBanner.getAttribute("title")) !== "나에게만 온 공지") throw new Error("the personal notice is not marked");
+  await page.screenshot({ path: "previews/bweeep-launcher-notice-personal.png" });
+  await page.setViewportSize({ width: 920, height: 620 });
+  await page.waitForTimeout(100);
+  const personalCovered = await page.evaluate(() => {
+    const notice = document.querySelector(".heroNotice").getBoundingClientRect();
+    const copy = document.querySelector(".heroCopy").getBoundingClientRect();
+    return notice.bottom > copy.top;
+  });
+  if (personalCovered) throw new Error("the personal notice covers the server text at 920px");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await personalBanner.getByRole("button", { name: "공지 닫기" }).click();
+  if (await page.locator(".heroNotice").count()) throw new Error("the closed personal notice is still shown");
+  checks.push("notice-personal-banner-shown", "notice-personal-banner-closed");
+  await page.getByRole("button", { name: "관리", exact: true }).click();
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await items.filter({ hasText: "나만 보는 공지예요" }).getByRole("button", { name: "내리기" }).click();
+  await items.filter({ hasText: "나만 보는 공지예요" }).waitFor({ state: "detached" });
+  // A server that predates personal notices: only the notice everyone sees, no recipient choice, no error.
+  await page.evaluate(() => { window.__adminListSupported = false; });
+  await panel.getByRole("tab", { name: "멤버" }).click();
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await items.filter({ hasText: "10분쯤 걸려요" }).waitFor();
+  if (!(await recipientSelect.isDisabled())) throw new Error("the recipient can be chosen on a server without personal notices");
+  if (await panel.locator(".adminToast").count()) throw new Error("an older server shows an error in the notice tab");
+  await draft.fill("옛 서버에서도 올려요");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await items.filter({ hasText: "옛 서버에서도 올려요" }).waitFor();
+  if ((await items.count()) !== 1) throw new Error("the older server's list is not one notice");
+  await page.screenshot({ path: "previews/bweeep-launcher-admin-notice-older-server.png" });
+  checks.push("admin-notice-older-server");
+  await page.evaluate(() => { window.__adminListSupported = true; });
+  await panel.getByRole("tab", { name: "멤버" }).click();
+  await panel.getByRole("tab", { name: "공지" }).click();
+  await items.filter({ hasText: "옛 서버에서도 올려요" }).waitFor();
+  if (!(await recipientSelect.isEnabled())) throw new Error("the recipient stays locked after the server supports it again");
+  // Put the text of the notice everyone sees back for the checks below.
+  await draft.fill("오늘 밤 9시에 선릿벨리 서버를 점검해요\n10분쯤 걸려요");
+  await panel.getByRole("button", { name: "올리기" }).click();
+  await items.filter({ hasText: "10분쯤 걸려요" }).waitFor();
+  await panel.locator(".adminToast").waitFor({ state: "detached", timeout: 4500 });
 
   await page.keyboard.press("Escape");
   if (await page.getByRole("dialog", { name: "관리" }).count()) throw new Error("Escape did not close the admin tab");

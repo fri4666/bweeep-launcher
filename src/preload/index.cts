@@ -29,7 +29,7 @@ import type {
   WhatsNew
 } from "../shared/types.js";
 import type { AdminDiagnostics, AdminNames, AdminRelease, AuthFailure } from "../shared/admin-types.js";
-import type { LauncherNotice } from "../shared/notice.js";
+import type { AdminNotice, LauncherNotice, NoticeUpdate } from "../shared/notice.js";
 
 /** Returns an unsubscribe function so React effects can clean up. */
 function subscribe<T>(channel: string) {
@@ -49,6 +49,7 @@ const api = {
   userContentFolders: (instanceRoot: string) => ipcRenderer.invoke("content:folders", instanceRoot) as Promise<UserContentFolders>,
   chooseUserContentFolders: (instanceRoot: string, kind: UserContentKind) => ipcRenderer.invoke("content:chooseFolders", instanceRoot, kind) as Promise<UserContentFolderPickResult>,
   removeUserContentFolder: (instanceRoot: string, kind: UserContentKind, folder: string) => ipcRenderer.invoke("content:removeFolder", instanceRoot, kind, folder) as Promise<UserContentFolders>,
+  openUserContentFolder: (instanceRoot: string, kind: UserContentKind) => ipcRenderer.invoke("content:openFolder", instanceRoot, kind) as Promise<string>,
   login: () => ipcRenderer.invoke("account:login") as Promise<LoginResult>,
   cancelLogin: () => ipcRenderer.invoke("account:cancelLogin") as Promise<LoginCancellationResult>,
   logout: () => ipcRenderer.invoke("account:logout") as Promise<AccessStatus>,
@@ -91,8 +92,10 @@ const api = {
   adminDiagnostics: () => ipcRenderer.invoke("admin:diagnostics") as Promise<AdminDiagnostics>,
   openDiagnostics: (diagnosticId: string) => ipcRenderer.invoke("admin:openDiagnostics", diagnosticId) as Promise<void>,
   notice: () => ipcRenderer.invoke("notice:current") as Promise<LauncherNotice | null>,
-  setNotice: (text: string) => ipcRenderer.invoke("admin:setNotice", text) as Promise<LauncherNotice | null>,
-  clearNotice: () => ipcRenderer.invoke("admin:clearNotice") as Promise<LauncherNotice | null>,
+  /** `targetUserId` makes it a notice only that member sees; without it everyone sees it. */
+  setNotice: (text: string, targetUserId?: string) => ipcRenderer.invoke("admin:setNotice", text, targetUserId) as Promise<NoticeUpdate>,
+  clearNotice: (targetUserId?: string) => ipcRenderer.invoke("admin:clearNotice", targetUserId) as Promise<NoticeUpdate>,
+  adminNotices: () => ipcRenderer.invoke("admin:notices") as Promise<AdminNotice[]>,
   sendDiagnostics: () => ipcRenderer.invoke("diagnostics:send") as Promise<void>,
   searchMods: (target: ModTarget, query: string, offset: number) => ipcRenderer.invoke("mods:search", target, query, offset) as Promise<ModSearchResult>,
   personalMods: (target: ModTarget, checkUpdates: boolean) => ipcRenderer.invoke("mods:list", target, checkUpdates) as Promise<PersonalMod[]>,

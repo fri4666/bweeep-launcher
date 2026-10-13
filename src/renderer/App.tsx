@@ -28,6 +28,7 @@ import { MemoryPanel, savedMemoryMb } from "./MemoryPanel.js";
 import { useNotice } from "./useNotice.js";
 import { useOfflineLaunchConsent, useServerStatuses } from "./useServerStatuses.js";
 import { authOutageFromMessage, authOutageMessages } from "../shared/auth-outage.js";
+import { closedMessage } from "../shared/open-hours.js";
 
 // The 3D skin preview brings in three.js, so it loads when the skin tab first opens.
 const SkinPanel = lazy(() => import("./SkinPanel.js").then((module) => ({ default: module.SkinPanel })));
@@ -212,7 +213,6 @@ function App() {
   const [launcherVersion, setLauncherVersion] = useState("");
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdateStatus | null>(null);
   const [gameStatus, setGameStatus] = useState<GameStatus>({ state: "idle" });
-  const [clockNow, setClockNow] = useState(Date.now());
   const [gameNameInput, setGameNameInput] = useState("");
   const [personalFolders, setPersonalFolders] = useState<UserContentFolders>({ mods: [], shaderpacks: [] });
   const [contentAction, setContentAction] = useState<UserContentKind | null>(null);
@@ -337,13 +337,6 @@ function App() {
   }, [instanceRoot]);
 
   useEffect(() => {
-    if (gameStatus.state === "idle") return;
-    setClockNow(Date.now());
-    const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [gameStatus.state]);
-
-  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmRequest) setConfirmRequest(null);
@@ -412,7 +405,6 @@ function App() {
     && displayProgress.total > 0
       ? Math.round(Math.max(0, Math.min(1, displayProgress.completed / displayProgress.total)) * 100)
       : null;
-  const elapsedSeconds = gameStatus.startedAt ? Math.max(0, Math.floor((clockNow - gameStatus.startedAt) / 1_000)) : null;
   const progressTitle = gameRunning
     ? joinedServer ? "서버에서 플레이 중" : "게임 실행 중"
     : displayProgress?.stage ?? "준비 중";
@@ -615,6 +607,11 @@ function App() {
     }
   }
 
+  async function openPersonalFolder(kind: UserContentKind) {
+    const failure = await window.bweeep.openUserContentFolder(instanceRoot.trim(), kind).catch(() => "failed");
+    if (failure) setProfileNotice("폴더를 열지 못했어요.");
+  }
+
   async function removePersonalFolder(kind: UserContentKind, folder: string) {
     if (contentAction) return;
     setContentAction(kind);
@@ -707,7 +704,7 @@ function App() {
    * only after one confirmation.
    */
   async function requestLaunch() {
-    if (!selected || gameBusy || syncing) return;
+    if (!selected || gameBusy || syncing || serverState === "closed") return;
     if (access?.outage) {
       const status = await window.bweeep.accessStatus().catch(() => null);
       if (status) setAccess(status);
@@ -920,8 +917,10 @@ function App() {
         <section className="hero">
           <div className="heroBackdrop" />
           {notice.shown && (
-            <div className="heroNotice" role="status">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6l-6 4z" /><path d="M16.5 9.5a3.5 3.5 0 0 1 0 5M19 7a7 7 0 0 1 0 10" /></svg>
+            <div className={`heroNotice${notice.shown.personal ? " isPersonal" : ""}`} role="status" title={notice.shown.personal ? "나에게만 온 공지" : undefined}>
+              {notice.shown.personal
+                ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></svg>
+                : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6l-6 4z" /><path d="M16.5 9.5a3.5 3.5 0 0 1 0 5M19 7a7 7 0 0 1 0 10" /></svg>}
               <p>{notice.shown.text}</p>
               <button className="iconOnly" aria-label="공지 닫기" onClick={notice.dismiss}>×</button>
             </div>
@@ -973,18 +972,21 @@ function App() {
             {!dockError && !gameBusy && !syncing && access.outage && (
               <p className="dockHint">{access.outage === "auth" ? "인증 서버 점검 중" : "인터넷 연결 끊김"}</p>
             )}
+            {!dockError && !gameBusy && !syncing && serverState === "closed" && selected && serverStatuses.byId[selected.id]?.closed && (
+              <p className="dockHint">{closedMessage(serverStatuses.byId[selected.id].closed!.nextOpen)}</p>
+            )}
             {showLaunchProgress && (
               <div className={`launchProgress${gameRunning && joinedServer ? " isPlaying" : ""}`} role="status">
                 <div className="launchProgressHeading">
                   <strong>{progressTitle}</strong>
-                  <span>{progressPercent !== null ? `${progressPercent}%` : elapsedSeconds !== null ? formatElapsed(elapsedSeconds) : ""}</span>
+                  <span>{progressPercent !== null ? `${progressPercent}%` : gameStatus.startedAt ? <ElapsedTime startedAt={gameStatus.startedAt} /> : ""}</span>
                 </div>
                 {progressDetail && <small title={progressDetail}>{progressDetail}</small>}
                 {!(gameRunning && joinedServer) && <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />}
               </div>
             )}
             <div className="launchRow">
-              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy} aria-busy={showLaunchProgress} onClick={() => void requestLaunch()}>
+              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy || serverState === "closed"} aria-busy={showLaunchProgress} onClick={() => void requestLaunch()}>
                 {gameRunning ? "게임 실행 중" : showLaunchProgress ? <><Spinner />게임 시작 중</> : serverState === "offline" ? <><ServerOffIcon />게임 시작</> : "게임 시작"}
               </button>
               {gameRunning && gameStatus.pid && (
@@ -1209,6 +1211,11 @@ function App() {
                       <button className="secondaryButton contentFolderAdd" disabled={!instanceRoot.trim() || contentAction !== null} onClick={() => void choosePersonalFolders(kind)}>
                         {contentAction === kind ? "저장 중…" : `${kind === "mods" ? "모드" : "셰이더"} 폴더 선택`}
                       </button>
+                      {kind === "shaderpacks" && (
+                        <button className="secondaryButton contentFolderAdd" disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder(kind)}>
+                          폴더 열기
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1242,7 +1249,7 @@ function App() {
         <InstallMoveDialog from={instanceRoot} to={moveTarget} onSwitch={switchInstanceRoot} onClose={() => setMoveTarget(null)} />
       )}
       {adminOpen && access.isAdmin && (
-        <AdminPanel selfId={user.id} onClose={() => setAdminOpen(false)} confirm={setConfirmRequest} shownNotice={notice.current} onNoticeChange={notice.replace} />
+        <AdminPanel selfId={user.id} onClose={() => setAdminOpen(false)} confirm={setConfirmRequest} onNoticeChange={notice.replace} />
       )}
 
       {whatsNew && !confirmRequest && <WhatsNewDialog whatsNew={whatsNew} onClose={closeWhatsNew} />}
@@ -1322,6 +1329,34 @@ function shortenPath(value: string): string {
   const parts = value.split(/[\\/]+/).filter(Boolean);
   const tail = parts.slice(-2).join("\\");
   return `${parts[0]}\\…\\${tail}`;
+}
+
+/**
+ * The play timer. Only this text re-renders each second, so the whole launcher
+ * does not repaint next to the game, and nothing ticks while the window is hidden.
+ */
+function ElapsedTime({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    let timer: number | undefined;
+    const stop = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+    };
+    const start = () => {
+      stop();
+      if (document.visibilityState === "hidden") return;
+      setNow(Date.now());
+      timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    };
+    start();
+    document.addEventListener("visibilitychange", start);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", start);
+    };
+  }, []);
+  return <>{formatElapsed(Math.max(0, Math.floor((now - startedAt) / 1_000)))}</>;
 }
 
 function formatElapsed(totalSeconds: number): string {

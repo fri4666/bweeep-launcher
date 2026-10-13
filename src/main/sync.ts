@@ -1,7 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { PackFile, SyncProgress, SyncRequest, SyncResult } from "../shared/types.js";
-import { fetchWithSystemNetwork } from "./system-network.js";
+import { fetchViaDirectSession, fetchWithSystemNetwork } from "./system-network.js";
 import { prepareMrpack } from "./mrpack.js";
 import { downloadVerified, freeDiskBytes, partPath, runLimited, type Fetcher } from "./download.js";
 import { HashCache } from "./hash-cache.js";
@@ -93,6 +93,7 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink, 
     reportBytes(file, true);
     await downloadVerified({ url: file.url, target, size: file.size, sha256: file.sha256, sha512: file.sha512 }, {
       fetch: fetcher,
+      fallbackFetch: options.fetch ? undefined : fetchViaDirectSession,
       tries: options.tries ?? 3,
       retryDelayMs: options.retryDelayMs,
       onBytes: (received) => {

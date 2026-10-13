@@ -26,12 +26,21 @@ jobs:
       - run: node scripts/verify-client-feature-mods.mjs
       - run: node scripts/verify-game-exit.mjs
       - run: node scripts/verify-personal-content.mjs
+      - run: node scripts/verify-user-content.mjs
+      - run: node scripts/verify-shader-settings.mjs
+      - run: node scripts/verify-key-defaults.mjs
+      - run: node scripts/verify-sound-options.mjs
       - run: node scripts/verify-server-status.mjs
+      - run: bash scripts/verify-private-notices.sh
+      - run: node scripts/verify-notice-relay.mjs
       - run: node scripts/verify-server-gate.mjs
+      - run: node scripts/verify-server-schedule.mjs
       - run: node scripts/verify-notice.mjs
+      - run: node scripts/verify-server-errors.mjs
       - run: node scripts/verify-launch-identity.mjs
       - run: node scripts/verify-modpack-sync.mjs
       - run: node scripts/verify-install-download.mjs
+      - run: node scripts/verify-launch-progress.mjs
       - run: npx playwright install --with-deps chromium
       - name: 홈 화면과 실행 흐름 확인
         shell: bash
@@ -49,6 +58,7 @@ jobs:
           BWEEP_PREVIEW_WHATS_NEW=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_PATCH_NOTES_OFFLINE=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_SERVER_SLEEPING=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_SERVER_CLOSED=true node scripts/capture-preview.mjs
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
