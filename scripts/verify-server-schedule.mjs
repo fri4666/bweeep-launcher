@@ -739,7 +739,10 @@ try {
     child.stderr.on("data", (chunk) => output.push(String(chunk)));
     try {
       await until(() => output.join("").includes("listening on"), "the gate process listens");
-      assert.equal(fs.readFileSync(path.join(toolDir, "state2", "bweeep-e2e-hours.gate-code"), "utf8").trim(), gateCodeHash(), "it records the code it runs");
+      // The gate logs that it listens first and writes the code record right after; wait for the file.
+      const codeFile = path.join(toolDir, "state2", "bweeep-e2e-hours.gate-code");
+      await until(() => fs.existsSync(codeFile), "the gate records its code");
+      assert.equal(fs.readFileSync(codeFile, "utf8").trim(), gateCodeHash(), "it records the code it runs");
       let status = await statusPing(listenPort);
       assert.equal(status.bweeep.gate, "closed");
       assert.ok(status.bweeep.nextOpen > Date.now());
