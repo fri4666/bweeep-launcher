@@ -1,6 +1,6 @@
 {
   "name": "bweeep-launcher",
-  "version": "0.1.39",
+  "version": "0.1.40",
   "private": true,
   "description": "붸에엡 Minecraft modpack launcher",
   "author": "fri4666",
@@ -15,7 +15,8 @@
     "package:win": "npm run build && electron-builder --win nsis --x64",
     "package:win:beta": "npm run build && electron-builder --win nsis --x64 --config build/electron-builder.beta.js",
     "package:win:test": "npm run build && electron-builder --win nsis --x64 --config build/electron-builder.test.js",
-    "package:win:arm64": "npm run build && electron-builder --win nsis --arm64 --config.directories.output=release-installer-arm64",
+    "package:win:arm64": "npm run build && electron-builder --win nsis --arm64 --config build/electron-builder.arm64.js",
+    "package:win:beta:arm64": "npm run build && electron-builder --win nsis --arm64 --config build/electron-builder.beta-arm64.js",
     "package:win:all": "npm run package:win && npm run package:win:arm64",
     "verify:electron-startup": "npm run build && node scripts/verify-electron-startup.mjs",
     "verify:deep-link": "npm run build && node scripts/verify-deep-link.mjs",
@@ -25,6 +26,7 @@
     "verify:shader-settings": "npm run build && node scripts/verify-shader-settings.mjs",
     "verify:update-copy": "npm run build && node scripts/verify-update-copy.mjs",
     "verify:launcher-update": "npm run build && node scripts/verify-launcher-update.mjs",
+    "verify:file-update": "npm run build && node scripts/verify-file-update.mjs",
     "verify:game-exit": "npm run build && node scripts/verify-game-exit.mjs",
     "verify:server-status": "npm run build && node scripts/verify-server-status.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -74,7 +76,14 @@
         "repo": "bweeep-launcher"
       }
     ],
-    "asar": true,
+    "asar": false,
+    "afterPack": "build/after-pack.cjs",
+    "extraResources": [
+      {
+        "from": "build/file-update-helper.ps1",
+        "to": "file-update-helper.ps1"
+      }
+    ],
     "electronLanguages": [
       "ko",
       "en-US"

@@ -7,6 +7,15 @@ permissions:
   contents: read
 
 jobs:
+  windows-file-update:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - shell: pwsh
+        run: ./scripts/verify-file-helper.ps1
+
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -20,6 +29,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      - run: node scripts/verify-file-update.mjs
       - run: node scripts/verify-manifest.mjs
       - run: node scripts/verify-launcher-update.mjs
       - run: node scripts/verify-release-notes.mjs
@@ -83,5 +93,7 @@ jobs:
           deno-version: v2.5.3
       - run: deno check index.ts
         working-directory: supabase/functions/launcher-access
+      - run: deno check index.ts
+        working-directory: supabase/functions/launcher-download
       - run: deno test
         working-directory: supabase/functions/launcher-access

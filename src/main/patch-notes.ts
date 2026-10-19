@@ -2,18 +2,18 @@ import { app, net } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { PatchNote, PatchNotes } from "../shared/types.js";
-import { isReleasePageUrl, parseReleaseNotes, patchNotesFromReleases, RELEASES_PAGE } from "./release-notes.js";
-import { isPrereleaseVersion, RELEASE_OWNER, RELEASE_REPO } from "./update-feed.js";
+import { parseReleaseNotes, patchNotesFromReleases } from "./release-notes.js";
+import { isPrereleaseVersion } from "./update-feed.js";
+import { UPDATE_STORAGE_ROOT } from "./file-update-manifest.js";
 import { readBundledReleaseNotes } from "./whats-new.js";
 
-// The patch notes tab reads the published GitHub releases. It is loaded only
+// The patch notes tab reads the published Supabase release catalog. It is loaded only
 // when the tab opens, so a slow or offline network never holds up the
 // launcher; the last good list and then this build's own notes stand in.
 
-const RELEASES_API = `https://api.github.com/repos/${RELEASE_OWNER}/${RELEASE_REPO}/releases?per_page=20`;
-const CACHE_FILE = "patch-notes.json";
+const RELEASES_API = `${UPDATE_STORAGE_ROOT}/metadata/patch-notes.json`;
+const CACHE_FILE = "patch-notes-supabase.json";
 const FETCH_TIMEOUT_MS = 5_000;
-/** GitHub allows 60 API calls an hour per address without a token. */
 const REUSE_MS = 10 * 60_000;
 
 let recent: { at: number; releases: StoredRelease[] } | null = null;
@@ -58,7 +58,7 @@ async function withCurrent(notes: PatchNote[], currentVersion: string): Promise<
 async function fetchReleases(): Promise<StoredRelease[]> {
   if (recent && Date.now() - recent.at < REUSE_MS) return recent.releases;
   const response = await net.fetch(RELEASES_API, {
-    headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" },
+    headers: { accept: "application/json" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
   });
   if (!response.ok) throw new Error(`릴리스 목록을 받지 못했습니다. (서버 응답 ${response.status})`);
@@ -70,7 +70,7 @@ async function fetchReleases(): Promise<StoredRelease[]> {
     draft: item.draft,
     prerelease: item.prerelease,
     published_at: item.published_at,
-    html_url: item.html_url
+    html_url: null
   }));
   recent = { at: Date.now(), releases };
   await writeCache(releases).catch(() => undefined);
@@ -80,13 +80,12 @@ async function fetchReleases(): Promise<StoredRelease[]> {
 async function bundledNotes(currentVersion: string): Promise<PatchNote[]> {
   const notes = parseReleaseNotes(await readBundledReleaseNotes(), currentVersion.split("-")[0]);
   if (!notes) return [];
-  const url = `${RELEASES_PAGE}/tag/v${currentVersion}`;
   return [{
     ...notes,
     version: currentVersion,
     prerelease: isPrereleaseVersion(currentVersion),
     publishedAt: null,
-    url: isReleasePageUrl(url) ? url : null
+    url: null
   }];
 }
 

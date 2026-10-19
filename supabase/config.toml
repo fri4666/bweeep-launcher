@@ -433,3 +433,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/yggdrasil/deno.json"
 entrypoint = "./functions/yggdrasil/index.ts"
+
+[functions.launcher-download]
+enabled = true
+# The installer must be downloadable before a player signs in.
+verify_jwt = false
+entrypoint = "./functions/launcher-download/index.ts"

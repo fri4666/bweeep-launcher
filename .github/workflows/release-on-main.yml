@@ -75,6 +75,7 @@ jobs:
           npm run verify:deep-link
           npm run verify:launch-identity
           node scripts/verify-launcher-update.mjs
+          node scripts/verify-file-update.mjs
           node scripts/verify-release-notes.mjs
 
       # 같은 정식 런처를 두 번 만듭니다. 베타(X.Y.Z-beta.N, beta.yml)는 테스터와
@@ -85,9 +86,39 @@ jobs:
         shell: pwsh
         env:
           BWEEP_BETA_BUILD: ${{ steps.version.outputs.beta_build }}
+          BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
         run: |
           npm run package:win -- --publish never
           npm run package:win:beta -- --publish never
+          npm run package:win:arm64 -- --publish never
+          npm run package:win:beta:arm64 -- --publish never
+
+      - name: Supabase 파일 릴리스 준비와 베타 게시
+        if: steps.version.outputs.published != 'True'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BETA_VERSION: ${{ steps.version.outputs.version }}-beta.${{ steps.version.outputs.beta_build }}
+          BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
+          BWEEP_UPDATE_SIGNING_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_SIGNING_KEY_BASE64 }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/create-file-release.mjs release-installer/win-unpacked $env:VERSION stable x64 release-installer/file-update-stable.json
+          node scripts/create-file-release.mjs release-installer/win-unpacked $env:VERSION beta x64 release-installer/file-update-beta-channel.json
+          node scripts/create-file-release.mjs release-installer-beta/win-unpacked $env:BETA_VERSION beta x64 release-installer-beta/file-update-beta.json
+          node scripts/create-file-release.mjs release-installer-arm64/win-arm64-unpacked $env:VERSION stable arm64 release-installer-arm64/file-update-stable-arm64.json
+          node scripts/create-file-release.mjs release-installer-arm64/win-arm64-unpacked $env:VERSION beta arm64 release-installer-arm64/file-update-beta-channel-arm64.json
+          node scripts/create-file-release.mjs release-installer-beta-arm64/win-arm64-unpacked $env:BETA_VERSION beta arm64 release-installer-beta-arm64/file-update-beta-arm64.json
+          node scripts/publish-file-release.mjs release-installer/win-unpacked release-installer/file-update-stable.json files
+          node scripts/publish-file-release.mjs release-installer-beta/win-unpacked release-installer-beta/file-update-beta.json files
+          node scripts/publish-file-release.mjs release-installer-arm64/win-arm64-unpacked release-installer-arm64/file-update-stable-arm64.json files
+          node scripts/publish-file-release.mjs release-installer-beta-arm64/win-arm64-unpacked release-installer-beta-arm64/file-update-beta-arm64.json files
+          node scripts/publish-installer.mjs "release-installer/Bweeep-Setup-$env:VERSION.exe" $env:VERSION x64 archive
+          node scripts/publish-installer.mjs "release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe" $env:VERSION arm64 archive
+          node scripts/publish-release-notes.mjs $env:BETA_VERSION beta build/release-notes.txt
+          node scripts/publish-file-release.mjs - release-installer-beta/file-update-beta.json channel
+          node scripts/publish-file-release.mjs - release-installer-beta-arm64/file-update-beta-arm64.json channel
 
       - name: GitHub 베타 릴리스 게시
         if: steps.version.outputs.published != 'True'
@@ -100,7 +131,11 @@ jobs:
           $assets = @(
             "release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe",
             "release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe.blockmap",
-            "release-installer-beta/beta.yml"
+            "release-installer-beta/beta.yml",
+            "release-installer-beta/file-update-beta.json",
+            "release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe",
+            "release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe.blockmap",
+            "release-installer-beta-arm64/file-update-beta-arm64.json"
           )
           $notes = "테스터와 관리자가 먼저 받는 테스트 버전이에요. 확인이 끝나면 같은 내용으로 정식 버전이 나와요.`n`n" + (Get-Content build/release-notes.txt -Raw -Encoding utf8)
           $notesFile = Join-Path $env:RUNNER_TEMP "beta-release-notes.txt"
@@ -121,7 +156,13 @@ jobs:
           $assets = @(
             "release-installer/Bweeep-Setup-$env:VERSION.exe",
             "release-installer/Bweeep-Setup-$env:VERSION.exe.blockmap",
-            "release-installer/latest.yml"
+            "release-installer/latest.yml",
+            "release-installer/file-update-stable.json",
+            "release-installer/file-update-beta-channel.json",
+            "release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe",
+            "release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe.blockmap",
+            "release-installer-arm64/file-update-stable-arm64.json",
+            "release-installer-arm64/file-update-beta-channel-arm64.json"
           )
           if ($env:HAS_DRAFT -eq 'True') {
             # 테스트 중 수정이 병합되면 초안도 마지막 베타와 같은 코드로 바꿉니다.

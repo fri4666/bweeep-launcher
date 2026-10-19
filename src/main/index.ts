@@ -589,7 +589,7 @@ app.whenReady().then(async () => {
     return shell.openExternal(url);
   });
   // Fixed address: the test build's non-tester screen points to the stable installer.
-  ipcMain.handle("launcher:openStableDownload", () => shell.openExternal("https://github.com/fri4666/bweeep-launcher/releases/latest"));
+  ipcMain.handle("launcher:openStableDownload", () => shell.openExternal(`https://tmwvrglzjfzauuygofpp.supabase.co/functions/v1/launcher-download?arch=${process.arch === "arm64" ? "arm64" : "x64"}`));
   ipcMain.on("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle("game:status", () => gameStatus);

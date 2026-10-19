@@ -243,7 +243,7 @@ export interface ReleaseNoteSection {
   details?: string[][];
 }
 
-/** One version's notes, from build/release-notes.txt or the same text on its GitHub release. */
+/** One version's notes, from build/release-notes.txt or the release catalog. */
 export interface ReleaseNotes {
   version: string;
   summary: string | null;
@@ -256,7 +256,7 @@ export interface ReleaseNotes {
 export interface PatchNote extends ReleaseNotes {
   prerelease: boolean;
   publishedAt: string | null;
-  /** The GitHub release page; only github.com/fri4666/bweeep-launcher/releases/… addresses. */
+  /** Optional details page for a published release. */
   url: string | null;
 }
 
