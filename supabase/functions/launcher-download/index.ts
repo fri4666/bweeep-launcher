@@ -1,8 +1,8 @@
 const storageRoot = "https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates";
 const chunkSize = 8 * 1024 * 1024;
 
-function bytes(base64: string): Uint8Array {
-  return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+function bytes(base64: string): ArrayBuffer {
+  return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0)).buffer as ArrayBuffer;
 }
 
 async function latestInstaller(arch: "x64" | "arm64") {
@@ -56,7 +56,7 @@ button.addEventListener('click',async()=>{
     for(let part=0;part<manifest.chunks;part++){
       status.textContent='다운로드 중 '+Math.round(part/manifest.chunks*100)+'%';
       const name='part-'+String(part).padStart(4,'0')+'.bin';
-      const response=await fetch(root+'/installers/'+manifest.version+'/'+manifest.arch+'/'+name,{cache:'no-store'});
+      const response=await fetch(root+'/installers/'+manifest.version+'/'+manifest.arch+'/'+manifest.sha256+'/'+name,{cache:'no-store'});
       if(!response.ok)throw new Error('파일을 받을 수 없습니다.');
       pieces.push(await response.arrayBuffer());
     }

@@ -37,20 +37,11 @@ if (mode === "archive") {
   }
   for (let part = 0; part < payload.chunks; part++) {
     const piece = bytes.subarray(part * UPDATE_CHUNK_SIZE, Math.min(bytes.length, (part + 1) * UPDATE_CHUNK_SIZE));
-    const objectPath = `installers/${version}/${arch}/part-${String(part).padStart(4, "0")}.bin`;
-    const existingInfo = await bucket.info(objectPath);
-    if (!existingInfo.error && existingInfo.data?.size === piece.length) continue;
-    if (existingInfo.error && String(existingInfo.error.statusCode) !== "404") {
-      throw new Error(`cannot inspect ${objectPath}: ${existingInfo.error.message}`);
-    }
-    const result = await bucket.upload(objectPath, piece, { contentType: "application/octet-stream", upsert: false });
-    if (result.error) {
-      const existing = await bucket.download(objectPath);
-      if (existing.error || !existing.data ||
-          createHash("sha256").update(Buffer.from(await existing.data.arrayBuffer())).digest("hex") !== createHash("sha256").update(piece).digest("hex")) {
-        throw new Error(`installer chunk upload failed: ${result.error.message}`);
-      }
-    }
+    // Draft releases can be rebuilt with the same version. The installer hash
+    // gives each build immutable part URLs, including through Storage caches.
+    const objectPath = `installers/${version}/${arch}/${sha256}/part-${String(part).padStart(4, "0")}.bin`;
+    const result = await bucket.upload(objectPath, piece, { contentType: "application/octet-stream", upsert: true });
+    if (result.error) throw new Error(`installer chunk upload failed: ${result.error.message}`);
   }
   const signature = sign(null, Buffer.from(JSON.stringify(payload)), privateKey).toString("base64");
   const manifest = Buffer.from(JSON.stringify({ ...payload, signature }));
