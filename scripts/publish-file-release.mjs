@@ -9,8 +9,8 @@ const [input, manifestPath, mode] = process.argv.slice(2);
 if (!manifestPath || !["files", "channel"].includes(mode) || (mode === "files" && !input)) {
   throw new Error("usage: publish-file-release <win-unpacked|-> <manifest> <files|channel>");
 }
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!key) throw new Error("SUPABASE_SERVICE_ROLE_KEY is required");
+const key = process.env.SUPABASE_SECRET_KEY;
+if (!key) throw new Error("SUPABASE_SECRET_KEY is required");
 const client = createClient("https://tmwvrglzjfzauuygofpp.supabase.co", key, {
   auth: { autoRefreshToken: false, persistSession: false }
 });

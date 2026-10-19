@@ -6,8 +6,8 @@ if (!file || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(version ?? "") ||
     !["stable", "beta"].includes(channel)) {
   throw new Error("usage: publish-release-notes <version> <stable|beta> <release-notes-file>");
 }
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!key) throw new Error("SUPABASE_SERVICE_ROLE_KEY is required");
+const key = process.env.SUPABASE_SECRET_KEY;
+if (!key) throw new Error("SUPABASE_SECRET_KEY is required");
 const client = createClient("https://tmwvrglzjfzauuygofpp.supabase.co", key, {
   auth: { autoRefreshToken: false, persistSession: false }
 });

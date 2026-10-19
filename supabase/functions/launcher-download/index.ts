@@ -6,8 +6,8 @@ function bytes(base64: string): ArrayBuffer {
 }
 
 async function latestInstaller(arch: "x64" | "arm64") {
-  const keyPemBase64 = Deno.env.get("BWEEP_UPDATE_PUBLIC_KEY_BASE64");
-  if (!keyPemBase64) throw new Error("installer verification key is not configured");
+  // Public verification key; only the signing key is secret.
+  const keyPemBase64 = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQU9pbjNXR2VGbnFjRTd2aldVazRTQmI5YmZEU204bk93QlBCSlJFcTk1M2M9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=";
   const pem = atob(keyPemBase64);
   const der = bytes(pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, ""));
   const key = await crypto.subtle.importKey("spki", der, { name: "Ed25519" }, false, ["verify"]);

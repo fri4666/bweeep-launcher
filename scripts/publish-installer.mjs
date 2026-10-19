@@ -8,7 +8,7 @@ if (!file || !/^\d+\.\d+\.\d+$/.test(version ?? "") || !["x64", "arm64"].include
     !["archive", "stable"].includes(mode)) {
   throw new Error("usage: publish-installer <setup-exe> <version> <x64|arm64> <archive|stable>");
 }
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const serviceKey = process.env.SUPABASE_SECRET_KEY;
 const publicKeyBase64 = process.env.BWEEP_UPDATE_PUBLIC_KEY_BASE64;
 if (!serviceKey || !publicKeyBase64) throw new Error("Supabase service key and update public key are required");
 const publicKey = createPublicKey(Buffer.from(publicKeyBase64, "base64"));

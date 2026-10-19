@@ -27,7 +27,7 @@ installed. The helper keeps replaced files in a backup directory and restores
 them if a replacement or restart command fails.
 
 The Storage bucket is public for reads because update checks must work before
-login. Write access uses the service-role credential only in CI. Never put it
+login. Write access uses the project secret API key only in CI. Never put it
 in the desktop app. The private source repository still produces binaries
 users can inspect.
 
@@ -40,13 +40,12 @@ users can inspect.
    its PEM public key** in GitHub Actions secret
    `BWEEP_UPDATE_PUBLIC_KEY_BASE64`; put the **base64 of its PEM private key**
    in `BWEEP_UPDATE_SIGNING_KEY_BASE64`. Keep the private key out of Git.
-3. Add `SUPABASE_SERVICE_ROLE_KEY` as a GitHub Actions secret. Limit who can
-   edit release workflows or trigger the promotion workflow, because this key
-   can write to the project.
-4. Set `BWEEP_UPDATE_PUBLIC_KEY_BASE64` as a Supabase Edge Function secret and
-   deploy `launcher-download` with JWT verification disabled. The function
-   verifies the signed installer manifest before serving the public download
-   page.
+3. Add a Supabase secret API key as GitHub Actions secret
+   `SUPABASE_SECRET_KEY`. Limit who can edit release workflows or trigger
+   the promotion workflow, because this key can write to the project.
+4. The public verification key is embedded in `launcher-download`. Deploy it
+   with JWT verification disabled. The function verifies the signed installer
+   manifest before serving the public download page.
 5. Merge v0.1.40 while the GitHub repository and old releases are still
    accessible. The main workflow builds both the old NSIS bridge and the new
    Supabase file release. It publishes the beta channel for testers; the stable

@@ -101,7 +101,7 @@ jobs:
           BETA_VERSION: ${{ steps.version.outputs.version }}-beta.${{ steps.version.outputs.beta_build }}
           BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
           BWEEP_UPDATE_SIGNING_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_SIGNING_KEY_BASE64 }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
           node scripts/create-file-release.mjs release-installer/win-unpacked $env:VERSION stable x64 release-installer/file-update-stable.json
