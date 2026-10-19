@@ -9,7 +9,7 @@ alter table public.launcher_invites
 
 create or replace function public.redeem_launcher_invite(p_code_hash text, p_user_id uuid)
 returns table (ok boolean, message text, member_role public.launcher_member_role)
-language plpgsql security definer set search_path = public, pg_temp as $$
+language plpgsql security definer set search_path = '' as $$
 declare invite public.launcher_invites%rowtype; existing_role public.launcher_member_role;
 begin
   select role into existing_role from public.launcher_members where user_id = p_user_id;
