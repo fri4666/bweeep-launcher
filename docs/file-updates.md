@@ -10,7 +10,7 @@ updates use an Ed25519-signed file list. Supabase Storage serves gzip-compressed
 only after every file is uploaded. The launcher verifies the signature, hashes
 local files, downloads and expands changed files, hashes each download, waits for the game
 to exit, then starts a separate PowerShell helper to replace files and restart.
-Files larger than 8 MiB are stored as numbered parts, so each Supabase object
+Files larger than 5 MiB are stored as numbered parts, so each Supabase object
 stays below the Free plan's per-object size limit. The first installer is also
 stored in parts. A public `launcher-download` Edge Function serves a download
 page that verifies its signed manifest, joins the parts in the browser, checks

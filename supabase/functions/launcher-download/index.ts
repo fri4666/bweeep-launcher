@@ -1,5 +1,5 @@
 const storageRoot = "https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates";
-const chunkSize = 8 * 1024 * 1024;
+const chunkSize = 5 * 1024 * 1024;
 
 function bytes(base64: string): ArrayBuffer {
   return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0)).buffer as ArrayBuffer;
