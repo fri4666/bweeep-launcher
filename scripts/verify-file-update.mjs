@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { releaseFileUrl, safeUpdatePath, unsignedManifest, updatePartCount, UPDATE_CHUNK_SIZE, verifyFileUpdateManifest } from "../dist/src/main/file-update-manifest.js";
 
 const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "bweeep-update-test-"));
@@ -28,12 +29,14 @@ try {
   assert.equal(created.status, 0, created.stderr);
   const manifest = JSON.parse(await fsp.readFile(output, "utf8"));
   assert.deepEqual(manifest.files.map((file) => file.path), ["Bweeep.exe", "resources/app.js"]);
+  assert.equal(manifest.files[0].packedSize, gzipSync(Buffer.from("desktop runtime"), { level: 6 }).length);
+  assert.equal(manifest.files[0].packedSha256, createHash("sha256").update(gzipSync(Buffer.from("desktop runtime"), { level: 6 })).digest("hex"));
   assert.equal(verifyFileUpdateManifest(manifest, publicPem, "0.1.39", "stable", "x64")?.version, "0.1.40");
   assert.equal(verifyFileUpdateManifest(manifest, publicPem, "0.1.40", "stable", "x64"), null);
   assert.match(releaseFileUrl(manifest, "resources/app.js"), /\/blobs\/[a-f0-9]{64}\/part-0000\.bin$/);
   const large = { ...manifest, files: manifest.files.map((file) => ({ ...file })) };
-  large.files[0].size = UPDATE_CHUNK_SIZE + 1;
-  assert.equal(updatePartCount(large.files[0].size), 2);
+  large.files[0].packedSize = UPDATE_CHUNK_SIZE + 1;
+  assert.equal(updatePartCount(large.files[0].packedSize), 2);
   assert.match(releaseFileUrl(large, "Bweeep.exe", 1), /\/part-0001\.bin$/);
   assert.throws(() => releaseFileUrl(large, "Bweeep.exe", 2));
   assert.throws(() => safeUpdatePath("../escape.exe"));

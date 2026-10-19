@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import type { LauncherUpdate, LauncherUpdateStatus } from "../shared/types.js";
 import { releaseFileUrl, safeUpdatePath, updatePartCount, UPDATE_CHUNK_SIZE, UPDATE_STORAGE_ROOT, verifyFileUpdateManifest, type FileUpdateEntry, type FileUpdateManifest } from "./file-update-manifest.js";
 
@@ -123,32 +124,38 @@ async function prepareFiles(manifest: FileUpdateManifest, signal: AbortSignal, u
   }
   changed = needed;
   staged = stage;
-  const total = needed.reduce((sum, file) => sum + file.size, 0);
+  const total = needed.reduce((sum, file) => sum + file.packedSize, 0);
   let received = 0;
   for (const file of needed) {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     const destination = path.join(stage, ...file.path.split("/"));
     if (await matchesFile(destination, file)) {
-      received += file.size;
+      received += file.packedSize;
       continue;
     }
     setStatus({ state: "downloading", update, percent: total ? Math.round(received / total * 100) : 100 });
     await fsp.mkdir(path.dirname(destination), { recursive: true });
     const temporary = `${destination}.part`;
+    const packedTemporary = `${destination}.gz.part`;
     try {
-      for (let part = 0; part < updatePartCount(file.size); part++) {
+      for (let part = 0; part < updatePartCount(file.packedSize); part++) {
         const downloadSignal = AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)]);
         const response = await net.fetch(releaseFileUrl(manifest, file.path, part), { signal: downloadSignal });
         if (!response.ok || !response.body) throw new Error(`업데이트 파일을 받지 못했습니다. (${response.status})`);
-        await pipeline(Readable.fromWeb(response.body as never), fs.createWriteStream(temporary, { flags: part === 0 ? "w" : "a" }), { signal: downloadSignal });
-        const partSize = Math.min(UPDATE_CHUNK_SIZE, file.size - part * UPDATE_CHUNK_SIZE);
+        await pipeline(Readable.fromWeb(response.body as never), fs.createWriteStream(packedTemporary, { flags: part === 0 ? "w" : "a" }), { signal: downloadSignal });
+        const partSize = Math.min(UPDATE_CHUNK_SIZE, file.packedSize - part * UPDATE_CHUNK_SIZE);
         received += partSize;
         setStatus({ state: "downloading", update, percent: total ? Math.round(received / total * 100) : 100 });
       }
+      if (!await matchesFile(packedTemporary, { ...file, size: file.packedSize, sha256: file.packedSha256 })) {
+        throw new Error(`압축된 업데이트 파일 검증에 실패했습니다: ${file.path}`);
+      }
+      await pipeline(fs.createReadStream(packedTemporary), createGunzip(), fs.createWriteStream(temporary), { signal });
       if (!await matchesFile(temporary, file)) throw new Error(`업데이트 파일 검증에 실패했습니다: ${file.path}`);
       await fsp.rename(temporary, destination);
     } finally {
       await fsp.rm(temporary, { force: true });
+      await fsp.rm(packedTemporary, { force: true });
     }
   }
 }

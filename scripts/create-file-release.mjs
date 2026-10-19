@@ -1,7 +1,7 @@
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 
 const [input, version, channel, arch, output] = process.argv.slice(2);
 if (!input || !output || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(version ?? "") ||
@@ -32,9 +32,15 @@ async function filesIn(dir, relative = "") {
 const files = [];
 for (const relative of (await filesIn(input)).sort()) {
   const absolute = path.join(input, ...relative.split("/"));
-  const hash = createHash("sha256");
-  for await (const chunk of fs.createReadStream(absolute)) hash.update(chunk);
-  files.push({ path: relative, size: (await fsp.stat(absolute)).size, sha256: hash.digest("hex") });
+  const bytes = await fsp.readFile(absolute);
+  const packed = gzipSync(bytes, { level: 6 });
+  files.push({
+    path: relative,
+    size: bytes.length,
+    packedSize: packed.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    packedSha256: createHash("sha256").update(packed).digest("hex")
+  });
 }
 if (!files.some((file) => file.path === "Bweeep.exe")) throw new Error("Bweeep.exe is missing from the package");
 const payload = { schema: 1, version, channel, arch, files };

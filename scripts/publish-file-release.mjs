@@ -1,6 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { createClient } from "@supabase/supabase-js";
 import { UPDATE_CHUNK_SIZE, updatePartCount, verifyFileUpdateManifest } from "../dist/src/main/file-update-manifest.js";
 
@@ -27,9 +28,13 @@ if (mode === "files") {
     if (bytes.byteLength !== file.size || createHash("sha256").update(bytes).digest("hex") !== file.sha256) {
       throw new Error(`local package differs from signed manifest: ${file.path}`);
     }
-    for (let part = 0; part < updatePartCount(file.size); part++) {
-      const piece = bytes.subarray(part * UPDATE_CHUNK_SIZE, Math.min(bytes.length, (part + 1) * UPDATE_CHUNK_SIZE));
-      const objectPath = `blobs/${file.sha256}/part-${String(part).padStart(4, "0")}.bin`;
+    const packed = gzipSync(bytes, { level: 6 });
+    if (packed.length !== file.packedSize || createHash("sha256").update(packed).digest("hex") !== file.packedSha256) {
+      throw new Error(`compressed package differs from signed manifest: ${file.path}`);
+    }
+    for (let part = 0; part < updatePartCount(file.packedSize); part++) {
+      const piece = packed.subarray(part * UPDATE_CHUNK_SIZE, Math.min(packed.length, (part + 1) * UPDATE_CHUNK_SIZE));
+      const objectPath = `blobs/${file.packedSha256}/part-${String(part).padStart(4, "0")}.bin`;
       const existingInfo = await bucket.info(objectPath);
       if (!existingInfo.error && existingInfo.data?.size === piece.length) continue;
       if (existingInfo.error && String(existingInfo.error.statusCode) !== "404") {

@@ -4,17 +4,23 @@
 
 The Windows installer remains a one-time bootstrap for shortcuts, uninstall,
 and the invite URL protocol. It installs an unpacked Electron app. Later app
-updates use an Ed25519-signed file list. Supabase Storage serves immutable
-`blobs/<sha256>/part-<number>.bin` objects and a small mutable
+updates use an Ed25519-signed file list. Supabase Storage serves gzip-compressed, immutable
+`blobs/<compressed-sha256>/part-<number>.bin` objects and a small mutable
 `channels/<stable|beta>/<arch>.json` pointer. The channel pointer is updated
 only after every file is uploaded. The launcher verifies the signature, hashes
-local files, downloads changed files, hashes each download, waits for the game
+local files, downloads and expands changed files, hashes each download, waits for the game
 to exit, then starts a separate PowerShell helper to replace files and restart.
 Files larger than 8 MiB are stored as numbered parts, so each Supabase object
 stays below the Free plan's per-object size limit. The first installer is also
 stored in parts. A public `launcher-download` Edge Function serves a download
 page that verifies its signed manifest, joins the parts in the browser, checks
 the full SHA-256 hash, and downloads the NSIS installer once.
+
+The current Supabase organization is on the Free plan, which includes 1 GB of
+file storage. Compression and content-addressed reuse reduce storage, but
+retaining old installers and runtime versions indefinitely will exceed that
+quota. Check usage before each release and establish a reviewed retention plan
+before removing objects still referenced by installed clients.
 
 The existing NSIS uninstall file is outside the update manifest and remains
 installed. The helper keeps replaced files in a backup directory and restores

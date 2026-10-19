@@ -5,7 +5,9 @@ import { isNewerLauncherVersion } from "./version.js";
 export interface FileUpdateEntry {
   path: string;
   size: number;
+  packedSize: number;
   sha256: string;
+  packedSha256: string;
 }
 
 export interface FileUpdateManifest {
@@ -41,7 +43,7 @@ export function unsignedManifest(manifest: FileUpdateManifest): Omit<FileUpdateM
     version: manifest.version,
     channel: manifest.channel,
     arch: manifest.arch,
-    files: manifest.files.map(({ path, size, sha256 }) => ({ path, size, sha256 }))
+    files: manifest.files.map(({ path, size, packedSize, sha256, packedSha256 }) => ({ path, size, packedSize, sha256, packedSha256 }))
   };
 }
 
@@ -62,7 +64,10 @@ export function verifyFileUpdateManifest(
   const seen = new Set<string>();
   for (const file of manifest.files) {
     if (!file || typeof file.path !== "string" || !Number.isSafeInteger(file.size) || file.size < 0 ||
-        !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error("업데이트 파일 목록 형식이 잘못되었습니다.");
+        !Number.isSafeInteger(file.packedSize) || file.packedSize <= 0 ||
+        !/^[a-f0-9]{64}$/.test(file.sha256) || !/^[a-f0-9]{64}$/.test(file.packedSha256)) {
+      throw new Error("업데이트 파일 목록 형식이 잘못되었습니다.");
+    }
     safeUpdatePath(file.path);
     const key = file.path.toLowerCase();
     if (seen.has(key)) throw new Error("업데이트 파일 경로가 중복됩니다.");
@@ -85,8 +90,8 @@ export function releaseFileUrl(manifest: FileUpdateManifest, filePath: string, p
   safeUpdatePath(filePath);
   const file = manifest.files.find((entry) => entry.path === filePath);
   if (!file) throw new Error("업데이트 목록에 없는 파일입니다.");
-  if (!Number.isSafeInteger(part) || part < 0 || part >= updatePartCount(file.size)) throw new Error("업데이트 파일 조각 번호가 잘못되었습니다.");
-  return `${UPDATE_STORAGE_ROOT}/blobs/${file.sha256}/part-${String(part).padStart(4, "0")}.bin`;
+  if (!Number.isSafeInteger(part) || part < 0 || part >= updatePartCount(file.packedSize)) throw new Error("업데이트 파일 조각 번호가 잘못되었습니다.");
+  return `${UPDATE_STORAGE_ROOT}/blobs/${file.packedSha256}/part-${String(part).padStart(4, "0")}.bin`;
 }
 
 export function updatePartCount(size: number): number {
