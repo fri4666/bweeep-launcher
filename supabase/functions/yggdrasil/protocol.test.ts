@@ -5,6 +5,7 @@ import {
   importVerifyKey,
   parseRoute,
   routeAudience,
+  routeGroup,
   serializeProfile,
   texturesValue,
   toSignedUuid,
@@ -43,6 +44,11 @@ Deno.test("a /testers root serves the same API for test servers", () => {
   assert(parseRoute("GET", "/yggdrasil/testers/sessionserver/session/minecraft/hasJoined").kind === "hasJoined", "tester hasJoined");
   assert(routeAudience("/functions/v1/yggdrasil/testers/sessionserver/session/minecraft/hasJoined") === "testers", "tester audience");
   assert(routeAudience("/functions/v1/yggdrasil/sessionserver/session/minecraft/hasJoined") === "members", "member audience");
+  assert(routeGroup("/functions/v1/yggdrasil/sessionserver/session/minecraft/hasJoined") === "original", "existing root is original group");
+  assert(parseRoute("GET", "/yggdrasil/groups/friend-a/sessionserver/session/minecraft/hasJoined").kind === "hasJoined", "friend-a route");
+  assert(routeGroup("/yggdrasil/groups/friend-a/sessionserver/session/minecraft/hasJoined") === "friend-a", "friend-a group");
+  assert(routeAudience("/yggdrasil/groups/friend-b/testers/sessionserver/session/minecraft/hasJoined") === "testers", "group tester route");
+  assert(parseRoute("GET", "/yggdrasil/groups/unknown/").kind === "notFound", "unknown groups have no API root");
   // A player named "testers" is still looked up by name on the member root.
   const byName = parseRoute("GET", "/yggdrasil/api/users/profiles/minecraft/testers");
   assert(byName.kind === "profileByName" && byName.name === "testers", "name lookup");

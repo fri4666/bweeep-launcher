@@ -42,4 +42,5 @@ refused("A file without a hash", { ...manifest, files: [{ ...manifest.files[0], 
 refused("A plain http download", { ...manifest, files: [{ ...manifest.files[0], url: "http://cdn.modrinth.com/x.jar" }] }, validateForPublish);
 refused("A localhost server", { ...manifest, server: { host: "localhost", port: 25565 } }, validateForPublish);
 refused("A port out of range", { ...manifest, server: { host: "server.fri4666.com", port: 70000 } }, validateForPublish);
+refused("An unknown server group", { ...manifest, groupId: "unknown" }, validateForPublish);
 console.log("Manifest validation passed.");

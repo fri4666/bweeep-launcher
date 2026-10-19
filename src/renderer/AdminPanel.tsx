@@ -1,8 +1,9 @@
+import { PanelSurface } from "./PanelSurface.js";
 import { useEffect, useState } from "react";
 import type { AdminDiagnostics, AdminNames, AdminRelease, NameHold, UuidReservation } from "../shared/admin-types.js";
 import { type AdminNotice, type LauncherNotice, MAX_NOTICE_LENGTH, noticeProblem, tidyNoticeText } from "../shared/notice.js";
 import { SERVER_LACKS_FEATURE_TEXT } from "../shared/server-errors.js";
-import type { MemberSummary } from "../shared/types.js";
+import type { LauncherGroupId, MemberSummary } from "../shared/types.js";
 import { reasonLabel } from "./AuthFailureNotice.js";
 import { ActionMark, errorText, FeedbackToast, useActionFeedback } from "./adminFeedback.js";
 import "./admin.css";
@@ -10,6 +11,7 @@ import "./admin.css";
 type Tab = "members" | "notice" | "names" | "releases" | "diagnostics";
 const tabs: Array<[Tab, string]> = [["members", "멤버"], ["notice", "공지"], ["names", "이름"], ["releases", "서버 팩"], ["diagnostics", "진단"]];
 const noticeProblemText = { empty: "", long: `${MAX_NOTICE_LENGTH}자까지 쓸 수 있어요.`, lines: "두 줄까지 쓸 수 있어요." } as const;
+const groupLabels: Record<LauncherGroupId, string> = { original: "기존 무리", "friend-a": "새 무리 1", "friend-b": "새 무리 2" };
 
 export interface AdminConfirm {
   title: string;
@@ -38,6 +40,7 @@ function formatLeft(value: string, now: number): string {
 
 interface AdminPanelProps {
   selfId: string;
+  embedded?: boolean;
   onClose: () => void;
   confirm: (request: AdminConfirm) => void;
   /** How the main screen learns of a change made here: the notice this admin sees now. */
@@ -45,7 +48,7 @@ interface AdminPanelProps {
 }
 
 /** Admins only: members, the notice, name holds and reservations, server pack versions and join problems. */
-export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPanelProps) {
+export function AdminPanel({ selfId, onClose, confirm, onNoticeChange, embedded }: AdminPanelProps) {
   const [tab, setTab] = useState<Tab>("members");
   const [noticeDraft, setNoticeDraft] = useState("");
   // Who the next notice is for: "all", or a member's id. The list holds every notice shown now.
@@ -186,14 +189,13 @@ export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPa
   for (const release of releases ?? []) packs.set(release.packId, [...(packs.get(release.packId) ?? []), release]);
 
   return (
-    <div className="modalBackdrop" onClick={onClose}>
-      <section className="modal adminModal" role="dialog" aria-modal="true" aria-label="관리" onClick={(event) => event.stopPropagation()}>
+    <PanelSurface embedded={embedded} className="adminModal" label="관리" onClose={onClose}>
         <header className="modalHeader">
           <div>
             <p className="eyebrow">관리자 전용</p>
             <h2>관리</h2>
           </div>
-          <button className="closeButton" onClick={onClose}>닫기</button>
+          {!embedded && <button className="closeButton" onClick={onClose}>닫기</button>}
         </header>
         <div className="modalBody">
           <div className="segmented adminTabs" role="tablist" aria-label="관리 항목">
@@ -211,7 +213,7 @@ export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPa
                     <div className="adminRowText">
                       <strong>{member.name}{self ? " · 나" : ""}</strong>
                       <small>
-                        {member.gameName ?? "이름 없음"}
+                        {groupLabels[member.groupId ?? "original"]} · {member.gameName ?? "이름 없음"}
                         {member.lastPlayedAt ? ` · ${formatAgo(member.lastPlayedAt, now)} 플레이` : ""}
                       </small>
                     </div>
@@ -381,6 +383,7 @@ export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPa
                               {formatWhen(release.createdAt)}
                               {release.gameAuth === "yggdrasil" ? "" : " · 오프라인"}
                               {release.audience === "testers" ? " · 테섭" : ""}
+                              {` · ${groupLabels[release.groupId ?? "original"]}`}
                             </small>
                           </div>
                           {release.active ? (
@@ -461,8 +464,7 @@ export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPa
             </>
           )}
         </div>
-        <FeedbackToast feedback={feedback} onClose={clear} />
-      </section>
-    </div>
+        <FeedbackToast feedback={feedback} onClose={clear} host={embedded ? document.getElementById("settings-feedback") : null} />
+    </PanelSurface>
   );
 }

@@ -1,5 +1,6 @@
 export type LoaderKind = "vanilla" | "neoforge" | "forge" | "fabric";
 export type ServerSoftwareKind = LoaderKind | "paper" | "folia";
+export type LauncherGroupId = "original" | "friend-a" | "friend-b";
 
 export interface PackFile {
   path: string;
@@ -23,6 +24,8 @@ export interface ModpackManifest {
   default?: boolean;
   /** Test manifests are never returned to members without explicit test access. */
   audience?: "members" | "testers";
+  /** Existing manifests without this field belong to the original group. */
+  groupId?: LauncherGroupId;
   version: string;
   minecraftVersion: string;
   java: {
@@ -166,6 +169,7 @@ export interface AccessStatus {
   allowed: boolean;
   isAdmin: boolean;
   testAllowed?: boolean;
+  groupId?: LauncherGroupId;
   reason: string;
   user?: LauncherUser;
   unavailable?: boolean;
@@ -184,6 +188,7 @@ export interface CreatedInvite {
   code: string;
   expiresAt: string;
   maxUses: number;
+  groupId: LauncherGroupId;
 }
 
 export interface InviteSummary {
@@ -192,11 +197,13 @@ export interface InviteSummary {
   maxUses: number;
   uses: number;
   createdAt: string;
+  groupId: LauncherGroupId;
 }
 
 /** Open codes the signed-in member created, with the limits the server enforces. */
 export interface InviteList {
   role: "admin" | "member";
+  groupId: LauncherGroupId;
   maxUsesLimit: number;
   activeLimit: number | null;
   invites: InviteSummary[];
@@ -317,6 +324,7 @@ export interface MemberSummary {
   name: string;
   gameName: string | null;
   role: "admin" | "member";
+  groupId?: LauncherGroupId;
   tester: boolean;
   /** Last launch or server join; missing from servers before 0.1.37. */
   lastPlayedAt?: string | null;

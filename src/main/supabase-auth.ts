@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { app, safeStorage, shell } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { AccessStatus, CreatedInvite, InviteList, LauncherSkin, LauncherUser, MemberSummary, LoginCancellationResult, LoginResult, InviteResult, ModpackManifest, SkinModel } from "../shared/types.js";
+import type { AccessStatus, CreatedInvite, InviteList, LauncherGroupId, LauncherSkin, LauncherUser, MemberSummary, LoginCancellationResult, LoginResult, InviteResult, ModpackManifest, SkinModel } from "../shared/types.js";
 import { parseYggdrasilMetadata, yggdrasilApiRoot, type YggdrasilLaunch } from "./authlib-injector.js";
 import { parseAuthCallback } from "./deep-link.js";
 import { fingerprint } from "./hash.js";
@@ -23,6 +23,7 @@ interface FunctionStatus {
   allowed: boolean;
   isAdmin: boolean;
   testAllowed?: boolean;
+  groupId?: LauncherGroupId;
   reason: string;
   gameName?: string | null;
 }
@@ -42,6 +43,7 @@ interface FunctionCreatedInvite {
   code: string;
   expiresAt: string;
   maxUses: number;
+  groupId: LauncherGroupId;
 }
 
 interface FunctionManifest {
@@ -256,6 +258,7 @@ export class SupabaseAuth {
         allowed: data.allowed,
         isAdmin: data.isAdmin,
         testAllowed: data.testAllowed === true,
+        groupId: data.groupId,
         reason: data.reason,
         user: { ...user, gameName: data.gameName ?? null }
       };
@@ -286,18 +289,18 @@ export class SupabaseAuth {
     return {
       ok: data.ok,
       message: data.message,
-      status: { loggedIn: true, allowed: data.allowed, isAdmin: data.isAdmin, reason: data.message, user }
+      status: { loggedIn: true, allowed: data.allowed, isAdmin: data.isAdmin, groupId: data.groupId, reason: data.message, user }
     };
   }
 
-  async createInvite(user: LauncherUser | null, maxUses: number): Promise<CreatedInvite> {
+  async createInvite(user: LauncherUser | null, maxUses: number, groupId?: LauncherGroupId): Promise<CreatedInvite> {
     if (!user) throw new Error("Discord 로그인이 필요합니다.");
 
     const data = await this.invokeFunction<FunctionCreatedInvite>(
-      { action: "createInvite", maxUses },
+      { action: "createInvite", maxUses, groupId },
       "초대 코드를 만들지 못했습니다."
     );
-    return { id: data.id, code: data.code, expiresAt: data.expiresAt, maxUses: data.maxUses };
+    return { id: data.id, code: data.code, expiresAt: data.expiresAt, maxUses: data.maxUses, groupId: data.groupId };
   }
 
   async listInvites(user: LauncherUser | null): Promise<InviteList> {
@@ -305,6 +308,7 @@ export class SupabaseAuth {
     const data = await this.invokeFunction<InviteList>({ action: "listInvites" }, "초대 코드 목록을 불러오지 못했습니다.");
     return {
       role: data.role === "admin" ? "admin" : "member",
+      groupId: data.groupId,
       maxUsesLimit: typeof data.maxUsesLimit === "number" ? data.maxUsesLimit : 1,
       activeLimit: typeof data.activeLimit === "number" ? data.activeLimit : null,
       invites: Array.isArray(data.invites) ? data.invites : []
@@ -345,9 +349,7 @@ export class SupabaseAuth {
   async listManifests(user: LauncherUser | null): Promise<ModpackManifest[]> {
     if (!user) throw new Error("Discord 로그인이 필요합니다.");
     const data = await this.invokeFunction<FunctionCatalog>({ action: "catalog" }, "서버 목록을 가져오지 못했습니다.");
-    if (!Array.isArray(data.manifests) || data.manifests.length === 0) {
-      throw new Error("사용 가능한 서버 모드팩이 없습니다.");
-    }
+    if (!Array.isArray(data.manifests)) throw new Error("서버 목록 형식이 올바르지 않습니다.");
     return data.manifests.map(({ manifest }) => manifest);
   }
 
@@ -363,7 +365,7 @@ export class SupabaseAuth {
   }
 
   /** Server-issued identity for servers that verify players through the Bweeep Yggdrasil API. */
-  async createYggdrasilLaunch(user: LauncherUser | null): Promise<{ identity: LaunchIdentity; launch: YggdrasilLaunch }> {
+  async createYggdrasilLaunch(user: LauncherUser | null, manifest: ModpackManifest): Promise<{ identity: LaunchIdentity; launch: YggdrasilLaunch }> {
     if (!user) throw new Error("런처 로그인이 필요합니다.");
     const data = await this.invokeFunction<FunctionGameAuth>({ action: "gameAuth" }, "게임 접속 토큰을 받지 못했습니다.");
     if (!/^[A-Za-z0-9_-]{43}$/.test(data.accessToken ?? "") || !/^[0-9a-f]{32}$/.test(data.profile?.id ?? "") || !data.profile.name) {
@@ -371,7 +373,7 @@ export class SupabaseAuth {
     }
     const config = await readConfig();
     if (!config.url) throw new Error("Supabase 설정이 필요합니다.");
-    const apiRoot = yggdrasilApiRoot(config.url);
+    const apiRoot = yggdrasilApiRoot(config.url, manifest.groupId, manifest.audience === "testers");
     const response = await fetch(apiRoot);
     if (!response.ok) throw new Error(`로그인 서버 정보를 받지 못했습니다. (서버 응답 ${response.status})`);
     return {

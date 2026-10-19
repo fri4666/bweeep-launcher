@@ -2,6 +2,9 @@ import path from "node:path";
 import type { ModpackManifest } from "../shared/types.js";
 
 export function assertManifest(manifest: ModpackManifest): void {
+  if (manifest.groupId !== undefined && !["original", "friend-a", "friend-b"].includes(manifest.groupId)) {
+    throw new Error("서버 무리 정보가 올바르지 않습니다.");
+  }
   if (
     manifest.schemaVersion !== 1 ||
     !Array.isArray(manifest.files) ||
