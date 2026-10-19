@@ -50,14 +50,16 @@ users can inspect.
    accessible. The main workflow builds both the old NSIS bridge and the new
    Supabase file release. It publishes the beta channel for testers; the stable
    channel is held until the manual promotion workflow runs.
-6. Verify an installed v0.1.39 upgrades to v0.1.40 from GitHub. Verify a
-   v0.1.40 test build receives the next beta from Supabase, downloads only
-   changed files, waits for an active game, then restarts into the new version.
-7. Promote stable. Confirm the Supabase download page, stable channel,
-   beta channel, and patch notes are reachable without GitHub authentication.
-   Keep the old public GitHub release path for a migration window. After the
-   repository becomes private, clients that missed v0.1.40 need a manual
-   Supabase installer download.
+6. Install the published v0.1.40 beta, trigger another beta build, and
+   verify it updates from Supabase by downloading only changed files, waiting
+   for an active game, replacing files, and restarting. Check protected
+   Windows install paths before promoting the stable release.
+7. Promote stable after the beta checks pass. Then verify an installed
+   v0.1.39 upgrades to v0.1.40 through the still-public GitHub release.
+   Confirm the Supabase download page, stable channel, beta channel, and
+   patch notes work without GitHub authentication. Keep the public GitHub
+   release available for a migration window before making the repository
+   private. Clients that missed v0.1.40 will then need the Supabase installer.
 
 The existing GitHub release workflow may continue to create private releases
 for build records after the repository is private. The new launcher does not
