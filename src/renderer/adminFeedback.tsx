@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 
 /** How long the green check stays after an action worked. */
 export const DONE_VISIBLE_MS = 2500;
@@ -92,8 +91,8 @@ export function ActionMark({ state }: { state: "busy" | "done" | null }) {
 }
 
 /** Shown over the bottom of the panel so nothing moves when it appears. */
-export function FeedbackToast({ feedback, onClose, host }: { feedback: Feedback | null; onClose: () => void; host?: HTMLElement | null }) {
-  const toast = (
+export function FeedbackToast({ feedback, onClose }: { feedback: Feedback | null; onClose: () => void }) {
+  return (
     <div className="adminToastSlot" aria-live="polite">
       {feedback && (
         <div className={`adminToast${feedback.error ? " isError" : " isOk"}`} role={feedback.error ? "alert" : "status"}>
@@ -104,5 +103,4 @@ export function FeedbackToast({ feedback, onClose, host }: { feedback: Feedback 
       )}
     </div>
   );
-  return host ? createPortal(toast, host) : toast;
 }

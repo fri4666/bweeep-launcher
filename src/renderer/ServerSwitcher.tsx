@@ -1,4 +1,6 @@
+import { useEffect, useRef, useState } from "react";
 import type { ServerPreset, ServerStatus } from "../shared/types.js";
+import type { ServerStatuses } from "./useServerStatuses.js";
 import { formatOpenTime } from "../shared/open-hours.js";
 import "./play.css";
 
@@ -17,14 +19,132 @@ function statusState(status: ServerStatus): "online" | "sleeping" | "starting" |
   return status.sleep ?? "online";
 }
 
-/** The server rail carries only the connection summary for each server. */
-export function ServerConnectionBadge({ status }: { status: ServerStatus | undefined }) {
-  const state = status ? statusState(status) : "checking";
-  const text = state === "online" ? status?.players ? `${status.players.online}명 접속 중` : "접속 가능"
-    : state === "sleeping" ? "대기 중" : state === "starting" ? "시작 중"
+// A sleeping server starts by itself when someone presses Play.
+const SLEEP_TEXT = { sleeping: "쉬는 중", starting: "켜는 중" } as const;
+
+function playerCount(status: ServerStatus | undefined): string {
+  if (!status) return "";
+  if (!status.online) return "꺼짐";
+  if (status.closed) return "닫힘";
+  if (status.sleep) return SLEEP_TEXT[status.sleep];
+  return status.players ? `${status.players.online}/${status.players.max}` : "켜짐";
+}
+
+/**
+ * The selected server in the top bar: on/off, players and ping. With more
+ * than one server it opens a short list to switch servers right there.
+ */
+export function ServerSwitcher({ servers, selected, statuses, catalogState, locked, onSelect, onReloadCatalog }: {
+  servers: ServerPreset[];
+  selected: ServerPreset | undefined;
+  statuses: ServerStatuses;
+  catalogState: "loading" | "ready" | "error";
+  /** No switching while a game is starting or running. */
+  locked: boolean;
+  onSelect: (id: string) => void;
+  onReloadCatalog: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const status = selected ? statuses.byId[selected.id] : undefined;
+  const state = serverState(catalogState, selected, status);
+  const canSwitch = servers.length > 1 && !locked;
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!canSwitch) setOpen(false);
+  }, [canSwitch]);
+
+  const title = state === "catalogError" ? "서버 목록 오류" : state === "loading" ? "서버 불러오는 중" : selected?.name ?? "";
+  const detail = state === "online" && status
+    ? [status.players ? `${status.players.online}/${status.players.max}명` : null, `${status.latencyMs ?? "-"}ms`].filter(Boolean).join(" · ")
+    : state === "sleeping" || state === "starting" ? SLEEP_TEXT[state]
     : state === "closed" && status?.closed ? `${formatOpenTime(status.closed.nextOpen)} 열림`
-    : state === "offline" ? "오프라인" : "상태 확인 중";
-  return <span className={`libraryConnection is-${state}`} title={text}><i className="statusDot" aria-hidden="true" />{text}</span>;
+    : state === "offline" ? "꺼짐"
+    : state === "checking" ? "확인 중"
+    : state === "catalogError" ? "목록을 못 받았어요"
+    : "잠시만요";
+  const checkedTime = statuses.checkedAt ? new Date(statuses.checkedAt).toLocaleTimeString("ko-KR") : null;
+
+  return (
+    <div className="serverSwitcher" ref={rootRef}>
+      <div className={`serverPill is-${state}`}>
+        <button
+          type="button"
+          className="serverPillButton"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={`${title} · ${detail}`}
+          title={[status?.version ? `Minecraft ${status.version}` : null, checkedTime ? `${checkedTime} 확인` : null].filter(Boolean).join(" · ") || undefined}
+          disabled={!canSwitch}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="statusDot" />
+          <div>
+            <strong>{title}</strong>
+            <small>{detail}</small>
+          </div>
+          {servers.length > 1 && (
+            <svg className="serverPillCaret" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" /></svg>
+          )}
+        </button>
+        {(state === "offline" || state === "catalogError") && (
+          <button
+            className="pillAction"
+            disabled={statuses.checking}
+            onClick={() => state === "catalogError" ? onReloadCatalog() : statuses.refresh()}
+          >
+            {statuses.checking ? "확인 중" : "다시 확인"}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="serverMenu" role="listbox" aria-label="서버">
+          {servers.map((server) => {
+            const itemStatus = statuses.byId[server.id];
+            return (
+              <button
+                key={server.id}
+                type="button"
+                role="option"
+                aria-selected={server.id === selected?.id}
+                className={`serverMenuItem is-${itemStatus ? statusState(itemStatus) : "checking"}`}
+                onClick={() => {
+                  onSelect(server.id);
+                  setOpen(false);
+                }}
+              >
+                <span className="statusDot" />
+                <span className="serverMenuName">
+                  {server.name}
+                  {server.environment === "test" && <small>테섭</small>}
+                </span>
+                <span className="serverMenuCount">{playerCount(itemStatus)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Shown on the launch button when the selected server is off. */

@@ -22,7 +22,7 @@ import { createSharedOptionsSync } from "./shared-options.js";
 import { createBackgroundLane, startBesideSync, type BackgroundLane } from "./launch-progress.js";
 import type { PreparedGame } from "./minecraft-runtime.js";
 import { defaultInstanceRoot, getLauncherChannel, launcherProtocolScheme, launcherWindowTitle } from "./launcher-channel.js";
-import type { GameStatus, LauncherGroupId, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
+import type { GameStatus, LauncherUser, LogTarget, ModTarget, ServerPreset, SkinModel, SkinState, SyncProgress, UserContentKind } from "../shared/types.js";
 import { findBlockedJars, installMod, listPersonalMods, refetchPreviousMods, removeMod, searchMods, setModrinthUserAgent, updateMod } from "./modrinth.js";
 import { bundledFeatureMods } from "./client-feature-mods.js";
 import { connectionGuardEnabled, connectionGuardJvmArgs, ensureConnectionGuard } from "./connection-guard.js";
@@ -482,8 +482,8 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle("access:redeemInvite", (_event, code: string) => auth.redeemInvite(sessionUser, code));
-  ipcMain.handle("access:createInvite", (_event, maxUses: unknown, groupId: unknown) =>
-    auth.createInvite(sessionUser, typeof maxUses === "number" ? maxUses : 1, typeof groupId === "string" ? groupId as LauncherGroupId : undefined)
+  ipcMain.handle("access:createInvite", (_event, maxUses: unknown) =>
+    auth.createInvite(sessionUser, typeof maxUses === "number" ? maxUses : 1)
   );
   ipcMain.handle("access:listInvites", () => auth.listInvites(sessionUser));
   ipcMain.handle("access:revokeInvite", (_event, inviteId: unknown) => {
@@ -685,7 +685,7 @@ app.whenReady().then(async () => {
       // Every server checks players through the Bweeep account API (requireBweeepAccounts above).
       const authorizing: Promise<LaunchAuthorization> = (async () => {
         await writeGameLog("launch.authorization.requested", { provider: "yggdrasil" });
-        const { identity, launch } = await auth.createYggdrasilLaunch(launchUser, manifest);
+        const { identity, launch } = await auth.createYggdrasilLaunch(launchUser);
         gameSession.started(identity.accessToken, startedAt);
         const agent = await ensureAuthlibInjector(path.join(app.getAppPath(), "resources", "authlib-injector"), packDir);
         await writeGameLog("launch.authorization.created", { provider: "yggdrasil", apiRoot: launch.apiRoot });

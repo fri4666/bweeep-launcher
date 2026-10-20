@@ -137,14 +137,13 @@ export interface AdminMember {
   name: string;
   gameName: string | null;
   role: "admin" | "member";
-  groupId: "original" | "friend-a" | "friend-b";
   tester: boolean;
   lastPlayedAt: string | null;
 }
 
 export async function listMembers(db: Db, names = new Names(db)): Promise<AdminMember[]> {
   const [members, testers, profiles, accounts, history] = await Promise.all([
-    db.from("launcher_members").select("user_id, role, group_id, invited_at").order("invited_at"),
+    db.from("launcher_members").select("user_id, role, invited_at").order("invited_at"),
     db.from("launcher_environment_access").select("user_id").eq("environment", "test"),
     db.from("launcher_profiles").select("user_id, game_name"),
     db.from("launcher_minecraft_accounts").select("user_id, game_name"),
@@ -163,7 +162,6 @@ export async function listMembers(db: Db, names = new Names(db)): Promise<AdminM
     name: await names.get(member.user_id),
     gameName: saved.get(member.user_id) ?? played.get(member.user_id) ?? null,
     role: member.role === "admin" ? "admin" as const : "member" as const,
-    groupId: member.group_id,
     tester: member.role === "admin" || testerIds.has(member.user_id),
     lastPlayedAt: lastPlayed.get(member.user_id) ?? null
   })));
@@ -196,7 +194,7 @@ async function nameState(db: Db, actorId: string, names: Names) {
 async function releaseState(db: Db) {
   const releases = rows(await db
     .from("launcher_releases")
-    .select("id, pack_id, version, active, created_at, gameAuth:manifest->>gameAuth, name:manifest->>name, audience:manifest->>audience, groupId:manifest->>groupId")
+    .select("id, pack_id, version, active, created_at, gameAuth:manifest->>gameAuth, name:manifest->>name, audience:manifest->>audience")
     .order("pack_id")
     .order("created_at", { ascending: false })
     .limit(300), "releases");
@@ -209,7 +207,6 @@ async function releaseState(db: Db) {
       active: release.active === true,
       gameAuth: release.gameAuth === "yggdrasil" ? "yggdrasil" : "offline",
       audience: release.audience === "testers" ? "testers" : "members",
-      groupId: release.groupId === "friend-a" || release.groupId === "friend-b" ? release.groupId : "original",
       createdAt: release.created_at
     }))
   };

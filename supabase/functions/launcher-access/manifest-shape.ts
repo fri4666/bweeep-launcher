@@ -15,8 +15,6 @@ export interface ModpackManifest {
   id: string;
   name: string;
   audience?: "members" | "testers";
-  /** Omitted on older manifests; those belong to the original group. */
-  groupId?: "original" | "friend-a" | "friend-b";
   gameAuth?: "offline" | "yggdrasil";
   version: string;
   minecraftVersion: string;
@@ -29,8 +27,7 @@ export interface ModpackManifest {
 export function isModpackManifest(value: unknown): value is ModpackManifest {
   if (!value || typeof value !== "object") return false;
   const manifest = value as Partial<ModpackManifest>;
-  return (manifest.groupId === undefined || ["original", "friend-a", "friend-b"].includes(manifest.groupId)) &&
-    typeof manifest.id === "string" && typeof manifest.minecraftVersion === "string" &&
+  return typeof manifest.id === "string" && typeof manifest.minecraftVersion === "string" &&
     typeof manifest.loader?.kind === "string" && typeof manifest.loader.version === "string" &&
     manifest.java !== undefined && Number.isSafeInteger(manifest.java.majorVersion) && manifest.java.majorVersion >= 8 &&
     typeof manifest.java.component === "string" && Array.isArray(manifest.files) && manifest.files.every((file) =>

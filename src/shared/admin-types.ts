@@ -52,7 +52,6 @@ export interface AdminRelease {
   active: boolean;
   gameAuth: "offline" | "yggdrasil";
   audience: "members" | "testers";
-  groupId?: "original" | "friend-a" | "friend-b";
   createdAt: string;
 }
 

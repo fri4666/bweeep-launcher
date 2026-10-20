@@ -1,7 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { authOutageMessages, classifyAuthOutage } from "../shared/auth-outage.js";
-import type { AccessStatus, AuthOutage, LauncherGroupId, LauncherUser, ModpackManifest } from "../shared/types.js";
+import type { AccessStatus, AuthOutage, LauncherUser, ModpackManifest } from "../shared/types.js";
 import { checkServer } from "./server-status.js";
 
 /** launcher-access (or Supabase auth) did not answer, or answered with a gateway error. */
@@ -15,7 +15,7 @@ export class AuthServiceUnavailableError extends Error {
 interface Snapshot {
   schemaVersion: 1;
   user: LauncherUser;
-  access?: { allowed: boolean; isAdmin: boolean; testAllowed: boolean; groupId?: LauncherGroupId };
+  access?: { allowed: boolean; isAdmin: boolean; testAllowed: boolean };
   manifests?: ModpackManifest[];
   savedAt: string;
 }
@@ -56,17 +56,14 @@ export class OfflineAccess {
     } catch (error) {
       if (!(error instanceof AuthServiceUnavailableError)) throw error;
       const snapshot = await this.read();
-      if (snapshot?.user.id !== user.id || !Array.isArray(snapshot.manifests)) throw error;
+      if (snapshot?.user.id !== user.id || !snapshot.manifests?.length) throw error;
       return snapshot.manifests;
     }
   }
 
   async rememberAccess(status: AccessStatus): Promise<void> {
     if (!status.loggedIn || !status.user) return;
-    const access = {
-      allowed: status.allowed, isAdmin: status.isAdmin, testAllowed: status.testAllowed === true,
-      ...(status.groupId ? { groupId: status.groupId } : {})
-    };
+    const access = { allowed: status.allowed, isAdmin: status.isAdmin, testAllowed: status.testAllowed === true };
     await this.update(status.user, (snapshot) => ({ ...snapshot, user: status.user!, access }));
   }
 

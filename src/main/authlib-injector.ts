@@ -1,6 +1,5 @@
 import path from "node:path";
 import { ensureVerifiedCopy } from "./verified-copy.js";
-import type { LauncherGroupId } from "../shared/types.js";
 
 /**
  * authlib-injector redirects Minecraft's login and skin requests to the
@@ -20,9 +19,8 @@ export interface YggdrasilLaunch {
   metadata: string;
 }
 
-export function yggdrasilApiRoot(supabaseUrl: string, groupId: LauncherGroupId = "original", testersOnly = false): string {
-  const root = `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/yggdrasil`;
-  return `${root}${groupId === "original" ? "" : `/groups/${groupId}`}${testersOnly ? "/testers" : ""}`;
+export function yggdrasilApiRoot(supabaseUrl: string): string {
+  return `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/yggdrasil`;
 }
 
 /** Java cannot load an agent from inside app.asar, so a verified copy is kept per instance. */

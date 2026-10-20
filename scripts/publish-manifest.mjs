@@ -166,9 +166,6 @@ export function validateForPublish(manifest) {
   if (manifest.audience !== undefined && manifest.audience !== "members" && manifest.audience !== "testers") {
     throw new Error(`audience "${manifest.audience}" 는 members 또는 testers 여야 합니다.`);
   }
-  if (manifest.groupId !== undefined && !["original", "friend-a", "friend-b"].includes(manifest.groupId)) {
-    throw new Error(`groupId "${manifest.groupId}" 는 original, friend-a, friend-b 중 하나여야 합니다.`);
-  }
   if (manifest.default !== undefined && typeof manifest.default !== "boolean") throw new Error("default 는 true/false 여야 합니다.");
 
   const { host, port } = manifest.server ?? {};

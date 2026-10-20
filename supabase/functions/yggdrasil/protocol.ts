@@ -60,25 +60,16 @@ export function toSignedUuid(unsigned: string): string {
  * agent at /yggdrasil/testers, so only testers and admins pass hasJoined.
  */
 export type Audience = "members" | "testers";
-export type GroupId = "original" | "friend-a" | "friend-b";
 
-function apiSegments(pathname: string): { audience: Audience; groupId: GroupId; segments: string[] } {
+function apiSegments(pathname: string): { audience: Audience; segments: string[] } {
   const segments = pathname.split("/").filter(Boolean);
   const base = segments.indexOf("yggdrasil");
   const rest = base >= 0 ? segments.slice(base + 1) : segments;
-  const groupId: GroupId = rest[0] === "groups" && (rest[1] === "friend-a" || rest[1] === "friend-b") ? rest[1] : "original";
-  const scoped = groupId === "original" ? rest : rest.slice(2);
-  return scoped[0] === "testers"
-    ? { audience: "testers", groupId, segments: scoped.slice(1) }
-    : { audience: "members", groupId, segments: scoped };
+  return rest[0] === "testers" ? { audience: "testers", segments: rest.slice(1) } : { audience: "members", segments: rest };
 }
 
 export function routeAudience(pathname: string): Audience {
   return apiSegments(pathname).audience;
-}
-
-export function routeGroup(pathname: string): GroupId {
-  return apiSegments(pathname).groupId;
 }
 
 /** The function is served below /yggdrasil (or /yggdrasil/testers); everything after it is the API path. */

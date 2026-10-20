@@ -25,14 +25,6 @@ export function usesBweeepAccounts(manifest: ModpackManifest): boolean {
   return manifest.gameAuth === "yggdrasil";
 }
 
-export function canViewManifest(
-  manifest: ModpackManifest,
-  options: { testAllowed: boolean; groupId: string; isAdmin: boolean }
-): boolean {
-  if (manifest.audience === "testers" && !options.testAllowed) return false;
-  return options.isAdmin || (manifest.groupId ?? "original") === options.groupId;
-}
-
 /**
  * The newest active release of each pack, as the catalog lists it. One broken
  * or offline release is skipped instead of hiding every server.
@@ -40,7 +32,7 @@ export function canViewManifest(
  */
 export function selectCatalog(
   rows: CatalogRow[],
-  options: { testAllowed: boolean; groupId: string; isAdmin: boolean }
+  options: { testAllowed: boolean }
 ): { entries: CatalogEntry[]; skipped: SkippedRelease[] } {
   const seen = new Set<string>();
   const entries: CatalogEntry[] = [];
@@ -56,7 +48,7 @@ export function selectCatalog(
       skipped.push({ packId: row.pack_id, version: row.version, reason: "offline" });
       continue;
     }
-    if (!canViewManifest(row.manifest, options)) continue;
+    if (row.manifest.audience === "testers" && !options.testAllowed) continue;
     // Cards need metadata only. Download URLs are signed when a player
     // actually launches the selected pack.
     entries.push({

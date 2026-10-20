@@ -85,12 +85,6 @@ assert.equal(await offlineAccess({ savedUserId: bob.id }).restoreUser(async () =
 assert.deepEqual(await offlineAccess().restoreUser(async () => bob), bob);
 await assert.rejects(offlineAccess().restoreUser(async () => { throw new Error("broken"); }), /broken/);
 
-// A newly invited group with no assigned server keeps its empty catalog during an outage.
-await access.listManifests(alice, async () => []);
-await access.rememberAccess({ loggedIn: true, allowed: true, isAdmin: false, groupId: "friend-a", reason: "ok", user: alice });
-assert.deepEqual(await access.listManifests(alice, async () => { throw down(); }), []);
-assert.equal((await access.accessDuringOutage(alice, down())).groupId, "friend-a");
-
 // Another account never sees this one's list.
 await assert.rejects(offlineAccess().listManifests(bob, async () => { throw down(); }), AuthServiceUnavailableError);
 await offlineAccess().listManifests(bob, async () => [pack("bob-only")]);

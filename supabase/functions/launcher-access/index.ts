@@ -2,7 +2,7 @@ import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
 import { ADMIN_ACTIONS, type AdminRequest, handleAdminRequest, isAdminRequest, parseAdminRequest } from "./admin.ts";
 import { getBearerToken, getLauncherVersion, getSessionId, isLauncherAtLeast, MIN_YGGDRASIL_LAUNCHER } from "./authorization.ts";
-import { canViewManifest, isModpackManifest, type ModpackManifest, selectCatalog, usesBweeepAccounts } from "./catalog.ts";
+import { isModpackManifest, type ModpackManifest, selectCatalog, usesBweeepAccounts } from "./catalog.ts";
 import { retryingFetch } from "./db-fetch.ts";
 import { isDiagnosticsLog, uploadDiagnostics } from "./diagnostics.ts";
 import { gameNameTakenMessage, isGameNameTaken, OFFLINE_SERVER } from "./game-name.ts";
@@ -32,7 +32,7 @@ type RequestBody =
   | { action: "status" }
   | { action: "notice" }
   | { action: "redeem"; code: string }
-  | { action: "createInvite"; maxUses?: number; groupId?: string }
+  | { action: "createInvite"; maxUses?: number }
   | { action: "listInvites" }
   | { action: "revokeInvite"; inviteId: string }
   | { action: "catalog" }
@@ -199,7 +199,7 @@ async function handleRequest(request: Request): Promise<Response> {
       { data: membership, error: membershipError }
     ] = await Promise.all([
       supabaseAdmin.rpc("launcher_auth_session_active", { p_session_id: sessionId, p_user_id: userId }),
-      supabaseAdmin.from("launcher_members").select("role, group_id").eq("user_id", userId).maybeSingle()
+      supabaseAdmin.from("launcher_members").select("role").eq("user_id", userId).maybeSingle()
     ]);
 
     if (sessionError) {
@@ -242,7 +242,6 @@ async function handleRequest(request: Request): Promise<Response> {
         allowed: Boolean(membership),
         isAdmin: membership?.role === "admin",
         testAllowed,
-        groupId: membership?.group_id ?? null,
         reason: membership ? "런처 사용 권한이 있습니다." : "초대 코드가 필요합니다.",
         gameName: profile?.game_name ?? null
       });
@@ -257,16 +256,11 @@ async function handleRequest(request: Request): Promise<Response> {
       });
       if (error) return json({ message: "초대 코드를 사용하는 중 오류가 발생했습니다." }, 500);
       const outcome = data?.[0];
-      const { data: redeemedMember, error: redeemedMemberError } = outcome?.ok
-        ? await supabaseAdmin.from("launcher_members").select("group_id").eq("user_id", userId).single()
-        : { data: null, error: null };
-      if (redeemedMemberError) return json({ message: "초대 결과를 확인하지 못했습니다." }, 500);
       return json({
         ok: Boolean(outcome?.ok),
         message: outcome?.message ?? "초대 결과를 확인하지 못했습니다.",
         allowed: Boolean(outcome?.ok),
-        isAdmin: outcome?.member_role === "admin",
-        groupId: redeemedMember?.group_id ?? null
+        isAdmin: outcome?.member_role === "admin"
       }, outcome?.ok ? 200 : 400);
     }
 
@@ -516,8 +510,8 @@ async function handleRequest(request: Request): Promise<Response> {
       if (!isModpackManifest(data.manifest)) {
         return json({ message: "모드팩 정보 형식이 올바르지 않습니다." }, 500);
       }
-      if (!canViewManifest(data.manifest, { testAllowed, groupId: membership.group_id, isAdmin: membership.role === "admin" })) {
-        return json({ message: "이 무리에 배정되지 않은 서버입니다." }, 403);
+      if (data.manifest.audience === "testers" && !testAllowed) {
+        return json({ message: "테스트 서버는 지정된 테스터만 접속할 수 있습니다." }, 403);
       }
       if (!usesBweeepAccounts(data.manifest)) return json(OFFLINE_SERVER, 409);
       if (!supportsYggdrasil) return json(OUTDATED_LAUNCHER, 426);
@@ -536,9 +530,7 @@ async function handleRequest(request: Request): Promise<Response> {
       // Releases are append-only. Keep the most recent active manifest for
       // each pack, so a pack update needs no launcher release. A broken or
       // offline-mode release is left out instead of hiding every server.
-      const { entries: visible, skipped } = selectCatalog(data ?? [], {
-        testAllowed, groupId: membership.group_id, isAdmin: membership.role === "admin"
-      });
+      const { entries: visible, skipped } = selectCatalog(data ?? [], { testAllowed });
       for (const release of skipped) console.error("catalog release skipped", release);
       // Older launchers ignore gameAuth and would be turned away by the server
       // with no explanation, so they are asked to update first.
@@ -551,7 +543,7 @@ async function handleRequest(request: Request): Promise<Response> {
     const role: InviteRole = membership.role === "admin" ? "admin" : "member";
     const { data: ownInvites, error: ownInvitesError } = await supabaseAdmin
       .from("launcher_invites")
-      .select("id, expires_at, max_uses, uses, revoked_at, created_at, group_id")
+      .select("id, expires_at, max_uses, uses, revoked_at, created_at")
       .eq("created_by", userId)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -565,7 +557,6 @@ async function handleRequest(request: Request): Promise<Response> {
       const policy = invitePolicy(role);
       return json({
         role,
-        groupId: membership.group_id,
         maxUsesLimit: policy.maxUsesLimit,
         activeLimit: policy.activeLimit,
         invites: openInvites.map((invite) => ({
@@ -573,8 +564,7 @@ async function handleRequest(request: Request): Promise<Response> {
           expiresAt: invite.expires_at,
           maxUses: invite.max_uses,
           uses: invite.uses,
-          createdAt: invite.created_at,
-          groupId: invite.group_id
+          createdAt: invite.created_at
         }))
       });
     }
@@ -594,21 +584,16 @@ async function handleRequest(request: Request): Promise<Response> {
 
     const decision = decideInvite(role, body.maxUses, openInvites.length);
     if (!decision.ok) return json({ message: decision.message }, 409);
-    const groupId = role === "admin" ? (body.groupId ?? membership.group_id) : membership.group_id;
-    if (!["original", "friend-a", "friend-b"].includes(groupId)) {
-      return json({ message: "초대할 무리가 올바르지 않습니다." }, 400);
-    }
     const code = createInviteCode();
     const expiresAt = new Date(Date.now() + decision.expiresInDays * 86_400_000).toISOString();
     const { data: inserted, error } = await supabaseAdmin.from("launcher_invites").insert({
       code_hash: await sha256(code),
       created_by: userId,
       expires_at: expiresAt,
-      max_uses: decision.maxUses,
-      group_id: groupId
+      max_uses: decision.maxUses
     }).select("id").single();
     if (error) return json({ message: "초대 코드를 만들지 못했습니다." }, 500);
-    return json({ id: inserted.id, code, expiresAt, maxUses: decision.maxUses, groupId });
+    return json({ id: inserted.id, code, expiresAt, maxUses: decision.maxUses });
 }
 
 function normalizeCode(value: unknown): string | null {
@@ -639,8 +624,7 @@ function isRequestBody(value: unknown): value is RequestBody {
   }
   if (body.action === "listInvites") return true;
   if (body.action === "revokeInvite") return typeof body.inviteId === "string" && /^[0-9a-f-]{36}$/i.test(body.inviteId);
-  if (body.action === "createInvite") return body.groupId === undefined || typeof body.groupId === "string";
-  return false;
+  return body.action === "createInvite";
 }
 
 function createInviteCode(): string {

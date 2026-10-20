@@ -1,4 +1,3 @@
-import { PanelSurface } from "./PanelSurface.js";
 import { useEffect, useState } from "react";
 import type { PatchNote, PatchNotes, ReleaseNoteSection } from "../shared/types.js";
 
@@ -88,7 +87,7 @@ function VersionTags({ note, currentVersion }: { note: PatchNote; currentVersion
 }
 
 /** Release notes of recent versions, newest first, like a game's patch notes page. */
-export function PatchNotesPanel({ onClose, embedded }: { onClose: () => void; embedded?: boolean }) {
+export function PatchNotesPanel({ onClose }: { onClose: () => void }) {
   const [patchNotes, setPatchNotes] = useState<PatchNotes | null>(null);
   const [error, setError] = useState("");
   const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
@@ -119,13 +118,14 @@ export function PatchNotesPanel({ onClose, embedded }: { onClose: () => void; em
   }
 
   return (
-    <PanelSurface embedded={embedded} className="patchNotesModal" label="패치노트" onClose={onClose}>
+    <div className="modalBackdrop" onClick={onClose}>
+      <section className="modal patchNotesModal" role="dialog" aria-modal="true" aria-label="패치노트" onClick={(event) => event.stopPropagation()}>
         <header className="modalHeader">
           <div>
             <p className="eyebrow">패치노트</p>
             <h2>업데이트 소식</h2>
           </div>
-          {!embedded && <button className="closeButton" onClick={onClose}>닫기</button>}
+          <button className="closeButton" onClick={onClose}>닫기</button>
         </header>
         <div className="modalBody">
           {notice && <p className="noticeBar isInfo" role="status">{notice}</p>}
@@ -170,6 +170,7 @@ export function PatchNotesPanel({ onClose, embedded }: { onClose: () => void; em
             </div>
           )}
         </div>
-    </PanelSurface>
+      </section>
+    </div>
   );
 }

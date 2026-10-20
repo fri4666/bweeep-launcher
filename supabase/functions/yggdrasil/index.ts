@@ -11,7 +11,6 @@ import {
   parseRoute,
   type ProfileRow,
   routeAudience,
-  routeGroup,
   serializeProfile,
   tokenHash,
   toSignedUuid,
@@ -115,21 +114,6 @@ async function handleRequest(request: Request): Promise<Response> {
           p_server_id: serverId,
           p_testers_only: routeAudience(url.pathname) === "testers"
         });
-        return new Response(null, { status: 204 });
-      }
-      const { data: account, error: accountError } = await admin.from("launcher_minecraft_accounts")
-        .select("user_id").eq("minecraft_uuid", row.minecraft_uuid).single();
-      if (accountError || !account) {
-        console.error("yggdrasil group account lookup failed", accountError);
-        return yggdrasilError(500, "InternalServerError", "Could not verify the server group.");
-      }
-      const { data: member, error: memberError } = await admin.from("launcher_members")
-        .select("role, group_id").eq("user_id", account.user_id).single();
-      if (memberError || !member) {
-        console.error("yggdrasil group membership lookup failed", memberError);
-        return yggdrasilError(500, "InternalServerError", "Could not verify the server group.");
-      }
-      if (member.role !== "admin" && member.group_id !== routeGroup(url.pathname)) {
         return new Response(null, { status: 204 });
       }
       const { signingKey } = await signingKeys(admin);

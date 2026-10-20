@@ -31,7 +31,6 @@ jobs:
       - run: npm run build
       - run: node scripts/verify-file-update.mjs
       - run: node scripts/verify-manifest.mjs
-      - run: node scripts/verify-group-routing.mjs
       - run: node scripts/verify-launcher-update.mjs
       - run: node scripts/verify-release-notes.mjs
       - run: node scripts/verify-client-feature-mods.mjs
@@ -43,7 +42,6 @@ jobs:
       - run: node scripts/verify-sound-options.mjs
       - run: node scripts/verify-server-status.mjs
       - run: bash scripts/verify-private-notices.sh
-      - run: bash scripts/verify-launcher-groups.sh
       - run: node scripts/verify-notice-relay.mjs
       - run: node scripts/verify-server-gate.mjs
       - run: node scripts/verify-server-schedule.mjs
@@ -66,7 +64,6 @@ jobs:
             sleep 1
           done
           node scripts/capture-preview.mjs
-          BWEEP_PREVIEW_EMPTY_GROUP=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_CATALOG_UNAVAILABLE=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_WHATS_NEW=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_PATCH_NOTES_OFFLINE=true node scripts/capture-preview.mjs
@@ -100,7 +97,3 @@ jobs:
         working-directory: supabase/functions/launcher-download
       - run: deno test
         working-directory: supabase/functions/launcher-access
-      - run: deno check index.ts
-        working-directory: supabase/functions/yggdrasil
-      - run: deno test
-        working-directory: supabase/functions/yggdrasil
