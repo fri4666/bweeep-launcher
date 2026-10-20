@@ -70,6 +70,7 @@ jobs:
         if: steps.version.outputs.published != 'True'
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           npm ci
           npm run typecheck
           npm run verify:deep-link
@@ -88,6 +89,7 @@ jobs:
           BWEEP_BETA_BUILD: ${{ steps.version.outputs.beta_build }}
           BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           npm run package:win -- --publish never
           npm run package:win:beta -- --publish never
           npm run package:win:arm64 -- --publish never
@@ -104,6 +106,7 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           node scripts/create-file-release.mjs release-installer/win-unpacked $env:VERSION stable x64 release-installer/file-update-stable.json
           node scripts/create-file-release.mjs release-installer/win-unpacked $env:VERSION beta x64 release-installer/file-update-beta-channel.json
           node scripts/create-file-release.mjs release-installer-beta/win-unpacked $env:BETA_VERSION beta x64 release-installer-beta/file-update-beta.json

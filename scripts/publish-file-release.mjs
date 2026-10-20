@@ -40,14 +40,31 @@ if (mode === "files") {
       if (existingInfo.error && String(existingInfo.error.statusCode) !== "404") {
         throw new Error(`cannot inspect ${objectPath}: ${existingInfo.error.message}`);
       }
-      const { error } = await bucket.upload(objectPath, piece, { contentType: "application/octet-stream", upsert: false });
-      if (error) {
-        const existing = await bucket.download(objectPath);
-        if (existing.error || !existing.data ||
-            createHash("sha256").update(Buffer.from(await existing.data.arrayBuffer())).digest("hex") !== createHash("sha256").update(piece).digest("hex")) {
-          throw new Error(`upload failed for ${objectPath}: ${error.message}`);
+      let uploaded = false;
+      let lastError = "unknown error";
+      const pieceHash = createHash("sha256").update(piece).digest("hex");
+      for (let attempt = 1; attempt <= 3 && !uploaded; attempt++) {
+        try {
+          const { error } = await bucket.upload(objectPath, piece, { contentType: "application/octet-stream", upsert: false });
+          if (!error) {
+            uploaded = true;
+            break;
+          }
+          lastError = error.message || String(error);
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
         }
+        try {
+          const existing = await bucket.download(objectPath);
+          if (!existing.error && existing.data &&
+              createHash("sha256").update(Buffer.from(await existing.data.arrayBuffer())).digest("hex") === pieceHash) {
+            uploaded = true;
+            break;
+          }
+        } catch { /* The upload can be retried when the read also fails. */ }
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
       }
+      if (!uploaded) throw new Error(`upload failed after 3 attempts for ${objectPath}: ${lastError}`);
     }
   }
   const archivePath = `manifests/${manifest.version}/${manifest.arch}/${manifest.channel}.json`;
