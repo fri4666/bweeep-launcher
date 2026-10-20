@@ -12,9 +12,13 @@ local files, downloads and expands changed files, hashes each download, waits fo
 to exit, then starts a separate PowerShell helper to replace files and restart.
 Files larger than 5 MiB are stored as numbered parts, so each Supabase object
 stays below the Free plan's per-object size limit. The first installer is also
-stored in parts. A public `launcher-download` Edge Function serves a download
-page that verifies its signed manifest, joins the parts in the browser, checks
-the full SHA-256 hash, and downloads the NSIS installer once.
+stored in parts. A public `launcher-download` Edge Function verifies the signed
+manifest, streams the parts as one `.exe` attachment, and checks the full
+SHA-256 hash. Opening its URL starts the browser's normal file download without
+an intermediate page.
+The Free plan's 150-second Edge Function wall clock limit applies to a full
+download, so a slow client may need to retry. Verify the complete streamed
+installer on the hosted function before promoting the stable pointer.
 
 The current Supabase organization is on the Free plan, which includes 1 GB of
 file storage. Compression and content-addressed reuse reduce storage, but
@@ -45,7 +49,7 @@ users can inspect.
    the promotion workflow, because this key can write to the project.
 4. The public verification key is embedded in `launcher-download`. Deploy it
    with JWT verification disabled. The function verifies the signed installer
-   manifest before serving the public download page.
+   manifest before streaming the public installer download.
 5. Merge v0.1.40 while the GitHub repository and old releases are still
    accessible. The main workflow builds both the old NSIS bridge and the new
    Supabase file release. It publishes the beta channel for testers; the stable
@@ -56,7 +60,7 @@ users can inspect.
    Windows install paths before promoting the stable release.
 7. Promote stable after the beta checks pass. Then verify an installed
    v0.1.39 upgrades to v0.1.40 through the still-public GitHub release.
-   Confirm the Supabase download page, stable channel, beta channel, and
+   Confirm the direct Supabase installer download, stable channel, beta channel, and
    patch notes work without GitHub authentication. Keep the public GitHub
    release available for a migration window before making the repository
    private. Clients that missed v0.1.40 will then need the Supabase installer.

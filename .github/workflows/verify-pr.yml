@@ -96,4 +96,6 @@ jobs:
       - run: deno check index.ts
         working-directory: supabase/functions/launcher-download
       - run: deno test
+        working-directory: supabase/functions/launcher-download
+      - run: deno test
         working-directory: supabase/functions/launcher-access
