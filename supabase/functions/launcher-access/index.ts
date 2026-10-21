@@ -2,7 +2,7 @@ import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
 import { ADMIN_ACTIONS, type AdminRequest, handleAdminRequest, isAdminRequest, parseAdminRequest } from "./admin.ts";
 import { getBearerToken, getLauncherVersion, getSessionId, isLauncherAtLeast, MIN_YGGDRASIL_LAUNCHER } from "./authorization.ts";
-import { isModpackManifest, type ModpackManifest, selectCatalog, usesBweeepAccounts } from "./catalog.ts";
+import { isModpackManifest, selectCatalog, usesBweeepAccounts } from "./catalog.ts";
 import { retryingFetch } from "./db-fetch.ts";
 import { isDiagnosticsLog, uploadDiagnostics } from "./diagnostics.ts";
 import { gameNameTakenMessage, isGameNameTaken, OFFLINE_SERVER } from "./game-name.ts";
@@ -13,9 +13,9 @@ import {
   normalizeDisplayName
 } from "./display-name.ts";
 import { createGameTicket, isGameName, isGameTicket, ticketNameProblem } from "./game-ticket.ts";
-import { decideInvite, invitePolicy, isInviteOpen, type InviteRole } from "./invite-policy.ts";
+import { handleInviteRequest, type InviteRequest } from "./invite-management.ts";
 import { launchGameName } from "./launch-name.ts";
-import { parseStorageObjectUrl } from "./manifest-shape.ts";
+import { manifestForCatalog, resolveManifestDownloads } from "./manifest-shape.ts";
 import { currentNotice } from "./notice.ts";
 import { decodeBase64, isSkinModel, MAX_SKIN_BYTES, type SkinModel, validateSkinPng } from "./skin-image.ts";
 
@@ -32,9 +32,7 @@ type RequestBody =
   | { action: "status" }
   | { action: "notice" }
   | { action: "redeem"; code: string }
-  | { action: "createInvite"; maxUses?: number }
-  | { action: "listInvites" }
-  | { action: "revokeInvite"; inviteId: string }
+  | InviteRequest
   | { action: "catalog" }
   | { action: "manifest"; packId: string }
   | { action: "setGameProfile"; gameName: string }
@@ -537,63 +535,10 @@ async function handleRequest(request: Request): Promise<Response> {
       if (!supportsYggdrasil && visible.length > 0) {
         return json(OUTDATED_LAUNCHER, 426);
       }
-      return json({ manifests: visible });
+      return json({ manifests: visible.map((entry) => ({ ...entry, manifest: manifestForCatalog(entry.manifest) })) });
     }
 
-    const role: InviteRole = membership.role === "admin" ? "admin" : "member";
-    const { data: ownInvites, error: ownInvitesError } = await supabaseAdmin
-      .from("launcher_invites")
-      .select("id, expires_at, max_uses, uses, revoked_at, created_at")
-      .eq("created_by", userId)
-      .order("created_at", { ascending: false })
-      .limit(50);
-    if (ownInvitesError) {
-      console.error("launcher invite query failed", ownInvitesError);
-      return json({ message: "초대 코드 목록을 조회하지 못했습니다." }, 500);
-    }
-    const openInvites = (ownInvites ?? []).filter((invite) => isInviteOpen(invite));
-
-    if (body.action === "listInvites") {
-      const policy = invitePolicy(role);
-      return json({
-        role,
-        maxUsesLimit: policy.maxUsesLimit,
-        activeLimit: policy.activeLimit,
-        invites: openInvites.map((invite) => ({
-          id: invite.id,
-          expiresAt: invite.expires_at,
-          maxUses: invite.max_uses,
-          uses: invite.uses,
-          createdAt: invite.created_at
-        }))
-      });
-    }
-
-    if (body.action === "revokeInvite") {
-      if (!openInvites.some((invite) => invite.id === body.inviteId)) {
-        return json({ message: "취소할 수 있는 초대 코드를 찾지 못했습니다." }, 404);
-      }
-      const { error } = await supabaseAdmin
-        .from("launcher_invites")
-        .update({ revoked_at: new Date().toISOString() })
-        .eq("id", body.inviteId)
-        .eq("created_by", userId);
-      if (error) return json({ message: "초대 코드를 취소하지 못했습니다." }, 500);
-      return json({ ok: true });
-    }
-
-    const decision = decideInvite(role, body.maxUses, openInvites.length);
-    if (!decision.ok) return json({ message: decision.message }, 409);
-    const code = createInviteCode();
-    const expiresAt = new Date(Date.now() + decision.expiresInDays * 86_400_000).toISOString();
-    const { data: inserted, error } = await supabaseAdmin.from("launcher_invites").insert({
-      code_hash: await sha256(code),
-      created_by: userId,
-      expires_at: expiresAt,
-      max_uses: decision.maxUses
-    }).select("id").single();
-    if (error) return json({ message: "초대 코드를 만들지 못했습니다." }, 500);
-    return json({ id: inserted.id, code, expiresAt, maxUses: decision.maxUses });
+    return handleInviteRequest(supabaseAdmin, userId, body, { create: createInviteCode, hash: sha256 });
 }
 
 function normalizeCode(value: unknown): string | null {
@@ -624,7 +569,7 @@ function isRequestBody(value: unknown): value is RequestBody {
   }
   if (body.action === "listInvites") return true;
   if (body.action === "revokeInvite") return typeof body.inviteId === "string" && /^[0-9a-f-]{36}$/i.test(body.inviteId);
-  return body.action === "createInvite";
+  return body.action === "createInvite" && (body.groupId === undefined || typeof body.groupId === "string");
 }
 
 function createInviteCode(): string {
@@ -650,28 +595,4 @@ async function sha256Bytes(value: Uint8Array<ArrayBuffer>): Promise<string> {
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase();
-}
-
-async function resolveManifestDownloads(
-  supabase: Pick<ReturnType<typeof createClient<any, "public">>, "storage">,
-  rawManifest: unknown
-): Promise<ModpackManifest> {
-  if (!isModpackManifest(rawManifest)) {
-    throw new Error("Stored launcher manifest has an invalid shape.");
-  }
-
-  const files = await Promise.all(rawManifest.files.map(async (file) => {
-    const storageObject = parseStorageObjectUrl(file.url);
-    if (!storageObject) return file;
-
-    const { data, error } = await supabase.storage
-      .from(storageObject.bucket)
-      .createSignedUrl(storageObject.path, 15 * 60);
-    if (error || !data?.signedUrl) {
-      throw new Error(`Unable to sign modpack file ${file.path}.`);
-    }
-    return { ...file, url: data.signedUrl };
-  }));
-
-  return { ...rawManifest, files };
 }

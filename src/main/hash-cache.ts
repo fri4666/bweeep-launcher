@@ -2,11 +2,12 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { hashFile } from "./hash.js";
 
-type Algorithm = "sha256" | "sha512";
+type Algorithm = "sha1" | "sha256" | "sha512";
 
 interface Stamp {
   size: number;
   mtimeMs: number;
+  ctimeMs?: number;
   algorithm: Algorithm;
   hash: string;
 }
@@ -46,10 +47,19 @@ export class HashCache {
     return hash === want;
   }
 
+  /**
+   * Installer checksums use exact modification/change stamps. An old cache entry
+   * without ctime is hashed once before it can be reused for runtime libraries.
+   * The caller still compares this digest with its current expected checksum.
+   */
+  async checksum(relativePath: string, target: string, algorithm: Algorithm): Promise<string | null> {
+    return this.hashOf(relativePath, target, algorithm, undefined, true);
+  }
+
   /** Records a file the launcher just wrote and verified. */
   async remember(relativePath: string, target: string, algorithm: Algorithm, hash: string): Promise<void> {
     const stat = await fsp.stat(target);
-    this.stamps.set(relativePath, { size: stat.size, mtimeMs: stat.mtimeMs, algorithm, hash: hash.toLowerCase() });
+    this.stamps.set(relativePath, { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, algorithm, hash: hash.toLowerCase() });
     this.dirty = true;
   }
 
@@ -70,7 +80,7 @@ export class HashCache {
     return this.saving;
   }
 
-  private async hashOf(relativePath: string, target: string, algorithm: Algorithm, expectedSize: number): Promise<string | null> {
+  private async hashOf(relativePath: string, target: string, algorithm: Algorithm, expectedSize?: number, exactStamp = false): Promise<string | null> {
     let stat;
     try {
       stat = await fsp.stat(target);
@@ -78,12 +88,21 @@ export class HashCache {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
-    if (!stat.isFile() || stat.size !== expectedSize) return null;
+    if (!stat.isFile() || (expectedSize !== undefined && stat.size !== expectedSize)) return null;
     const cached = this.stamps.get(relativePath);
-    if (cached && cached.size === stat.size && sameTime(cached.mtimeMs, stat.mtimeMs) && cached.algorithm === algorithm) return cached.hash;
+    if (cached && cached.size === stat.size && cached.algorithm === algorithm && (exactStamp
+      ? cached.mtimeMs === stat.mtimeMs && cached.ctimeMs === stat.ctimeMs
+      : sameTime(cached.mtimeMs, stat.mtimeMs))) return cached.hash;
     const hash = await hashFile(target, algorithm);
-    this.stamps.set(relativePath, { size: stat.size, mtimeMs: stat.mtimeMs, algorithm, hash });
-    this.dirty = true;
+    const after = exactStamp ? await fsp.stat(target) : stat;
+    // A writer raced the read: compare the digest for this check but do not
+    // remember a stamp that could trust a later, different file on the next one.
+    if (after.size === stat.size && after.mtimeMs === stat.mtimeMs && after.ctimeMs === stat.ctimeMs) {
+      this.stamps.set(relativePath, { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, algorithm, hash });
+      this.dirty = true;
+    } else {
+      this.forget(relativePath);
+    }
     return hash;
   }
 }
@@ -100,5 +119,5 @@ function sameTime(left: number, right: number): boolean {
 function isStamp(value: unknown): value is Stamp {
   const stamp = value as Partial<Stamp> | null;
   return Boolean(stamp) && typeof stamp?.size === "number" && typeof stamp.mtimeMs === "number" &&
-    (stamp.algorithm === "sha256" || stamp.algorithm === "sha512") && typeof stamp.hash === "string";
+    (stamp.algorithm === "sha1" || stamp.algorithm === "sha256" || stamp.algorithm === "sha512") && typeof stamp.hash === "string";
 }

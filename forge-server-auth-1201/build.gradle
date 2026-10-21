@@ -30,6 +30,11 @@ tasks.named('jar', Jar).configure {
     finalizedBy 'reobfJar'
 }
 
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
 tasks.register('verifyIdentityStore', JavaExec) {
     group = 'verification'
     classpath = sourceSets.test.runtimeClasspath

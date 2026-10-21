@@ -4,16 +4,19 @@
 // edited are never overwritten.
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import fsp from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { strToU8, zipSync } from "fflate";
-import { syncModpack } from "../dist/src/main/sync.js";
+import * as yauzl from "yauzl";
+const { syncModpack } = await import(process.env.BWEEP_SYNC_MODULE ?? "../dist/src/main/sync.js");
 
-// Under ~/.cache rather than /tmp, which is memory-backed on the dev machine.
-await fsp.mkdir(path.join(homedir(), ".cache"), { recursive: true });
-const root = await fsp.mkdtemp(path.join(homedir(), ".cache", "bweeep-sync-check-"));
+// A caller can isolate every fixture with TMPDIR; otherwise avoid memory-backed /tmp.
+const testCache = process.env.TMPDIR ? tmpdir() : path.join(homedir(), ".cache");
+await fsp.mkdir(testCache, { recursive: true });
+const root = await fsp.mkdtemp(path.join(testCache, "bweeep-sync-check-"));
 const sha = (algorithm, bytes) => crypto.createHash(algorithm).update(bytes).digest("hex");
 const quiet = () => undefined;
 const readJson = async (file) => JSON.parse(await fsp.readFile(file, "utf8"));
@@ -192,7 +195,7 @@ try {
       "modrinth.index.json": strToU8(JSON.stringify({ formatVersion: 1, game: "minecraft", versionId: version, name: "pack", dependencies: { minecraft: "26.3", "fabric-loader": "0.19.5" }, files: [] }))
     };
     for (const [name, text] of Object.entries(overrides)) entries[`overrides/${name}`] = strToU8(text);
-    const zip = Buffer.from(zipSync(entries));
+    const zip = Buffer.from(zipSync(entries, { mtime: "2026-01-01T00:00:00Z" }));
     const sha512 = sha("sha512", zip);
     await fsp.mkdir(archives, { recursive: true });
     await fsp.writeFile(path.join(archives, `${sha512}.mrpack`), zip);
@@ -253,7 +256,7 @@ try {
       "modrinth.index.json": strToU8(JSON.stringify({ formatVersion: 1, game: "minecraft", versionId: version, name: "pack", dependencies: { minecraft: "26.3", "fabric-loader": "0.19.5" }, files: [packMod] }))
     };
     for (const [name, text] of Object.entries(overrides)) entries[`overrides/${name}`] = strToU8(text);
-    const zip = Buffer.from(zipSync(entries, { level: 0 }));
+    const zip = Buffer.from(zipSync(entries, { level: 0, mtime: "2026-01-01T00:00:00Z" }));
     const sha512 = sha("sha512", zip);
     await fsp.mkdir(archives, { recursive: true });
     const archivePath = path.join(archives, `${sha512}.mrpack`);
@@ -293,6 +296,75 @@ try {
   assert.equal(await read("config/y.toml"), "Y1", "a deleted default is restored on the next launch");
   assert.equal(await read("config/x.toml"), "X-player", "a player's edit still wins");
 
+  // Repair only the missing defaults. Existing entries (including a large one)
+  // are neither decompressed nor hashed; all previous override hashes survive.
+  const recordPath = path.join(instance, ".bweeep", "mrpack-overrides.json");
+  const beforeRepair = await readJson(recordPath);
+  await fsp.writeFile(path.join(instance, "config/retained-record.toml"), "retained");
+  beforeRepair.files["config/retained-record.toml"] = sha("sha256", "retained");
+  await fsp.writeFile(recordPath, JSON.stringify(beforeRepair));
+  await fsp.rm(path.join(instance, "config/y.toml"));
+  const openedEntries = [];
+  const hashedPaths = [];
+  const originalOpen = yauzl.ZipFile.prototype.openReadStream;
+  const originalRead = fs.createReadStream;
+  yauzl.ZipFile.prototype.openReadStream = function (entry, ...args) {
+    openedEntries.push(entry.fileName);
+    return originalOpen.call(this, entry, ...args);
+  };
+  fs.createReadStream = function (target, ...args) {
+    hashedPaths.push(String(target));
+    return originalRead.call(this, target, ...args);
+  };
+  try {
+    await syncArchive("s1", overridesV1);
+  } finally {
+    yauzl.ZipFile.prototype.openReadStream = originalOpen;
+    fs.createReadStream = originalRead;
+  }
+  assert.deepEqual(openedEntries, ["modrinth.index.json", "overrides/config/y.toml"], "only the index and missing default are decompressed");
+  for (const name of ["config/x.toml", "saves/world/big.dat"]) {
+    assert.equal(hashedPaths.includes(path.join(instance, name)), false, `${name} is not re-hashed during repair`);
+  }
+  assert.deepEqual(await readJson(recordPath), beforeRepair, "repair preserves the complete override record, including older entries");
+  assert.equal(await read("config/retained-record.toml"), "retained", "repair does not remove an older recorded default");
+  assert.deepEqual((await readJson(statePath)).overrides, ["config/x.toml", "config/y.toml", "saves/world/big.dat"], "repair retains the complete archive state");
+  assert.equal(await read("config/x.toml"), "X-player");
+  assert.equal(await read("config/y.toml"), "Y1");
+  console.log("modpack-missing-default-only-repair=passed");
+
+  // A path replaced by a directory is an error, not a complete installation.
+  await fsp.rm(path.join(instance, "config/y.toml"));
+  await fsp.mkdir(path.join(instance, "config/y.toml"));
+  await assert.rejects(syncArchive("s1", overridesV1), /파일이 아닙니다/);
+  await fsp.rmdir(path.join(instance, "config/y.toml"));
+  if (process.platform !== "win32") {
+    await fsp.symlink(path.join(instance, "config"), path.join(instance, "config/y.toml"));
+    await assert.rejects(syncArchive("s1", overridesV1), /파일이 아닙니다/, "a directory symlink is not a completed default");
+    await fsp.unlink(path.join(instance, "config/y.toml"));
+  }
+
+  // Missing archive repair must still validate downloaded bytes before use.
+  const archiveBytes = await fsp.readFile(pass.archivePath);
+  const sameRequest = { instanceDir: root, manifest: { ...manifestBase, version: "s1", files: [], mrpack: { url: "https://cdn.test/pack.mrpack", size: archiveBytes.length, sha512: pass.sha512 } } };
+  bodies.set("pack.mrpack", Buffer.alloc(archiveBytes.length));
+  await fsp.rm(pass.archivePath);
+  await assert.rejects(syncModpack(sameRequest, quiet, { ...options, fetch: cdnFetch }), /모드팩을 내려받지 못했습니다/);
+  assert.equal(await exists("config/y.toml"), false, "an invalid archive restores nothing");
+  bodies.set("pack.mrpack", archiveBytes);
+  await syncModpack(sameRequest, quiet, { ...options, fetch: cdnFetch });
+  assert.equal(await read("config/y.toml"), "Y1", "a verified re-downloaded archive restores the missing default");
+  assert.equal(await read("config/x.toml"), "X-player");
+  console.log("modpack-repair-validates-missing-archive=passed");
+
+  // Invalid saved state falls back to the verified archive and rebuilds state.
+  await fsp.writeFile(statePath, JSON.stringify({ version: 1, overrides: ["../outside"] }));
+  await syncModpack(sameRequest, quiet, { ...options, fetch: cdnFetch });
+  assert.equal((await readJson(statePath)).overrides.length, 3);
+  assert.equal(await read("config/x.toml"), "X-player");
+  assert.equal(await exists(tempDirPath), false);
+  console.log("modpack-repair-rejects-directory-and-invalid-state=passed");
+
   // A changed archive applies again: untouched files follow, edited ones stay, the old archive goes.
   const oldArchive = pass.archivePath;
   const overridesV2 = { "config/x.toml": "X2", "config/y.toml": "Y2", "saves/world/big.dat": `${bigText}!` };
@@ -303,6 +375,146 @@ try {
   assert.equal(await fsp.access(oldArchive).then(() => true, () => false), false, "the previous archive is removed");
   assert.equal((await archiveNames()).length, 1);
   assert.equal((await readJson(statePath)).archive, pass.sha512);
+
+  // Normalized duplicate paths must retain archive order with parallel work.
+  await syncArchive("s3", { "config/duplicate.toml": "first", "config/./duplicate.toml": "second", "config/other.toml": "other" });
+  assert.equal(await read("config/duplicate.toml"), "first", "a later alias sees the first entry, as in a sequential apply");
+  assert.equal(await read("config/other.toml"), "other");
+  assert.equal(await exists(tempDirPath), false, "parallel work leaves no temporary files");
+
+  // A failed handler waits for other streams before cleanup and never settles
+  // the archive state. A retry can complete the partly applied update.
+  const settledState = await fsp.readFile(statePath, "utf8");
+  const failingOverrides = { "saves/world/big.dat": `${bigText}!!`, "config/fail.toml": "file", "config/after-fail.toml": "after" };
+  await fsp.mkdir(path.join(instance, "config/fail.toml"));
+  await assert.rejects(syncArchive("s4", failingOverrides), /EISDIR|illegal operation on a directory/);
+  assert.equal(await exists(tempDirPath), false, "all in-flight entry work settles before temporary files are removed");
+  assert.equal(await fsp.readFile(statePath, "utf8"), settledState, "a failed update does not commit its state");
+  await fsp.rmdir(path.join(instance, "config/fail.toml"));
+  await syncArchive("s4", failingOverrides);
+  assert.equal(await read("config/fail.toml"), "file");
+  assert.equal(await exists(tempDirPath), false);
+  console.log("modpack-parallel-override-order-and-cleanup=passed");
+
+  // Many adjacent small entries share reads; a larger entry crosses the cache
+  // blocks without changing bytes. Every archive handle closes before return.
+  const cachedOverrides = Object.fromEntries(Array.from({ length: 220 }, (_, index) => [`config/cache/file-${index}.json`, `entry-${index}:${"x".repeat(1800)}`]));
+  cachedOverrides["config/cache/boundary.dat"] = crypto.randomBytes(400 * 1024).toString("base64");
+  const originalFileOpen = fsp.open;
+  let archiveHandles = 0;
+  let archiveCloses = 0;
+  const readSizes = [];
+  fsp.open = async function (target, flags, ...args) {
+    const file = await originalFileOpen.call(this, target, flags, ...args);
+    if (flags === "r" && String(target).endsWith(".mrpack")) {
+      archiveHandles += 1;
+      const originalFileRead = file.read.bind(file);
+      const originalFileClose = file.close.bind(file);
+      file.read = function (...readArgs) { readSizes.push(readArgs[2]); return originalFileRead(...readArgs); };
+      file.close = async function () { archiveCloses += 1; return originalFileClose(); };
+    }
+    return file;
+  };
+  let cachedPass;
+  try { cachedPass = await syncArchive("s5", cachedOverrides); } finally { fsp.open = originalFileOpen; }
+  assert.equal(await read("config/cache/boundary.dat"), cachedOverrides["config/cache/boundary.dat"]);
+  assert.equal(archiveHandles, 2, "one metadata pass and one direct apply handle");
+  assert.equal(archiveCloses, archiveHandles, "all archive handles close");
+  assert.ok(readSizes.length < 50, `small header/data reads are combined (${readSizes.length} reads for 221 overrides)`);
+  assert.ok(readSizes.every((size) => size <= 128 * 1024), "individual reads stay bounded");
+
+  // Warm checks list a shared parent once instead of stat-ing every child.
+  const originalReaddir = fsp.readdir;
+  const originalStat = fsp.stat;
+  let cacheListings = 0;
+  let cacheStats = 0;
+  fsp.readdir = function (target, ...args) {
+    if (String(target) === path.join(instance, "config/cache")) cacheListings += 1;
+    return originalReaddir.call(this, target, ...args);
+  };
+  fsp.stat = function (target, ...args) {
+    if (String(target).startsWith(path.join(instance, "config/cache/"))) cacheStats += 1;
+    return originalStat.call(this, target, ...args);
+  };
+  try { await syncArchive("s5", cachedOverrides); } finally { fsp.readdir = originalReaddir; fsp.stat = originalStat; }
+  assert.equal(cacheListings, 1);
+  assert.equal(cacheStats, 0, "normal files use directory types, symlinks still need stat");
+  console.log("modpack-grouped-checks-and-bounded-archive-cache=passed");
+
+  // Windows also supports case-sensitive directories: a folded match is not
+  // enough to prove the requested path exists. This fixture lives on ext4.
+  if (process.platform === "linux") {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+    const exactPath = path.join(instance, "config/cache/file-0.json");
+    const foldedPath = path.join(instance, "config/cache/FILE-0.json");
+    await fsp.rename(exactPath, foldedPath);
+    await fsp.writeFile(foldedPath, "case-sensitive user file");
+    try {
+      Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+      await syncArchive("s5", cachedOverrides);
+    } finally { Object.defineProperty(process, "platform", originalPlatform); }
+    assert.equal(await read("config/cache/file-0.json"), cachedOverrides["config/cache/file-0.json"], "a differently cased file does not hide a missing default");
+    assert.equal(await read("config/cache/FILE-0.json"), "case-sensitive user file", "the other file remains intact");
+    console.log("modpack-windows-case-sensitive-directory=passed");
+  }
+
+  // A ZIP64 footer takes the same validating yauzl path as a normal archive.
+  const normalZip = await fsp.readFile(cachedPass.archivePath);
+  const footerAt = normalZip.length - 22;
+  assert.equal(normalZip.readUInt32LE(footerAt), 0x06054b50);
+  const zip64 = Buffer.alloc(56);
+  zip64.writeUInt32LE(0x06064b50, 0);
+  zip64.writeBigUInt64LE(44n, 4);
+  zip64.writeUInt16LE(45, 12);
+  zip64.writeUInt16LE(45, 14);
+  const entryCount = BigInt(normalZip.readUInt16LE(footerAt + 10));
+  zip64.writeBigUInt64LE(entryCount, 24);
+  zip64.writeBigUInt64LE(entryCount, 32);
+  zip64.writeBigUInt64LE(BigInt(normalZip.readUInt32LE(footerAt + 12)), 40);
+  zip64.writeBigUInt64LE(BigInt(normalZip.readUInt32LE(footerAt + 16)), 48);
+  const locator = Buffer.alloc(20);
+  locator.writeUInt32LE(0x07064b50, 0);
+  locator.writeBigUInt64LE(BigInt(footerAt), 8);
+  locator.writeUInt32LE(1, 16);
+  const footer = Buffer.from(normalZip.subarray(footerAt));
+  footer.writeUInt16LE(0xffff, 8);
+  footer.writeUInt16LE(0xffff, 10);
+  footer.writeUInt32LE(0xffffffff, 12);
+  footer.writeUInt32LE(0xffffffff, 16);
+  const rawSync = async (zip) => {
+    const digest = sha("sha512", zip);
+    await fsp.writeFile(path.join(archives, `${digest}.mrpack`), zip);
+    return syncModpack({ instanceDir: root, manifest: { ...manifestBase, version: "raw", files: [], mrpack: { url: "https://cdn.test/raw.mrpack", size: zip.length, sha512: digest } } }, quiet, { ...options, fetch: cdnFetch });
+  };
+  await rawSync(Buffer.concat([normalZip.subarray(0, footerAt), zip64, locator, footer]));
+  assert.equal(await read("config/cache/boundary.dat"), cachedOverrides["config/cache/boundary.dat"]);
+  console.log("modpack-cached-reader-zip64=passed");
+
+  // A pinned archive can still contain a malformed deflate stream. The entry
+  // error must close all streams/handles, leave no temp files and not settle state.
+  const badZip = Buffer.from(zipSync({
+    "modrinth.index.json": strToU8(JSON.stringify({ formatVersion: 1, dependencies: { minecraft: "26.3", "fabric-loader": "0.19.5" }, files: [] })),
+    "overrides/config/corrupt.txt": strToU8("bad compressed content".repeat(100))
+  }, { level: 6, mtime: "2026-01-01T00:00:00Z" }));
+  let localAt = 0;
+  while (badZip.readUInt32LE(localAt) === 0x04034b50) {
+    const nameLength = badZip.readUInt16LE(localAt + 26);
+    const dataAt = localAt + 30 + nameLength + badZip.readUInt16LE(localAt + 28);
+    if (badZip.toString("utf8", localAt + 30, localAt + 30 + nameLength).startsWith("overrides/")) {
+      badZip[dataAt] = 0x07; // Reserved deflate block type.
+      break;
+    }
+    localAt = dataAt + badZip.readUInt32LE(localAt + 18);
+  }
+  const beforeBadZip = await fsp.readFile(statePath, "utf8");
+  let badTimeout;
+  try {
+    await assert.rejects(Promise.race([rawSync(badZip), new Promise((_, reject) => { badTimeout = setTimeout(() => reject(new Error("archive close timed out")), 3000); })]), /invalid block type/);
+  } finally { clearTimeout(badTimeout); }
+  assert.equal(await fsp.readFile(statePath, "utf8"), beforeBadZip);
+  assert.equal(await exists(tempDirPath), false);
+  assert.equal(await exists("config/corrupt.txt"), false);
+  console.log("modpack-corrupt-entry-stream-cleanup=passed");
   console.log("modpack-unchanged-archive-skipped=passed");
 } finally {
   server.close();

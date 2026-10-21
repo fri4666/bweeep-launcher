@@ -75,10 +75,12 @@ The first admin can join through the normal launcher flow. Once a person has red
 
 ## Launcher release updates
 
-Packaged releases use `electron-updater` with the public GitHub Releases feed. The launcher checks at startup and every 30 minutes, downloads a newer NSIS release automatically, waits for Minecraft to exit when necessary, then installs and restarts itself. Upload all three generated assets for every release:
+From v0.1.40, packaged Windows releases use signed file manifests hosted in Supabase Storage. The launcher checks at startup and every minute, downloads only changed files, waits for Minecraft to finish, then hands off replacement and restart to a separate helper. The first install still uses NSIS for shortcuts, uninstall, and invite-link registration. See [the release and migration procedure](docs/file-updates.md).
+
+The v0.1.40 release is also published through the old GitHub feed once so installed v0.1.39 clients can migrate. Keep that feed public until the migration window is over. Its assets are:
 
 - `Bweeep-Setup-<version>.exe`
 - `Bweeep-Setup-<version>.exe.blockmap`
 - `latest.yml`
 
-`v0.1.14` is the bootstrap release for this updater, so users on `v0.1.13` or older must install it once manually. Later releases update automatically. Development builds skip remote update checks.
+Older clients that miss the migration window need the v0.1.40 installer from Supabase. Development builds skip remote update checks.

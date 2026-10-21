@@ -2,6 +2,7 @@ import { app, net } from "electron";
 import electronUpdater from "electron-updater";
 import type { LauncherUpdate, LauncherUpdateStatus } from "../shared/types.js";
 import { getLauncherChannel } from "./launcher-channel.js";
+import { fileUpdatesAvailable, installFileUpdate, setFileUpdateAudience, startFileUpdates } from "./supabase-file-update.js";
 import { koreanReleaseNotes } from "./update-copy.js";
 import { isPrereleaseVersion, RELEASE_OWNER, RELEASE_REPO, RELEASES_ATOM_URL, releaseTagsFromAtom, selectTesterFeed, type TesterUpdateFeed } from "./update-feed.js";
 import { isNewerLauncherVersion } from "./version.js";
@@ -18,6 +19,7 @@ let publishStatus: (next: LauncherUpdateStatus) => void = () => undefined;
 let canInstallNow: (playerAsked: boolean) => boolean = () => true;
 /** The separate "Bweeep Test" app keeps its own test channel. */
 let testApp = false;
+let fileMode = false;
 /** Signed-in tester or admin: gets -beta.N builds in the normal launcher. */
 let testerAudience = false;
 let checkInFlight: Promise<void> | null = null;
@@ -41,9 +43,15 @@ export function startLauncherUpdates(
     return;
   }
 
+  testApp = getLauncherChannel() === "test";
+  if (!testApp && fileUpdatesAvailable()) {
+    fileMode = true;
+    startFileUpdates(setStatus, canInstall, testerAudience);
+    return;
+  }
+
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
-  testApp = getLauncherChannel() === "test";
   if (testApp) {
     autoUpdater.channel = "test";
     autoUpdater.allowPrerelease = true;
@@ -99,6 +107,10 @@ export function startLauncherUpdates(
 export function setLauncherUpdateAudience(tester: boolean): void {
   if (testerAudience === tester) return;
   testerAudience = tester;
+  if (fileMode) {
+    setFileUpdateAudience(tester);
+    return;
+  }
   if (!started || !app.isPackaged || testApp) return;
   if (tester) {
     autoUpdater.autoInstallOnAppQuit = true;
@@ -113,6 +125,10 @@ export function setLauncherUpdateAudience(tester: boolean): void {
 }
 
 export function installPendingLauncherUpdate(options: { playerAsked?: boolean } = {}): void {
+  if (fileMode) {
+    installFileUpdate(options);
+    return;
+  }
   const playerAsked = options.playerAsked === true;
   if (status.state !== "ready" || installScheduled || !canInstallNow(playerAsked)) return;
   const update = status.update;

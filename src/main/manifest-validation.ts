@@ -56,6 +56,23 @@ export function assertManifest(manifest: ModpackManifest): void {
   if (manifest.mrpack && (!/^https:\/\//.test(manifest.mrpack.url) || !Number.isSafeInteger(manifest.mrpack.size) || manifest.mrpack.size < 1 || !/^[a-f0-9]{128}$/i.test(manifest.mrpack.sha512))) {
     throw new Error("Modrinth 모드팩 정보가 올바르지 않습니다.");
   }
+  if (manifest.initialInstallBundle !== undefined) {
+    const bundle = manifest.initialInstallBundle;
+    if (!bundle || typeof bundle !== "object" || !/^https:\/\//.test(bundle.url) || !Number.isSafeInteger(bundle.size) || bundle.size < 1 || !/^[a-f0-9]{128}$/i.test(bundle.sha512)) {
+      throw new Error("초기 설치 묶음 정보가 올바르지 않습니다.");
+    }
+    if (bundle.paths !== undefined) {
+      if (!Array.isArray(bundle.paths) || bundle.paths.length < 1 || bundle.paths.length > 20_000 ||
+        !Array.from(bundle.paths).every(isInitialInstallBundlePath) ||
+        new Set(bundle.paths.map((name) => name.toLowerCase())).size !== bundle.paths.length) {
+        throw new Error("초기 설치 묶음 파일 목록이 올바르지 않습니다.");
+      }
+      // The mrpack index is validated after it is resolved by syncModpack.
+      if (!manifest.mrpack && bundle.paths.some((name) => !manifest.files.some((file) => file.path === name && isInitialInstallBundlePath(file.path)))) {
+        throw new Error("초기 설치 묶음 파일이 현재 모드팩 목록에 없습니다.");
+      }
+    }
+  }
   for (const file of manifest.files) {
     if (
       !file.path ||
@@ -69,4 +86,13 @@ export function assertManifest(manifest: ModpackManifest): void {
       throw new Error("manifest 파일 정보가 올바르지 않습니다.");
     }
   }
+}
+
+/** Immutable managed archives only; shared by manifest and ZIP validation. */
+export function isInitialInstallBundlePath(value: unknown): value is string {
+  if (typeof value !== "string" || /[\\<>:"|?*\u0000-\u001f]/.test(value)) return false;
+  const parts = value.split("/");
+  if (parts.some((part) => !part || part === "." || part === ".." || /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) return false;
+  if (/^mods\/CrashAssistant-[^/]*\.jar$/i.test(value)) return false;
+  return /^mods\/.+\.jar$/i.test(value) || /^(resourcepacks|shaderpacks)\/.+\.zip$/i.test(value);
 }

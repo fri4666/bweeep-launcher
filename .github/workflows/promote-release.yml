@@ -27,10 +27,19 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
       - name: 초안 게시
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
         run: |
           version="${INPUT_VERSION:-$(node -p 'require("./package.json").version')}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -53,5 +62,19 @@ jobs:
           if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -1)" != "$version" -o "$latest" = "$version" ]; then
             echo "$tag 는 지금 정식판 v$latest 보다 높지 않아 게시하지 않습니다."; exit 1
           fi
+          mkdir -p "$RUNNER_TEMP/bweeep-release"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern file-update-stable.json --dir "$RUNNER_TEMP/bweeep-release"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern file-update-beta-channel.json --dir "$RUNNER_TEMP/bweeep-release"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern file-update-stable-arm64.json --dir "$RUNNER_TEMP/bweeep-release"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern file-update-beta-channel-arm64.json --dir "$RUNNER_TEMP/bweeep-release"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Bweeep-Setup-$version.exe" --dir "$RUNNER_TEMP/bweeep-release"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Bweeep-Setup-$version-arm64.exe" --dir "$RUNNER_TEMP/bweeep-release"
+          node scripts/publish-installer.mjs "$RUNNER_TEMP/bweeep-release/Bweeep-Setup-$version.exe" "$version" x64 stable
+          node scripts/publish-installer.mjs "$RUNNER_TEMP/bweeep-release/Bweeep-Setup-$version-arm64.exe" "$version" arm64 stable
+          node scripts/publish-release-notes.mjs "$version" stable build/release-notes.txt
+          node scripts/publish-file-release.mjs - "$RUNNER_TEMP/bweeep-release/file-update-beta-channel.json" channel
+          node scripts/publish-file-release.mjs - "$RUNNER_TEMP/bweeep-release/file-update-beta-channel-arm64.json" channel
+          node scripts/publish-file-release.mjs - "$RUNNER_TEMP/bweeep-release/file-update-stable.json" channel
+          node scripts/publish-file-release.mjs - "$RUNNER_TEMP/bweeep-release/file-update-stable-arm64.json" channel
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
           echo "$tag 를 정식 배포했습니다."

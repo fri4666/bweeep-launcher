@@ -2,15 +2,15 @@ package com.fri4666.bweeep.fabric;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.item.ItemStack;
 
 public final class DisplayNames {
-    private static final Map<UUID, String> VISIBLE_NAMES = new HashMap<>();
-    private static final Map<UUID, Boolean> SAVING = new HashMap<>();
+    private static final Map<ServerGamePacketListenerImpl, String> VISIBLE_NAMES = new HashMap<>();
+    private static final Map<ServerGamePacketListenerImpl, SupabaseGateway.VerifiedIdentity> SAVING = new HashMap<>();
 
     private DisplayNames() {}
 
@@ -28,8 +28,8 @@ public final class DisplayNames {
     }
 
     static void onDisconnect(ServerPlayer player) {
-        VISIBLE_NAMES.remove(player.getUUID());
-        SAVING.remove(player.getUUID());
+        VISIBLE_NAMES.remove(player.connection);
+        SAVING.remove(player.connection);
     }
 
     static void submit(ServerPlayer player, String rawName) {
@@ -47,18 +47,22 @@ public final class DisplayNames {
             send(player, false, "", "런처 계정 인증을 확인하지 못했습니다.");
             return;
         }
-        if (SAVING.putIfAbsent(player.getUUID(), true) != null) return;
+        ServerGamePacketListenerImpl handler = player.connection;
+        if (SAVING.putIfAbsent(handler, identity) != null) return;
         SupabaseGateway.setDisplayName(identity.sessionToken(), name).whenComplete((result, error) ->
-            player.getServer().execute(() -> finish(player, result, error))
+            player.getServer().execute(() -> finish(handler, identity, result, error))
         );
     }
 
     public static String visibleName(ServerPlayer player) {
-        return VISIBLE_NAMES.get(player.getUUID());
+        return VISIBLE_NAMES.get(player.connection);
     }
 
-    private static void finish(ServerPlayer player, SupabaseGateway.SaveResult result, Throwable error) {
-        SAVING.remove(player.getUUID());
+    private static void finish(ServerGamePacketListenerImpl handler, SupabaseGateway.VerifiedIdentity identity,
+            SupabaseGateway.SaveResult result, Throwable error) {
+        if (!SAVING.remove(handler, identity)) return;
+        ServerPlayer player = handler.player;
+        if (BweeepFabric.identity(player) != identity) return;
         if (error != null || result == null || !result.success()) {
             send(player, false, "", result == null
                 ? "이름 저장에 실패했습니다. 등록권은 그대로 유지됩니다."
@@ -71,7 +75,7 @@ public final class DisplayNames {
     }
 
     private static void apply(ServerPlayer player, String name) {
-        VISIBLE_NAMES.put(player.getUUID(), name);
+        VISIBLE_NAMES.put(player.connection, name);
         player.setCustomName(Component.literal(name));
         player.setCustomNameVisible(true);
     }

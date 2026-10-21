@@ -16,6 +16,11 @@ export interface MrpackSource {
   sha512: string;
 }
 
+export interface InitialInstallBundle extends MrpackSource {
+  /** Exact immutable-file subset in this ZIP; omitted for a legacy full bundle. */
+  paths?: string[];
+}
+
 export interface ModpackManifest {
   schemaVersion: 1;
   id: string;
@@ -73,6 +78,8 @@ export interface ModpackManifest {
   defaultKeys?: Record<string, string>;
   /** A pinned Modrinth .mrpack whose indexed files and overrides are installed safely. */
   mrpack?: MrpackSource;
+  /** Optional hash-pinned ZIP of immutable managed files, used only for large initial installs. */
+  initialInstallBundle?: InitialInstallBundle;
   files: PackFile[];
   notes?: string;
 }
@@ -243,7 +250,7 @@ export interface ReleaseNoteSection {
   details?: string[][];
 }
 
-/** One version's notes, from build/release-notes.txt or the same text on its GitHub release. */
+/** One version's notes, from build/release-notes.txt or the release catalog. */
 export interface ReleaseNotes {
   version: string;
   summary: string | null;
@@ -256,7 +263,7 @@ export interface ReleaseNotes {
 export interface PatchNote extends ReleaseNotes {
   prerelease: boolean;
   publishedAt: string | null;
-  /** The GitHub release page; only github.com/fri4666/bweeep-launcher/releases/… addresses. */
+  /** Optional details page for a published release. */
   url: string | null;
 }
 
