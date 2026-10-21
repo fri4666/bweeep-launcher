@@ -13,7 +13,7 @@ import {
   normalizeDisplayName
 } from "./display-name.ts";
 import { createGameTicket, isGameName, isGameTicket, ticketNameProblem } from "./game-ticket.ts";
-import { decideInvite, invitePolicy, isInviteOpen, type InviteRole } from "./invite-policy.ts";
+import { handleInviteRequest, type InviteRequest } from "./invite-management.ts";
 import { launchGameName } from "./launch-name.ts";
 import { manifestForCatalog, resolveManifestDownloads } from "./manifest-shape.ts";
 import { currentNotice } from "./notice.ts";
@@ -32,9 +32,7 @@ type RequestBody =
   | { action: "status" }
   | { action: "notice" }
   | { action: "redeem"; code: string }
-  | { action: "createInvite"; maxUses?: number }
-  | { action: "listInvites" }
-  | { action: "revokeInvite"; inviteId: string }
+  | InviteRequest
   | { action: "catalog" }
   | { action: "manifest"; packId: string }
   | { action: "setGameProfile"; gameName: string }
@@ -540,60 +538,7 @@ async function handleRequest(request: Request): Promise<Response> {
       return json({ manifests: visible.map((entry) => ({ ...entry, manifest: manifestForCatalog(entry.manifest) })) });
     }
 
-    const role: InviteRole = membership.role === "admin" ? "admin" : "member";
-    const { data: ownInvites, error: ownInvitesError } = await supabaseAdmin
-      .from("launcher_invites")
-      .select("id, expires_at, max_uses, uses, revoked_at, created_at")
-      .eq("created_by", userId)
-      .order("created_at", { ascending: false })
-      .limit(50);
-    if (ownInvitesError) {
-      console.error("launcher invite query failed", ownInvitesError);
-      return json({ message: "초대 코드 목록을 조회하지 못했습니다." }, 500);
-    }
-    const openInvites = (ownInvites ?? []).filter((invite) => isInviteOpen(invite));
-
-    if (body.action === "listInvites") {
-      const policy = invitePolicy(role);
-      return json({
-        role,
-        maxUsesLimit: policy.maxUsesLimit,
-        activeLimit: policy.activeLimit,
-        invites: openInvites.map((invite) => ({
-          id: invite.id,
-          expiresAt: invite.expires_at,
-          maxUses: invite.max_uses,
-          uses: invite.uses,
-          createdAt: invite.created_at
-        }))
-      });
-    }
-
-    if (body.action === "revokeInvite") {
-      if (!openInvites.some((invite) => invite.id === body.inviteId)) {
-        return json({ message: "취소할 수 있는 초대 코드를 찾지 못했습니다." }, 404);
-      }
-      const { error } = await supabaseAdmin
-        .from("launcher_invites")
-        .update({ revoked_at: new Date().toISOString() })
-        .eq("id", body.inviteId)
-        .eq("created_by", userId);
-      if (error) return json({ message: "초대 코드를 취소하지 못했습니다." }, 500);
-      return json({ ok: true });
-    }
-
-    const decision = decideInvite(role, body.maxUses, openInvites.length);
-    if (!decision.ok) return json({ message: decision.message }, 409);
-    const code = createInviteCode();
-    const expiresAt = new Date(Date.now() + decision.expiresInDays * 86_400_000).toISOString();
-    const { data: inserted, error } = await supabaseAdmin.from("launcher_invites").insert({
-      code_hash: await sha256(code),
-      created_by: userId,
-      expires_at: expiresAt,
-      max_uses: decision.maxUses
-    }).select("id").single();
-    if (error) return json({ message: "초대 코드를 만들지 못했습니다." }, 500);
-    return json({ id: inserted.id, code, expiresAt, maxUses: decision.maxUses });
+    return handleInviteRequest(supabaseAdmin, userId, body, { create: createInviteCode, hash: sha256 });
 }
 
 function normalizeCode(value: unknown): string | null {

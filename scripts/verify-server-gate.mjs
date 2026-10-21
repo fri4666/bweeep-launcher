@@ -3,12 +3,13 @@
 // the server is up (the server sees only the client's own packets), stopping
 // an empty server, and the "off" switch.
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
-  ServerGate, WAKE_MARKER, encodePacket, readConfig, readVarInt
+  ServerGate, WAKE_MARKER, encodeHandshake, encodePacket, readConfig, readFrame, readVarInt
 } from "./server-gate.mjs";
 import { fakeBackend, fakeControl, freePort, joinClient, sleep, statusPing, until } from "./lib/gate-test-kit.mjs";
 
@@ -35,6 +36,66 @@ try {
   assert.equal(status.players.online, 0);
   assert.equal(control.calls.length, 0, "a plain status ping never wakes the server");
   pass("sleeping-status-without-wake");
+
+  // The complete normal exchange may be pipelined or fragmented at any byte.
+  const ping = Buffer.alloc(8);
+  ping.writeBigInt64BE(42n);
+  const exchange = Buffer.concat([
+    encodeHandshake({ protocol: -1, host: "127.0.0.1", port: listen, nextState: 1 }),
+    encodePacket(0), encodePacket(1, ping)
+  ]);
+  for (const chunks of [[exchange], [...exchange].map((byte) => Buffer.from([byte]))]) {
+    const received = await new Promise((resolve, reject) => {
+      const socket = net.connect({ host: "127.0.0.1", port: listen });
+      const data = [];
+      const timer = setTimeout(() => { socket.destroy(); reject(new Error("fragmented status timed out")); }, 3_000);
+      socket.on("data", (chunk) => data.push(chunk));
+      socket.on("error", reject);
+      socket.on("close", () => { clearTimeout(timer); resolve(Buffer.concat(data)); });
+      socket.on("connect", async () => {
+        for (const chunk of chunks) { socket.write(chunk); if (chunks.length > 1) await sleep(2); }
+      });
+    });
+    const response = readFrame(received, 1 << 20);
+    assert.equal(response.payload[0], 0);
+    assert.deepEqual(readFrame(response.rest, 9).payload, Buffer.concat([Buffer.from([1]), ping]));
+  }
+  pass("status-fragmentation-and-pipelining");
+
+  // A peer that never reads must cause at most one JSON allocation/write,
+  // including when every write reports backpressure.
+  class SlowStatusSocket extends EventEmitter {
+    writes = [];
+    ended = 0;
+    destroyed = false;
+    write(packet) { this.writes.push(packet.length); return false; }
+    end(packet) { this.writes.push(packet.length); this.ended++; this.emit("close"); }
+    destroy() { this.destroyed = true; this.emit("close"); }
+  }
+  let serializations = 0;
+  const statusOnly = { statusJson: () => { serializations++; return JSON.stringify({ description: "x".repeat(32 * 1024) }); } };
+  const flood = new SlowStatusSocket();
+  ServerGate.prototype.answerStatus.call(statusOnly, flood, {}, Buffer.concat(Array.from({ length: 64 }, () => encodePacket(0))), "sleeping");
+  assert.equal(serializations, 1);
+  assert.equal(flood.writes.length, 1, "write(false) cannot accumulate repeated status responses");
+  assert.equal(flood.destroyed, true);
+  const afterPong = new SlowStatusSocket();
+  ServerGate.prototype.answerStatus.call(statusOnly, afterPong, {}, Buffer.concat([encodePacket(0), encodePacket(1, ping)]), "sleeping");
+  afterPong.emit("data", encodePacket(0));
+  assert.equal(afterPong.ended, 1);
+  assert.equal(afterPong.writes.length, 2, "no writes after the pong ends the exchange");
+  for (const invalid of [
+    encodePacket(1, ping), encodePacket(0, Buffer.from([0])),
+    Buffer.from([2, 0x80, 0]), encodePacket(2),
+    Buffer.concat([encodePacket(0), encodePacket(1)]),
+    Buffer.concat([encodePacket(0), encodePacket(1, Buffer.alloc(9))])
+  ]) {
+    const socket = new SlowStatusSocket();
+    ServerGate.prototype.answerStatus.call(statusOnly, socket, {}, invalid, "sleeping");
+    assert.equal(socket.destroyed, true, `invalid status payload ${invalid.toString("hex")}`);
+    assert.equal(socket.ended, 0);
+  }
+  pass("status-request-amplification-and-invalid-payloads");
 
   // 2. The launcher's marked ping wakes it; the server comes up and later pings pass through.
   status = await statusPing(listen, `play.example${WAKE_MARKER}`);

@@ -1,69 +1,93 @@
 package com.fri4666.bweeep.auth;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 public final class PlayerIdentityStoreCheck {
+    private static final String IDENTITY_FILE = "bweeep-player-identities.json";
+
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("bweeep-identity-check-");
         try {
             UUID account = UUID.fromString("11111111-1111-4111-8111-111111111111");
-            UUID legacyPlayer = offlineUuid("old_name");
-            UUID renamedOfflinePlayer = offlineUuid("new_name");
-            Path playerData = root.resolve("world/playerdata");
-            Files.createDirectories(playerData);
-            Files.writeString(root.resolve("server.properties"), "level-name=world\n");
-            Files.writeString(root.resolve("ops.json"), "[{\"uuid\":\"" + legacyPlayer + "\",\"name\":\"old_name\",\"level\":4}]");
-            Files.writeString(playerData.resolve(legacyPlayer + ".dat"), "existing-character");
+            UUID victim = offlineUuid("old_name");
+            UUID accountPlayer = accountUuid(account);
 
-            UUID firstLogin = PlayerIdentityStore.resolve(root, account, renamedOfflinePlayer, "new_name", java.util.List.of("old_name"), "admin");
-            if (!legacyPlayer.equals(firstLogin)) throw new AssertionError("legacy operator character was not adopted");
-            UUID afterRename = PlayerIdentityStore.resolve(root, account, offlineUuid("another_name"), "another_name", java.util.List.of("new_name", "old_name"), "admin");
-            if (!legacyPlayer.equals(afterRename)) throw new AssertionError("rename changed the persistent player UUID");
+            Path current = fixture(root, "current-name");
+            Files.writeString(current.resolve("world/playerdata/" + victim + ".dat"), "victim-character");
+            UUID currentResult = PlayerIdentityStore.resolve(current, account, victim, "old_name", List.of(), "member");
+            require(accountPlayer.equals(currentResult), "an unmapped member adopted another player's current-name UUID");
+            require("victim-character".equals(Files.readString(current.resolve("world/playerdata/" + victim + ".dat"))),
+                "victim data was changed");
 
-            Path firstLoginRoot = Files.createTempDirectory(root, "first-login-");
-            UUID firstLoginAccount = UUID.randomUUID();
-            UUID firstLoginId = PlayerIdentityStore.resolve(firstLoginRoot, firstLoginAccount, null, "fresh_name", java.util.List.of(), "member");
-            if (!offlineUuid("fresh_name").equals(firstLoginId)) throw new AssertionError("null offline profile UUID was not derived from its name");
-            UUID renamedFirstLoginId = PlayerIdentityStore.resolve(firstLoginRoot, firstLoginAccount, null, "renamed_name", java.util.List.of("fresh_name"), "member");
-            if (!firstLoginId.equals(renamedFirstLoginId)) throw new AssertionError("a first-login name change changed the persistent player UUID");
+            Path historical = fixture(root, "historical-name");
+            Files.writeString(historical.resolve("world/playerdata/" + victim + ".dat"), "victim-character");
+            require(accountPlayer.equals(PlayerIdentityStore.resolve(historical, account, offlineUuid("new_name"),
+                "new_name", List.of("old_name"), "member")), "a member adopted a historical-name character");
 
+            Path operator = fixture(root, "operator");
+            Files.writeString(operator.resolve("world/playerdata/" + victim + ".dat"), "operator-character");
+            Files.writeString(operator.resolve("ops.json"), "[{\"uuid\":\"" + victim + "\",\"level\":4}]");
+            require(accountPlayer.equals(PlayerIdentityStore.resolve(operator, account, offlineUuid("admin_name"),
+                "admin_name", List.of(), "admin")), "an admin automatically adopted an unrelated operator character");
+
+            Path firstLogin = fixture(root, "new-player");
+            UUID first = PlayerIdentityStore.resolve(firstLogin, account, null, "fresh_name", List.of(), "member");
+            require(accountPlayer.equals(first), "a fresh account did not receive its account-bound UUID");
+            require(first.equals(PlayerIdentityStore.resolve(firstLogin, account, null, "renamed_name", List.of("fresh_name"), "member")),
+                "a game-name change changed the persistent UUID");
             UUID secondAccount = UUID.fromString("44444444-4444-4444-8444-444444444444");
-            try {
-                PlayerIdentityStore.resolve(root, secondAccount, legacyPlayer, "old_name", java.util.List.of(), "member");
-                throw new AssertionError("duplicate player UUID assignment was accepted");
-            } catch (java.io.IOException expected) {
-                // One server UUID cannot belong to two launcher accounts.
+            require(!first.equals(PlayerIdentityStore.resolve(firstLogin, secondAccount, victim, "fresh_name", List.of("fresh_name"), "member")),
+                "different accounts with reusable names received the same UUID");
+
+            Path reviewed = fixture(root, "reviewed-map");
+            Files.writeString(reviewed.resolve(IDENTITY_FILE), "{\"" + account + "\":\"" + victim + "\"}");
+            Files.writeString(reviewed.resolve("world/playerdata/" + victim + ".dat"), "reviewed-character");
+            require(victim.equals(PlayerIdentityStore.resolve(reviewed, account, null, "renamed_name", List.of(), "member")),
+                "an existing explicit account mapping was not preserved");
+            Files.writeString(reviewed.resolve(IDENTITY_FILE), "{\"" + secondAccount + "\":\"" + accountPlayer + "\"}");
+            rejects(() -> PlayerIdentityStore.resolve(reviewed, account, null, "fresh_name", List.of(), "member"),
+                "a UUID already mapped to a different account was assigned");
+            Files.writeString(reviewed.resolve(IDENTITY_FILE), "{\"" + account + "\":\"" + victim + "\",\"" + secondAccount + "\":\"" + victim + "\"}");
+            rejects(() -> PlayerIdentityStore.resolve(reviewed, account, null, "fresh_name", List.of(), "member"),
+                "an existing duplicate mapping was accepted");
+
+            for (String path : List.of("playerdata/" + accountPlayer + ".dat", "playerdata/" + accountPlayer + ".dat_old",
+                    "stats/" + accountPlayer + ".json", "advancements/" + accountPlayer + ".json")) {
+                Path collision = fixture(root, "unmapped-state");
+                Files.writeString(collision.resolve("server.properties"), "level-name=custom-world\n");
+                Path state = collision.resolve("custom-world").resolve(path);
+                Files.createDirectories(state.getParent());
+                Files.writeString(state, "unmapped-state");
+                rejects(() -> PlayerIdentityStore.resolve(collision, account, null, "fresh_name", List.of(), "member"),
+                    "unmapped state at the generated UUID was adopted: " + path);
+                require(!Files.exists(collision.resolve(IDENTITY_FILE)), "a refused identity was written to disk");
+                require("unmapped-state".equals(Files.readString(state)), "unmapped data was overwritten");
             }
 
-            Path collisionRoot = Files.createTempDirectory(root, "collision-");
-            Path collisionData = collisionRoot.resolve("world/playerdata");
-            Files.createDirectories(collisionData);
-            Files.writeString(collisionData.resolve(legacyPlayer + ".dat"), "legacy-character");
-            Files.writeString(collisionData.resolve(renamedOfflinePlayer + ".dat"), "new-character");
-            try {
-                PlayerIdentityStore.resolve(collisionRoot, UUID.randomUUID(), renamedOfflinePlayer, "new_name", java.util.List.of("old_name"), "member");
-                throw new AssertionError("conflicting old and new player files were merged");
-            } catch (java.io.IOException expected) {
-                // Require manual recovery when both characters already have files.
+            Path operatorCollision = fixture(root, "unmapped-operator");
+            Files.writeString(operatorCollision.resolve("ops.json"), "[{\"uuid\":\"" + accountPlayer + "\",\"level\":4}]");
+            rejects(() -> PlayerIdentityStore.resolve(operatorCollision, account, null, "fresh_name", List.of(), "member"),
+                "an unmapped operator UUID was adopted without review");
+
+            Path corrupt = fixture(root, "corrupt-map");
+            for (String invalid : List.of("{", "[]", "{\"" + account + "\":\"bad-uuid\"}")) {
+                Files.writeString(corrupt.resolve(IDENTITY_FILE), invalid);
+                rejects(() -> PlayerIdentityStore.resolve(corrupt, account, null, "fresh_name", List.of(), "member"),
+                    "a corrupt identity file was replaced");
+                require(invalid.equals(Files.readString(corrupt.resolve(IDENTITY_FILE))), "corrupt data was overwritten");
             }
 
-            Path corruptRoot = Files.createTempDirectory(root, "corrupt-");
-            Files.writeString(corruptRoot.resolve("bweeep-player-identities.json"), "{");
-            try {
-                PlayerIdentityStore.resolve(corruptRoot, UUID.randomUUID(), UUID.randomUUID(), "member", java.util.List.of(), "member");
-                throw new AssertionError("corrupt identity data was silently replaced");
-            } catch (java.io.IOException expected) {
-                // Refuse login rather than silently allocating a new identity.
-            }
-
-            System.out.println("legacy-character-adoption=passed");
-            System.out.println("renamed-profile-stable-uuid=passed");
-            System.out.println("null-offline-profile-uuid=passed");
-            System.out.println("first-login-rename-stable-uuid=passed");
-            System.out.println("cross-account-collision-rejected=passed");
-            System.out.println("two-existing-characters-fail-closed=passed");
+            System.out.println("member-current-name-takeover-rejected=passed");
+            System.out.println("member-historical-name-takeover-rejected=passed");
+            System.out.println("automatic-operator-adoption-rejected=passed");
+            System.out.println("new-account-and-rename-stable-uuid=passed");
+            System.out.println("explicit-existing-map-preserved=passed");
+            System.out.println("cross-account-and-duplicate-mapping-rejected=passed");
+            System.out.println("unmapped-player-stats-advancements-operator-fail-closed=passed");
             System.out.println("corrupt-map-fails-closed=passed");
         } finally {
             try (var paths = Files.walk(root)) {
@@ -74,7 +98,32 @@ public final class PlayerIdentityStoreCheck {
         }
     }
 
-    private static UUID offlineUuid(String name) {
-        return UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    private static Path fixture(Path root, String name) throws Exception {
+        Path path = Files.createTempDirectory(root, name + "-");
+        Files.createDirectories(path.resolve("world/playerdata"));
+        return path;
     }
+
+    private static UUID accountUuid(UUID account) {
+        return UUID.nameUUIDFromBytes(("BweeepAccount:" + account).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static UUID offlineUuid(String name) {
+        return UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void require(boolean value, String message) {
+        if (!value) throw new AssertionError(message);
+    }
+
+    private static void rejects(Checked action, String message) throws Exception {
+        try {
+            action.run();
+        } catch (java.io.IOException expected) {
+            return;
+        }
+        throw new AssertionError(message);
+    }
+
+    private interface Checked { void run() throws Exception; }
 }

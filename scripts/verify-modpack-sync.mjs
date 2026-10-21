@@ -8,14 +8,15 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { strToU8, zipSync } from "fflate";
 import * as yauzl from "yauzl";
 const { syncModpack } = await import(process.env.BWEEP_SYNC_MODULE ?? "../dist/src/main/sync.js");
 
-// Under ~/.cache rather than /tmp, which is memory-backed on the dev machine.
-await fsp.mkdir(path.join(homedir(), ".cache"), { recursive: true });
-const root = await fsp.mkdtemp(path.join(homedir(), ".cache", "bweeep-sync-check-"));
+// A caller can isolate every fixture with TMPDIR; otherwise avoid memory-backed /tmp.
+const testCache = process.env.TMPDIR ? tmpdir() : path.join(homedir(), ".cache");
+await fsp.mkdir(testCache, { recursive: true });
+const root = await fsp.mkdtemp(path.join(testCache, "bweeep-sync-check-"));
 const sha = (algorithm, bytes) => crypto.createHash(algorithm).update(bytes).digest("hex");
 const quiet = () => undefined;
 const readJson = async (file) => JSON.parse(await fsp.readFile(file, "utf8"));

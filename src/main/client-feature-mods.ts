@@ -14,11 +14,15 @@ const LOCK_MOD_TARGET = "bweeep-client.jar";
 /** Every jar the launcher has placed as mods/bweeep-client.jar. */
 const LOCK_MODS = {
   neoforge1211: { source: "bweeep-client-1.2.0.jar", sha256: "71d39158b5899867a43759e86606e06e6a2483ac52eb799eeb10950a56f7257e" },
-  fabric1211: { source: "bweeep-fabric-0.2.0.jar", sha256: "f9cf97cb7d615b61481c7c05580bcc1d2878eb3acc17a923ba0bad56b3c02736" },
+  fabric1211: { source: "bweeep-fabric-0.2.0.jar", sha256: "ddcde2285c3db2ce9dc3690fa34f28604bdce1e8224524d75d7fe644cf0afe27" },
   fabric1214: { source: "bweeep-connection-lock-1214-0.1.0.jar", sha256: "60505e9e418f8c3c9ea60ac3124412b703e3642e22a083f3ef8a968156ee6c69" },
   fabric263: { source: "bweeep-fabric-lock-26.3-0.2.0.jar", sha256: "27ed412e5bd1fb6d3b407776e9bd6c24c6297051a2862298289c51be1f98c472" }
 } as const;
-const LOCK_MOD_HASHES: ReadonlySet<string> = new Set(Object.values(LOCK_MODS).map((mod) => mod.sha256));
+const LOCK_MOD_HASHES: ReadonlySet<string> = new Set([
+  ...Object.values(LOCK_MODS).map((mod) => mod.sha256),
+  // Keep recognizing the prior Fabric bridge when a pack moves to Yggdrasil.
+  "f9cf97cb7d615b61481c7c05580bcc1d2878eb3acc17a923ba0bad56b3c02736"
+]);
 
 /**
  * Older launcher features built as version-specific mods. The connection

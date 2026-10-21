@@ -908,33 +908,47 @@ export class ServerGate {
 
   answerStatus(socket, handshake, initial, gate) {
     let buffer = initial;
+    let requested = false;
+    let finished = false;
     const handle = () => {
-      for (;;) {
-        const read = readFrame(buffer, 64);
+      while (!finished) {
+        const read = readFrame(buffer, 9);
         if (!read) return;
         buffer = read.rest;
-        const id = readVarInt(read.payload).value;
-        if (id === 0x00) {
+        // Status is one request followed by an optional eight-byte ping.
+        // Never amplify repeated tiny requests into queued cached JSON when
+        // the peer stops reading and write() starts returning false.
+        if (!requested && read.payload.length === 1 && read.payload[0] === 0x00) {
+          requested = true;
           socket.write(encodePacket(0x00, encodeString(this.statusJson(handshake, gate))));
-        } else if (id === 0x01) {
+        } else if (requested && read.payload.length === 9 && read.payload[0] === 0x01) {
+          finished = true;
+          socket.off("data", onData);
           socket.end(encodePacket(0x01, read.payload.subarray(1)));
           return;
         } else {
+          finished = true;
           socket.destroy();
           return;
         }
       }
     };
     const timer = setTimeout(() => socket.destroy(), 10_000);
-    socket.on("close", () => clearTimeout(timer));
-    socket.on("data", (chunk) => {
+    const onData = (chunk) => {
+      if (finished) return;
       buffer = Buffer.concat([buffer, chunk]);
       try {
         handle();
       } catch {
+        finished = true;
         socket.destroy();
       }
+    };
+    socket.on("close", () => {
+      clearTimeout(timer);
+      socket.off("data", onData);
     });
+    socket.on("data", onData);
     try {
       handle();
     } catch {

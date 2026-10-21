@@ -44,11 +44,13 @@ jobs:
       - run: bash scripts/verify-private-notices.sh
       - run: node scripts/verify-notice-relay.mjs
       - run: node scripts/verify-server-gate.mjs
+      - run: node scripts/verify-invite-management.mjs
       - run: node scripts/verify-server-schedule.mjs
       - run: node scripts/verify-notice.mjs
       - run: node scripts/verify-server-errors.mjs
       - run: node scripts/verify-launch-identity.mjs
       - run: node scripts/verify-modpack-sync.mjs
+      - run: node scripts/verify-mrpack-security.mjs
       - run: node scripts/verify-runtime-preparation.mjs
       - run: node scripts/verify-install-bundle.mjs
       - run: node scripts/verify-bundle-sync.mjs
@@ -78,8 +80,24 @@ jobs:
           java-version: '17'
       - run: bash gradlew --no-daemon build
         working-directory: forge-connection-lock-1201
-      - run: bash gradlew --no-daemon verifyIdentityStore build
+      - name: Forge 캐릭터 소유권 회귀 검사와 번들 확인
         working-directory: forge-server-auth-1201
+        run: |
+          bash gradlew --no-daemon verifyIdentityStore build
+          cmp build/libs/bweeep-server-auth-1201-0.2.0.jar ../resources/server-mods/bweeep-server-auth-1201-0.2.0.jar
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.2.1'
+          cache-disabled: true
+      - name: Fabric 인증 연결 상태 회귀 검사와 번들 빌드
+        working-directory: fabric-mod
+        run: |
+          gradle --no-daemon build
+          cmp build/libs/bweeep-fabric-0.2.0.jar ../resources/client-mods/bweeep-fabric-0.2.0.jar
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

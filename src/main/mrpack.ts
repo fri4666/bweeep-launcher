@@ -49,6 +49,8 @@ interface MrpackState {
 
 /** Overrides up to this size are read into memory; bigger ones are streamed to a temporary file. */
 const SMALL_ENTRY_BYTES = 2 * 1024 * 1024;
+/** Matches the index limit used by the install-bundle builder. */
+const MAX_INDEX_BYTES = 16 * 1024 * 1024;
 const OVERRIDE_CONCURRENCY = 4;
 
 /** Downloads only a hash-pinned archive, then accepts only safe, indexed client files. */
@@ -135,7 +137,7 @@ async function missingOverrides(instanceDir: string, relativePaths: string[]): P
   const missing: string[] = [];
   const parents = new Map<string, string[]>();
   for (const relative of relativePaths) {
-    const parent = path.dirname(path.resolve(instanceDir, relative));
+    const parent = path.dirname(resolveOverridePath(instanceDir, relative));
     const children = parents.get(parent) ?? [];
     children.push(relative);
     parents.set(parent, children);
@@ -158,7 +160,7 @@ async function missingOverrides(instanceDir: string, relativePaths: string[]): P
         const folded = path.basename(relative).toLowerCase();
         if ([...entries.keys()].some((name) => name.toLowerCase() === folded)) {
           try {
-            const stat = await fsp.stat(path.resolve(instanceDir, relative));
+            const stat = await fsp.stat(resolveOverridePath(instanceDir, relative));
             if (!stat.isFile()) throw new Error(`모드팩 기본 설정 경로가 파일이 아닙니다: ${relative}`);
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -169,7 +171,7 @@ async function missingOverrides(instanceDir: string, relativePaths: string[]): P
         // Follow file symlinks just as stat() did; directory and dangling links
         // must not make an installation look complete.
         try {
-          const stat = await fsp.stat(path.resolve(instanceDir, relative));
+          const stat = await fsp.stat(resolveOverridePath(instanceDir, relative));
           if (!stat.isFile()) throw new Error(`모드팩 기본 설정 경로가 파일이 아닙니다: ${relative}`);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -281,7 +283,7 @@ async function applyOverrides(instanceDir: string, archivePath: string, entries:
   try {
     await withArchive(archivePath, async (zip) => processEntries(selected, async (entry) => {
       const relative = entry.fileName.slice("overrides/".length);
-      const target = path.resolve(instanceDir, relative);
+      const target = resolveOverridePath(instanceDir, relative);
       // A mod/player may have recreated it after the initial existence check.
       if (repair && (await missingOverrides(instanceDir, [relative])).length === 0) {
         completed += 1;
@@ -320,7 +322,7 @@ async function applyOverrides(instanceDir: string, archivePath: string, entries:
   if (!repair) {
     for (const [relative, lastWritten] of previous) {
       if (next.has(relative) || lastWritten === null) continue;
-      const target = path.resolve(instanceDir, relative);
+      const target = resolveOverridePath(instanceDir, relative);
       if (await sha256IfFile(target) === lastWritten) await fsp.rm(target, { force: true });
     }
   }
@@ -339,7 +341,7 @@ interface EntryCopy {
 
 async function readEntryCopy(entry: yauzl.Entry, open: () => Promise<Readable>, tempDir: string): Promise<EntryCopy> {
   if (entry.uncompressedSize <= SMALL_ENTRY_BYTES) {
-    const bytes = await collect(await open());
+    const bytes = await collect(await open(), SMALL_ENTRY_BYTES);
     return {
       sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
       writeTo: (target) => fsp.writeFile(target, bytes),
@@ -377,18 +379,40 @@ async function readArchive(archivePath: string): Promise<{ entries: yauzl.Entry[
   await walkArchive(archivePath, async (entry, open) => {
     if (!safeRelativePath(entry.fileName)) throw new Error("모드팩 압축 경로가 안전하지 않습니다.");
     entries.push(entry);
-    if (entry.fileName === "modrinth.index.json" && indexBytes === null) indexBytes = await collect(await open());
+    if (entry.fileName === "modrinth.index.json" && indexBytes === null) {
+      if (entry.uncompressedSize > MAX_INDEX_BYTES) throw new Error("모드팩 목록이 허용 크기를 초과합니다.");
+      indexBytes = await collect(await open(), MAX_INDEX_BYTES);
+    }
   });
   return { entries, indexBytes };
 }
 
 /** Reads a whole entry stream. yauzl's streams are consumed with events; async iteration on them never finishes. */
-function collect(stream: Readable): Promise<Buffer> {
+function collect(stream: Readable, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    stream.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
-    stream.on("error", (error) => { stream.destroy(); reject(error); });
-    stream.on("end", () => resolve(Buffer.concat(chunks)));
+    let size = 0;
+    let settled = false;
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      chunks.length = 0;
+      // yauzl's destroy() stops decompression but does not emit a supplied error.
+      reject(error);
+      stream.destroy();
+    };
+    stream.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) return fail(new Error("모드팩 압축 항목이 허용 크기를 초과합니다."));
+      chunks.push(Buffer.from(chunk));
+    });
+    stream.on("error", fail);
+    stream.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks, size));
+    });
   });
 }
 
@@ -512,8 +536,24 @@ class CachedArchiveReader extends yauzl.RandomAccessReader {
   }
 }
 
-function safeRelativePath(value: string): boolean {
-  return Boolean(value) && !path.isAbsolute(value) && !value.split(/[\\/]+/).includes("..");
+function safeRelativePath(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && !/[\0:]/.test(value) &&
+    !path.posix.isAbsolute(value) && !path.win32.isAbsolute(value) && value.split(/[\\/]+/).every((part) =>
+      // Win32 trims dots/spaces and resolves DOS devices even with extensions.
+      // Keep exact '.' aliases, whose archive order is intentionally supported.
+      part !== ".." && (part === "." || !/[. ]$/.test(part)) &&
+      !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$) *(?:\.|$)/i.test(part));
+}
+
+function resolveOverridePath(instanceDir: string, relative: string): string {
+  if (!safeRelativePath(relative)) throw new Error("모드팩 override 경로가 안전하지 않습니다.");
+  const root = path.resolve(instanceDir);
+  const target = path.resolve(root, relative);
+  const inside = path.relative(root, target);
+  if (!inside || path.isAbsolute(inside) || inside === ".." || inside.startsWith(`..${path.sep}`)) {
+    throw new Error("모드팩 override 경로가 안전하지 않습니다.");
+  }
+  return target;
 }
 
 function isServerList(value: string): boolean {

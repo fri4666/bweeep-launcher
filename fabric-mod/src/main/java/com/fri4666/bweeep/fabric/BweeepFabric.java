@@ -3,8 +3,7 @@ package com.fri4666.bweeep.fabric;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import com.fri4666.bweeep.fabric.mixin.ServerCommonConnectionAccessor;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.FabricServerConfigurationNetworkHandler;
@@ -16,8 +15,11 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.Connection;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.network.ServerCommonPacketListenerImpl;
+import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResultHolder;
 import net.minecraft.world.entity.player.Player;
@@ -32,10 +34,10 @@ public final class BweeepFabric implements ModInitializer {
         ResourceLocation.fromNamespaceAndPath(MOD_ID, "name_token"),
         new NameTokenItem(new Item.Properties().stacksTo(1))
     );
-    private static final Map<UUID, Integer> PENDING_AUTH = new HashMap<>();
-    private static final Map<UUID, SupabaseGateway.VerifiedIdentity> VERIFIED = new HashMap<>();
-    private static final Map<UUID, SupabaseGateway.VerifiedIdentity> CONFIGURATION_VERIFIED = new ConcurrentHashMap<>();
-    private static final Map<UUID, Boolean> CONFIGURATION_SAVING = new ConcurrentHashMap<>();
+    private static final Map<ServerGamePacketListenerImpl, PendingAuth> PENDING_AUTH = new HashMap<>();
+    private static final Map<ServerGamePacketListenerImpl, SupabaseGateway.VerifiedIdentity> VERIFIED = new HashMap<>();
+    private static final ConnectionAuthStore<Connection, SupabaseGateway.VerifiedIdentity> CONFIGURATION_AUTH =
+        new ConnectionAuthStore<>();
 
     @Override
     public void onInitialize() {
@@ -50,12 +52,17 @@ public final class BweeepFabric implements ModInitializer {
         PayloadTypeRegistry.configurationS2C().register(BweeepProtocol.DisplayNameResult.TYPE, BweeepProtocol.DisplayNameResult.CODEC);
 
         ServerConfigurationConnectionEvents.CONFIGURE.register((handler, server) -> {
+            CONFIGURATION_AUTH.begin(connection(handler));
             if (!ServerConfigurationNetworking.canSend(handler, BweeepProtocol.TicketRequest.TYPE)) {
+                CONFIGURATION_AUTH.close(connection(handler));
                 handler.disconnect(Component.literal("붸에엡 클라이언트 모드가 필요합니다."));
                 return;
             }
             ((FabricServerConfigurationNetworkHandler) handler).addTask(new FabricConfigurationTask(handler));
         });
+        ServerConfigurationConnectionEvents.DISCONNECT.register((handler, server) ->
+            CONFIGURATION_AUTH.close(connection(handler))
+        );
         ServerConfigurationNetworking.registerGlobalReceiver(BweeepProtocol.GameTicket.TYPE, (payload, context) ->
             authenticateConfiguration(payload, context)
         );
@@ -66,32 +73,35 @@ public final class BweeepFabric implements ModInitializer {
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             ServerPlayer player = handler.player;
             server.getPlayerList().deop(player.getGameProfile());
-            VERIFIED.remove(player.getUUID());
-            SupabaseGateway.VerifiedIdentity configured = CONFIGURATION_VERIFIED.remove(player.getUUID());
+            VERIFIED.remove(handler);
+            SupabaseGateway.VerifiedIdentity configured = CONFIGURATION_AUTH.takeReady(connection(handler));
             if (configured != null) {
-                VERIFIED.put(player.getUUID(), configured);
+                VERIFIED.put(handler, configured);
                 if ("admin".equals(configured.role())) server.getPlayerList().op(player.getGameProfile());
                 DisplayNames.onAuthenticated(player, configured);
                 return;
             }
-            PENDING_AUTH.put(player.getUUID(), server.getTickCount() + 200);
+            PENDING_AUTH.put(handler, new PendingAuth(server.getTickCount() + 200));
         });
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
-            ServerPlayer player = handler.player;
-            PENDING_AUTH.remove(player.getUUID());
-            VERIFIED.remove(player.getUUID());
-            DisplayNames.onDisconnect(player);
-            server.getPlayerList().deop(player.getGameProfile());
+            CONFIGURATION_AUTH.close(connection(handler));
+            server.execute(() -> {
+                ServerPlayer player = handler.player;
+                PENDING_AUTH.remove(handler);
+                VERIFIED.remove(handler);
+                DisplayNames.onDisconnect(player);
+                ServerPlayer current = server.getPlayerList().getPlayer(player.getUUID());
+                if (current == null || current.connection == handler) server.getPlayerList().deop(player.getGameProfile());
+            });
         });
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             int tick = server.getTickCount();
-            Iterator<Map.Entry<UUID, Integer>> iterator = PENDING_AUTH.entrySet().iterator();
+            Iterator<Map.Entry<ServerGamePacketListenerImpl, PendingAuth>> iterator = PENDING_AUTH.entrySet().iterator();
             while (iterator.hasNext()) {
-                Map.Entry<UUID, Integer> entry = iterator.next();
-                if (entry.getValue() > tick) continue;
+                Map.Entry<ServerGamePacketListenerImpl, PendingAuth> entry = iterator.next();
+                if (entry.getValue().deadline > tick) continue;
                 iterator.remove();
-                ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
-                if (player != null) player.connection.disconnect(Component.literal("붸에엡 런처 인증에 실패했습니다."));
+                entry.getKey().disconnect(Component.literal("붸에엡 런처 인증에 실패했습니다."));
             }
         });
         ServerPlayNetworking.registerGlobalReceiver(BweeepProtocol.GameTicket.TYPE, (payload, context) ->
@@ -103,23 +113,40 @@ public final class BweeepFabric implements ModInitializer {
     }
 
     static SupabaseGateway.VerifiedIdentity identity(ServerPlayer player) {
-        return VERIFIED.get(player.getUUID());
+        return isActive(player.connection) && player.connection.player == player ? VERIFIED.get(player.connection) : null;
+    }
+
+    private static Connection connection(ServerCommonPacketListenerImpl handler) {
+        return ((ServerCommonConnectionAccessor) handler).bweeep$connection();
+    }
+
+    private static boolean isActive(ServerGamePacketListenerImpl handler) {
+        Connection connection = connection(handler);
+        return connection.isConnected() && connection.getPacketListener() == handler
+            && handler.player.getServer().getPlayerList().getPlayer(handler.player.getUUID()) == handler.player;
     }
 
     private static void authenticate(ServerPlayer player, String ticket) {
-        if (!ticket.matches("[A-Za-z0-9_-]{43}") || !PENDING_AUTH.containsKey(player.getUUID())) {
+        ServerGamePacketListenerImpl handler = player.connection;
+        PendingAuth pending = PENDING_AUTH.get(handler);
+        if (!isActive(handler) || !ticket.matches("[A-Za-z0-9_-]{43}") || pending == null || pending.claimed) {
+            PENDING_AUTH.remove(handler);
             player.connection.disconnect(Component.literal("붸에엡 런처 인증에 실패했습니다."));
             return;
         }
+        pending.claimed = true;
         SupabaseGateway.consumeTicket(ticket, player.getGameProfile().getName()).whenComplete((identity, error) ->
             player.getServer().execute(() -> {
-                if (error != null || identity == null || PENDING_AUTH.remove(player.getUUID()) == null) {
-                    player.connection.disconnect(Component.literal("붸에엡 런처 인증에 실패했습니다."));
+                if (!isActive(handler) || PENDING_AUTH.get(handler) != pending) return;
+                PENDING_AUTH.remove(handler);
+                if (error != null || identity == null) {
+                    handler.disconnect(Component.literal("붸에엡 런처 인증에 실패했습니다."));
                     return;
                 }
-                VERIFIED.put(player.getUUID(), identity);
-                if ("admin".equals(identity.role())) player.getServer().getPlayerList().op(player.getGameProfile());
-                DisplayNames.onAuthenticated(player, identity);
+                VERIFIED.put(handler, identity);
+                ServerPlayer current = handler.player;
+                if ("admin".equals(identity.role())) current.getServer().getPlayerList().op(current.getGameProfile());
+                DisplayNames.onAuthenticated(current, identity);
             })
         );
     }
@@ -129,19 +156,28 @@ public final class BweeepFabric implements ModInitializer {
         ServerConfigurationNetworking.Context context
     ) {
         var handler = context.networkHandler();
-        if (!payload.ticket().matches("[A-Za-z0-9_-]{43}")) {
+        Connection connection = connection(handler);
+        if (!connection.isConnected() || connection.getPacketListener() != handler) return;
+        var pending = CONFIGURATION_AUTH.claimTicket(connection);
+        if (pending == null || !payload.ticket().matches("[A-Za-z0-9_-]{43}")) {
+            CONFIGURATION_AUTH.close(connection);
             handler.disconnect(Component.literal("붸에엡 런처 인증에 실패했습니다."));
             return;
         }
-        UUID profileId = handler.getOwner().getId();
         SupabaseGateway.consumeTicket(payload.ticket(), handler.getOwner().getName()).whenComplete((identity, error) ->
             context.server().execute(() -> {
+                if (!connection.isConnected() || connection.getPacketListener() != handler) {
+                    CONFIGURATION_AUTH.close(connection, pending);
+                    return;
+                }
                 if (error != null || identity == null) {
+                    if (!CONFIGURATION_AUTH.close(connection, pending)) return;
                     handler.disconnect(Component.literal("붸에엡 런처 인증에 실패했습니다."));
                     return;
                 }
-                CONFIGURATION_VERIFIED.put(profileId, identity);
-                if (identity.displayName() != null && DisplayNameRules.normalize(identity.displayName()) != null) {
+                boolean needsName = identity.displayName() == null || DisplayNameRules.normalize(identity.displayName()) == null;
+                if (!CONFIGURATION_AUTH.verified(connection, pending, identity, needsName)) return;
+                if (!needsName) {
                     ((FabricServerConfigurationNetworkHandler) handler).completeTask(FabricConfigurationTask.TYPE);
                 } else {
                     ServerConfigurationNetworking.send(handler, new BweeepProtocol.OpenNameScreen(1, handler.getOwner().getName()));
@@ -155,7 +191,8 @@ public final class BweeepFabric implements ModInitializer {
         ServerConfigurationNetworking.Context context
     ) {
         var handler = context.networkHandler();
-        UUID profileId = handler.getOwner().getId();
+        Connection connection = connection(handler);
+        if (!connection.isConnected() || connection.getPacketListener() != handler) return;
         String name = DisplayNameRules.normalize(payload.displayName());
         if (name == null) {
             ServerConfigurationNetworking.send(handler, new BweeepProtocol.DisplayNameResult(
@@ -163,26 +200,39 @@ public final class BweeepFabric implements ModInitializer {
             ));
             return;
         }
-        SupabaseGateway.VerifiedIdentity identity = CONFIGURATION_VERIFIED.get(profileId);
-        if (identity == null || CONFIGURATION_SAVING.putIfAbsent(profileId, true) != null) return;
+        var pending = CONFIGURATION_AUTH.claimName(connection);
+        if (pending == null) return;
+        SupabaseGateway.VerifiedIdentity identity = CONFIGURATION_AUTH.identity(connection, pending);
+        if (identity == null) return;
         SupabaseGateway.setDisplayName(identity.sessionToken(), name).whenComplete((result, error) ->
             context.server().execute(() -> {
-                CONFIGURATION_SAVING.remove(profileId);
+                if (!connection.isConnected() || connection.getPacketListener() != handler) {
+                    CONFIGURATION_AUTH.close(connection, pending);
+                    return;
+                }
                 if (error != null || result == null || !result.success()) {
+                    if (!CONFIGURATION_AUTH.nameFailed(connection, pending)) return;
                     ServerConfigurationNetworking.send(handler, new BweeepProtocol.DisplayNameResult(
                         false, "", result == null ? "이름 저장에 실패했습니다. 다시 시도해 주세요." : result.message()
                     ));
                     return;
                 }
-                CONFIGURATION_VERIFIED.put(profileId, new SupabaseGateway.VerifiedIdentity(
+                if (!CONFIGURATION_AUTH.nameSaved(connection, pending, new SupabaseGateway.VerifiedIdentity(
                     identity.userId(), identity.discordId(), identity.role(), identity.sessionToken(), result.displayName()
-                ));
+                ))) return;
                 ServerConfigurationNetworking.send(handler, new BweeepProtocol.DisplayNameResult(
                     true, result.displayName(), "서버 이름이 저장되었습니다."
                 ));
                 ((FabricServerConfigurationNetworkHandler) handler).completeTask(FabricConfigurationTask.TYPE);
             })
         );
+    }
+
+    private static final class PendingAuth {
+        private final int deadline;
+        private boolean claimed;
+
+        private PendingAuth(int deadline) { this.deadline = deadline; }
     }
 
     private static final class NameTokenItem extends Item {
