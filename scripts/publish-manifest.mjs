@@ -153,7 +153,9 @@ async function main() {
 /** Every rule a release must pass. Throws on the first hard failure, returns warnings. */
 export function validateForPublish(manifest) {
   // The launcher refuses anything assertManifest refuses …
-  assertManifest(manifest);
+  const privateBundle = manifest?.initialInstallBundle?.url?.startsWith("storage://");
+  if (privateBundle) parseStorageObjectUrl(manifest.initialInstallBundle.url);
+  assertManifest(privateBundle ? { ...manifest, initialInstallBundle: { ...manifest.initialInstallBundle, url: "https://private-storage.invalid/bundle.zip" } } : manifest);
   // … and launcher-access refuses to serve anything isModpackManifest refuses.
   if (!isModpackManifest(manifest)) throw new Error("Edge Function(launcher-access)의 manifest 형식 검사에 걸렸습니다.");
 
@@ -216,6 +218,7 @@ async function verifyDownloads(manifest) {
     .filter((file) => !file.url.startsWith("storage://"))
     .map((file) => ({ label: file.path, url: file.url, size: file.size, sha256: file.sha256, sha512: file.sha512 }));
   if (manifest.mrpack) targets.push({ label: "mrpack", ...manifest.mrpack });
+  if (manifest.initialInstallBundle && !manifest.initialInstallBundle.url.startsWith("storage://")) targets.push({ label: "initialInstallBundle", ...manifest.initialInstallBundle });
   for (const target of targets) {
     const response = await fetch(target.url, { redirect: "follow" });
     if (!response.ok || !response.body) throw new Error(`${target.label} 받기 실패: HTTP ${response.status}`);
@@ -230,7 +233,8 @@ async function verifyDownloads(manifest) {
     if (size !== target.size) throw new Error(`${target.label} 크기가 다릅니다: manifest ${target.size}, 실제 ${size}`);
     if (digest !== String(target[algorithm]).toLowerCase()) throw new Error(`${target.label} ${algorithm} 가 다릅니다.`);
   }
-  log(`다운로드 확인: ${targets.length}개 일치${skipped ? `, storage:// ${skipped}개는 건너뜀` : ""}`);
+  const privateSkipped = skipped + (manifest.initialInstallBundle?.url.startsWith("storage://") ? 1 : 0);
+  log(`다운로드 확인: ${targets.length}개 일치${privateSkipped ? `, storage:// ${privateSkipped}개는 건너뜀` : ""}`);
 }
 
 function insertSql(manifest, createdBy) {

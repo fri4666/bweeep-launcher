@@ -3,6 +3,7 @@ import path from "node:path";
 import type { PackFile, SyncProgress, SyncRequest, SyncResult } from "../shared/types.js";
 import { fetchViaDirectSession, fetchWithSystemNetwork } from "./system-network.js";
 import { prepareMrpack } from "./mrpack.js";
+import { applyInstallBundle, shouldUseInstallBundle } from "./install-bundle.js";
 import { downloadVerified, freeDiskBytes, partPath, runLimited, type Fetcher } from "./download.js";
 import { HashCache } from "./hash-cache.js";
 export { assertManifest } from "./manifest-validation.js";
@@ -65,52 +66,96 @@ export async function syncModpack(request: SyncRequest, progress: ProgressSink, 
     await requireDiskSpace(instanceDir, needed, options.freeBytes ?? freeDiskBytes);
   }
 
-  const totalBytes = needed.reduce((sum, file) => sum + file.size, 0);
-  const inFlight = new Map<string, number>();
-  let finishedBytes = 0;
   let downloaded = 0;
-  let lastReport = 0;
-  const reportBytes = (file: PackFile, force = false) => {
-    const now = Date.now();
-    if (!force && now - lastReport < 250) return;
-    lastReport = now;
-    let received = finishedBytes;
-    for (const bytes of inFlight.values()) received += bytes;
-    progress({
-      kind: "download",
-      stage: STAGE,
-      message: `받는 중 ${downloaded}/${needed.length} · ${toMb(received)}/${toMb(totalBytes)}MB`,
-      completed: received,
-      total: totalBytes,
-      unit: "bytes",
-      filePath: file.path
+  const downloadFiles = async (pending: PackFile[]) => {
+    const totalBytes = pending.reduce((sum, file) => sum + file.size, 0);
+    const inFlight = new Map<string, number>();
+    let finishedBytes = 0;
+    let individualDownloaded = 0;
+    let lastReport = 0;
+    const reportBytes = (file: PackFile, force = false) => {
+      const now = Date.now();
+      if (!force && now - lastReport < 250) return;
+      lastReport = now;
+      let received = finishedBytes;
+      for (const bytes of inFlight.values()) received += bytes;
+      progress({
+        kind: "download",
+        stage: STAGE,
+        message: `받는 중 ${individualDownloaded}/${pending.length} · ${toMb(received)}/${toMb(totalBytes)}MB`,
+        completed: received,
+        total: totalBytes,
+        unit: "bytes",
+        filePath: file.path
+      });
+    };
+
+    await runLimited(pending, concurrency, async (file) => {
+      const target = resolveInside(instanceDir, file.path);
+      inFlight.set(file.path, 0);
+      reportBytes(file, true);
+      await downloadVerified({ url: file.url, target, size: file.size, sha256: file.sha256, sha512: file.sha512 }, {
+        fetch: fetcher,
+        fallbackFetch: options.fetch ? undefined : fetchViaDirectSession,
+        tries: options.tries ?? 3,
+        retryDelayMs: options.retryDelayMs,
+        onBytes: (received) => {
+          inFlight.set(file.path, received);
+          reportBytes(file);
+        },
+        onRetry: (attempt) => progress({ kind: "info", stage: STAGE, message: `다시 받는 중 ${attempt}: ${path.basename(file.path)}`, filePath: file.path })
+      });
+      inFlight.delete(file.path);
+      finishedBytes += file.size;
+      downloaded += 1;
+      individualDownloaded += 1;
+      // Recorded as each file lands, so an interrupted sync resumes where it stopped.
+      const algorithm = file.sha256 ? "sha256" : "sha512";
+      await cache.remember(file.path, target, algorithm, (file.sha256 ?? file.sha512)!);
+      await cache.save();
+      reportBytes(file, true);
     });
   };
 
-  await runLimited(needed, concurrency, async (file) => {
-    const target = resolveInside(instanceDir, file.path);
-    inFlight.set(file.path, 0);
-    reportBytes(file, true);
-    await downloadVerified({ url: file.url, target, size: file.size, sha256: file.sha256, sha512: file.sha512 }, {
-      fetch: fetcher,
-      fallbackFetch: options.fetch ? undefined : fetchViaDirectSession,
-      tries: options.tries ?? 3,
-      retryDelayMs: options.retryDelayMs,
-      onBytes: (received) => {
-        inFlight.set(file.path, received);
-        reportBytes(file);
-      },
-      onRetry: (attempt) => progress({ kind: "info", stage: STAGE, message: `다시 받는 중 ${attempt}: ${path.basename(file.path)}`, filePath: file.path })
-    });
-    inFlight.delete(file.path);
-    finishedBytes += file.size;
-    downloaded += 1;
-    // Recorded as each file lands, so an interrupted sync resumes where it stopped.
-    const algorithm = file.sha256 ? "sha256" : "sha512";
-    await cache.remember(file.path, target, algorithm, (file.sha256 ?? file.sha512)!);
-    await cache.save();
-    reportBytes(file, true);
-  });
+  const bundle = manifest.initialInstallBundle;
+  if (bundle && shouldUseInstallBundle(bundle, files, needed)) {
+    const bundledPaths = bundle.paths ? new Set(bundle.paths) : null;
+    const bundleNeeded = bundledPaths ? needed.filter((file) => bundledPaths.has(file.path)) : needed;
+    const individualNeeded = bundledPaths ? needed.filter((file) => !bundledPaths.has(file.path)) : [];
+    const installAndRecheck = async () => {
+      try {
+        await applyInstallBundle(bundle, instanceDir, files, bundleNeeded, progress, {
+          fetch: fetcher,
+          fallbackFetch: options.fetch ? undefined : fetchViaDirectSession,
+          tries: options.tries,
+          retryDelayMs: options.retryDelayMs,
+          freeBytes: options.freeBytes ?? freeDiskBytes,
+          onCommitted: async (file) => {
+            await cache.remember(file.path, resolveInside(instanceDir, file.path), file.sha256 ? "sha256" : "sha512", (file.sha256 ?? file.sha512)!);
+          }
+        });
+      } catch {
+        progress({ kind: "info", stage: STAGE, message: "묶음 파일 대신 개별 파일로 이어받는 중" });
+      }
+      // A failed commit may already have installed verified entries. Recheck only
+      // the bundle partition; independent CDN work has its own verified accounting.
+      const remaining = new Set<PackFile>();
+      await runLimited(bundleNeeded, concurrency, async (file) => {
+        if (!(await cache.matches(file.path, resolveInside(instanceDir, file.path), file))) remaining.add(file);
+      });
+      downloaded += bundleNeeded.length - remaining.size;
+      await cache.save();
+      return bundleNeeded.filter((file) => remaining.has(file));
+    };
+    // A bounded partial ZIP and the remaining large CDN files run together. Both
+    // branches settle before an error escapes or bundle-only fallback begins.
+    const outcomes = await Promise.allSettled([installAndRecheck(), downloadFiles(individualNeeded)]);
+    for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
+    const bundleResult = outcomes[0];
+    if (bundleResult.status === "fulfilled") await downloadFiles(bundleResult.value);
+  } else {
+    await downloadFiles(needed);
+  }
 
   const nextManagedFiles = new Set(files.map((file) => file.path));
   for (const obsoletePath of previousManagedFiles) {
@@ -152,10 +197,10 @@ export function replacedByLauncher(filePath: string): boolean {
 /** Fails before downloading anything when the disk cannot hold the missing files. */
 async function requireDiskSpace(instanceDir: string, files: PackFile[], freeBytes: (dir: string) => Promise<number | null>): Promise<void> {
   let needed = DISK_MARGIN_BYTES;
-  for (const file of files) {
+  await runLimited(files, 8, async (file) => {
     const partial = await fsp.stat(partPath(resolveInside(instanceDir, file.path))).then((stat) => stat.size, () => 0);
     needed += Math.max(0, file.size - (partial <= file.size ? partial : 0));
-  }
+  });
   const free = await freeBytes(instanceDir);
   if (free !== null && free < needed) {
     throw new Error(`저장 공간이 부족해요 · ${toGb(needed - free)}GB 더 필요해요`);

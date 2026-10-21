@@ -49,6 +49,9 @@ jobs:
       - run: node scripts/verify-server-errors.mjs
       - run: node scripts/verify-launch-identity.mjs
       - run: node scripts/verify-modpack-sync.mjs
+      - run: node scripts/verify-runtime-preparation.mjs
+      - run: node scripts/verify-install-bundle.mjs
+      - run: node scripts/verify-bundle-sync.mjs
       - run: node scripts/verify-install-download.mjs
       - run: node scripts/verify-launch-progress.mjs
       - run: npx playwright install --with-deps chromium

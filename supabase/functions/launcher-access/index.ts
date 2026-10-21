@@ -2,7 +2,7 @@ import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
 import { ADMIN_ACTIONS, type AdminRequest, handleAdminRequest, isAdminRequest, parseAdminRequest } from "./admin.ts";
 import { getBearerToken, getLauncherVersion, getSessionId, isLauncherAtLeast, MIN_YGGDRASIL_LAUNCHER } from "./authorization.ts";
-import { isModpackManifest, type ModpackManifest, selectCatalog, usesBweeepAccounts } from "./catalog.ts";
+import { isModpackManifest, selectCatalog, usesBweeepAccounts } from "./catalog.ts";
 import { retryingFetch } from "./db-fetch.ts";
 import { isDiagnosticsLog, uploadDiagnostics } from "./diagnostics.ts";
 import { gameNameTakenMessage, isGameNameTaken, OFFLINE_SERVER } from "./game-name.ts";
@@ -15,7 +15,7 @@ import {
 import { createGameTicket, isGameName, isGameTicket, ticketNameProblem } from "./game-ticket.ts";
 import { decideInvite, invitePolicy, isInviteOpen, type InviteRole } from "./invite-policy.ts";
 import { launchGameName } from "./launch-name.ts";
-import { parseStorageObjectUrl } from "./manifest-shape.ts";
+import { manifestForCatalog, resolveManifestDownloads } from "./manifest-shape.ts";
 import { currentNotice } from "./notice.ts";
 import { decodeBase64, isSkinModel, MAX_SKIN_BYTES, type SkinModel, validateSkinPng } from "./skin-image.ts";
 
@@ -537,7 +537,7 @@ async function handleRequest(request: Request): Promise<Response> {
       if (!supportsYggdrasil && visible.length > 0) {
         return json(OUTDATED_LAUNCHER, 426);
       }
-      return json({ manifests: visible });
+      return json({ manifests: visible.map((entry) => ({ ...entry, manifest: manifestForCatalog(entry.manifest) })) });
     }
 
     const role: InviteRole = membership.role === "admin" ? "admin" : "member";
@@ -650,28 +650,4 @@ async function sha256Bytes(value: Uint8Array<ArrayBuffer>): Promise<string> {
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase();
-}
-
-async function resolveManifestDownloads(
-  supabase: Pick<ReturnType<typeof createClient<any, "public">>, "storage">,
-  rawManifest: unknown
-): Promise<ModpackManifest> {
-  if (!isModpackManifest(rawManifest)) {
-    throw new Error("Stored launcher manifest has an invalid shape.");
-  }
-
-  const files = await Promise.all(rawManifest.files.map(async (file) => {
-    const storageObject = parseStorageObjectUrl(file.url);
-    if (!storageObject) return file;
-
-    const { data, error } = await supabase.storage
-      .from(storageObject.bucket)
-      .createSignedUrl(storageObject.path, 15 * 60);
-    if (error || !data?.signedUrl) {
-      throw new Error(`Unable to sign modpack file ${file.path}.`);
-    }
-    return { ...file, url: data.signedUrl };
-  }));
-
-  return { ...rawManifest, files };
 }

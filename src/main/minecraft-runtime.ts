@@ -1,6 +1,6 @@
 import path from "node:path";
 import fsp from "node:fs/promises";
-import { MinecraftFolder, Version, createMinecraftProcessWatcher, launch } from "@xmcl/core";
+import { LaunchPrecheck, MinecraftFolder, Version, createMinecraftProcessWatcher, launch, type ResolvedVersion } from "@xmcl/core";
 import {
   createDefaultNodeInstallRuntime,
   createFabricInstallWorkflow,
@@ -27,6 +27,7 @@ import type { LaunchIdentity } from "./launch-identity.js";
 import { describeGameExit, type GameExitResult } from "./game-exit.js";
 import { createGameOutputObserver } from "./game-telemetry.js";
 import { InstalledVersions } from "./installed-versions.js";
+import { HashCache } from "./hash-cache.js";
 import { downloadInstallFilesWithSystemNetwork, fetchWithSystemNetwork } from "./system-network.js";
 import { isUsableSystemJava } from "./system-java.js";
 
@@ -45,9 +46,11 @@ export interface LaunchAuthorization {
 export interface PreparedGame {
   javaPath: string;
   version: string;
+  /** Shared with the final, post-sync checks so unchanged libraries are not read twice. */
+  runtimeHashes?: HashCache;
 }
 
-function createInstallContext(progress: ProgressSink): { report: ProgressSink; runtime: InstallRuntime } {
+function createInstallContext(progress: ProgressSink, instanceDir: string, hashes: HashCache): { report: ProgressSink; runtime: InstallRuntime } {
   let activeStage = "게임 파일";
   const report: ProgressSink = (event) => {
     if (event.stage) activeStage = event.stage;
@@ -56,7 +59,13 @@ function createInstallContext(progress: ProgressSink): { report: ProgressSink; r
   const runtime = createDefaultNodeInstallRuntime({
     download: (files) => {
       const batchStage = activeStage;
+      let lastReport = Number.NEGATIVE_INFINITY;
       return downloadInstallFilesWithSystemNetwork(files, (completed, total, filePath, phase) => {
+        // Thousands of small assets otherwise send several IPC/log writes per
+        // file. Keep actual first/final counters and at most four updates/sec.
+        const now = Date.now();
+        if (completed < total && now - lastReport < 250) return;
+        lastReport = now;
         progress({
           kind: phase === "done" ? "info" : "download",
           stage: batchStage,
@@ -70,6 +79,10 @@ function createInstallContext(progress: ProgressSink): { report: ProgressSink; r
       });
     }
   });
+  const checksum = runtime.checksum;
+  runtime.checksum = (target, algorithm) => algorithm === "sha1" || algorithm === "sha256" || algorithm === "sha512"
+    ? hashes.checksum(path.relative(instanceDir, target), target, algorithm).then((hash) => hash ?? "")
+    : checksum(target, algorithm);
   return { report, runtime };
 }
 
@@ -83,20 +96,44 @@ export async function prepareGameFiles(manifest: ModpackManifest, instanceDir: s
   if (!["vanilla", "neoforge", "forge", "fabric"].includes(manifest.loader.kind)) {
     throw new Error("지원하지 않는 Minecraft 로더입니다.");
   }
-  const { report, runtime } = createInstallContext(progress);
+  const runtimeHashes = await HashCache.load(path.join(instanceDir, ".bweeep", "runtime-hashes.json"));
+  const { report, runtime } = createInstallContext(progress, instanceDir, runtimeHashes);
+  const javaContext = createInstallContext(progress, instanceDir, runtimeHashes);
+  const loaderContext = createInstallContext(progress, instanceDir, runtimeHashes);
+  const assetContext = createInstallContext(progress, instanceDir, runtimeHashes);
   const minecraft = MinecraftFolder.from(instanceDir);
   // Versions installed by an earlier launch need no metadata from Mojang, Fabric or Forge.
   const installed = InstalledVersions.forInstance(instanceDir);
   const isUsable = (versionId: string) => Version.parse(minecraft, versionId).then(() => true);
   const loaderKey = `${manifest.loader.kind}:${manifest.minecraftVersion}:${manifest.loader.version}`;
-  const javaPath = await runStage(report, "Java 런타임", () => resolveRuntime(instanceDir, manifest.java, runtime, report));
-  const baseVersion = await runStage(report, "Minecraft 기본 파일", () => installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, report, installed));
-  const version = manifest.loader.kind === "vanilla" ? baseVersion
-    : manifest.loader.kind === "fabric"
-      ? await runStage(report, "Fabric 설치", async () => (await installed.reuseOrInstall(loaderKey, isUsable, () => installFabric(minecraft, manifest, runtime, report))).versionId)
-      : await runStage(report, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", async () =>
-        (await installed.reuseOrInstall(loaderKey, isUsable, () => installForgeFamily(minecraft, manifest, javaPath, runtime, report))).versionId);
-  return { javaPath, version };
+  try {
+    // These write separate folders. Keep their progress contexts separate and
+    // drain both lanes on failure before the caller starts another launch.
+    const [java, base] = await Promise.allSettled([
+      runStage(javaContext.report, "Java 런타임", () => resolveRuntime(instanceDir, manifest.java, javaContext.runtime, javaContext.report)),
+      runStage(report, "Minecraft 기본 파일", () => installMinecraftBase(minecraft, manifest.minecraftVersion, runtime, report, installed))
+    ]);
+    if (java.status === "rejected") throw java.reason;
+    if (base.status === "rejected") throw base.reason;
+    const javaPath = java.value;
+    // Loaders need the base JAR/libraries and Java, not the asset objects.
+    // The base version record is settled before a loader can remember its ID.
+    const [loader, assets] = await Promise.allSettled([
+      manifest.loader.kind === "vanilla" ? Promise.resolve(base.value.id)
+        : manifest.loader.kind === "fabric"
+          ? runStage(loaderContext.report, "Fabric 설치", async () => (await installed.reuseOrInstall(loaderKey, isUsable, () => installFabric(minecraft, manifest, loaderContext.runtime, loaderContext.report))).versionId)
+          : runStage(loaderContext.report, manifest.loader.kind === "forge" ? "Forge 설치" : "NeoForge 설치", async () =>
+            (await installed.reuseOrInstall(loaderKey, isUsable, () => installForgeFamily(minecraft, manifest, javaPath, loaderContext.runtime, loaderContext.report))).versionId),
+      runStage(assetContext.report, "게임 리소스", () => installMinecraftAssets(minecraft, base.value, assetContext.runtime, assetContext.report))
+    ]);
+    if (loader.status === "rejected") throw loader.reason;
+    if (assets.status === "rejected") throw assets.reason;
+    return { javaPath, version: loader.value, runtimeHashes };
+  } finally {
+    // The digest cache is optional. A full disk or read-only cache must not
+    // hide a real preparation error or make an otherwise usable game fail.
+    await runtimeHashes.save().catch(() => undefined);
+  }
 }
 
 export async function installAndLaunch(
@@ -112,11 +149,13 @@ export async function installAndLaunch(
   /** The game files, when the caller already started preparing them next to the pack sync. */
   preparing?: Promise<PreparedGame>
 ): Promise<{ pid: number; version: string }> {
-  const { javaPath, version } = await (preparing ?? prepareGameFiles(manifest, instanceDir, progress));
-  const { report, runtime } = createInstallContext(progress);
+  const prepared = await (preparing ?? prepareGameFiles(manifest, instanceDir, progress));
+  const { javaPath, version } = prepared;
+  const runtimeHashes = prepared.runtimeHashes ?? await HashCache.load(path.join(instanceDir, ".bweeep", "runtime-hashes.json"));
+  const { report, runtime } = createInstallContext(progress, instanceDir, runtimeHashes);
   const minecraft = MinecraftFolder.from(instanceDir);
   // After the pack sync: files the pack brings itself (the Fabric libraries, for one) are already in place and skipped.
-  await runStage(report, "실행 라이브러리", () => installLaunchLibraries(minecraft, version, runtime, report));
+  const resolvedVersion = await runStage(report, "실행 라이브러리", () => installLaunchLibraries(minecraft, version, runtime, report));
   if (await removeStaleLockMod(instanceDir, manifest, bundledClientMods)) {
     report({ kind: "info", stage: "게임 파일", message: "안 쓰는 예전 모드 정리" });
   }
@@ -141,7 +180,8 @@ export async function installAndLaunch(
     gamePath: instanceDir,
     resourcePath: instanceDir,
     javaPath,
-    version,
+    version: resolvedVersion,
+    prechecks: cachedLaunchPrechecks(instanceDir, runtimeHashes),
     accessToken: identity.accessToken,
     gameProfile: { id: identity.id, name: identity.name },
     // authlib-injector expects "mojang"; offline servers keep the legacy type.
@@ -158,7 +198,9 @@ export async function installAndLaunch(
     },
     minMemory: memory.minMb,
     maxMemory: memory.maxMb
-  });
+  // Never reject a successful spawn over an optional cache write: the caller
+  // must receive the PID and the exit observers below must always be attached.
+  }).finally(() => runtimeHashes.save().catch(() => undefined));
   report({ kind: "info", stage: "게임 프로세스", message: "창 여는 중" });
   gameProcess.stdout?.on("data", createGameOutputObserver(report));
   gameProcess.stderr?.on("data", createGameOutputObserver(report));
@@ -203,15 +245,45 @@ async function installLaunchLibraries(
   versionId: string,
   runtime: InstallRuntime,
   progress: ProgressSink
-): Promise<void> {
+): Promise<ResolvedVersion> {
   const resolved = await Version.parse(minecraft, versionId);
   const files = resolveLibraryInstallFiles(resolved.libraries, minecraft)
     .filter((file): file is NonNullable<typeof file> => Boolean(file));
-  if (files.length === 0) return;
+  if (files.length === 0) return resolved;
   progress({ kind: "info", stage: "실행 라이브러리", message: `${files.length}개 확인` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-launch-libraries", type: "files", files }] }, runtime, {
     onEvent: (event) => publishInstallerEvent(progress, "실행 라이브러리", event)
   });
+  return resolved;
+}
+
+/** The same core checks, sharing digests already verified by the installer. */
+export function cachedLaunchPrechecks(instanceDir: string, hashes: HashCache): LaunchPrecheck[] {
+  const matches = async (target: string, expected: string | undefined): Promise<boolean> => {
+    if (!expected) return fsp.access(target).then(() => true, () => false);
+    return await hashes.checksum(path.relative(instanceDir, target), target, "sha1").catch(() => null) === expected;
+  };
+  return [
+    async (resource, version) => {
+      const expected = version.downloads.client?.sha1;
+      if (expected && !await matches(resource.getVersionJar(version.minecraftVersion), expected)) {
+        throw Object.assign(new Error(`Corrupted Version jar ${resource.getVersionJar(version.minecraftVersion)}. Either the file not reachable or the file sha1 not matched!`), {
+          error: "CorruptedVersionJar", version: version.minecraftVersion
+        });
+      }
+    },
+    async (resource, version) => {
+      const valid = await Promise.all(version.libraries.map((library) => matches(resource.getLibraryByPath(library.download.path), library.download.sha1)));
+      const corrupted = version.libraries.filter((_, index) => !valid[index]);
+      if (corrupted.length > 0) {
+        throw Object.assign(new Error(`Missing ${corrupted.length} libraries! Either the file not reachable or the file sha1 not matched!`), {
+          error: "MissingLibraries", libraries: corrupted, version
+        });
+      }
+    },
+    LaunchPrecheck.checkNatives,
+    LaunchPrecheck.linkAssets
+  ];
 }
 
 async function runStage<T>(progress: ProgressSink, stage: string, action: () => Promise<T>): Promise<T> {
@@ -289,7 +361,7 @@ async function installMinecraftBase(
   runtime: InstallRuntime,
   progress: ProgressSink,
   installed: InstalledVersions
-): Promise<string> {
+): Promise<ResolvedVersion> {
   progress({ kind: "info", stage: "게임 정보", message: `Minecraft ${minecraftVersion}` });
   const { versionId } = await installed.reuseOrInstall(`minecraft:${minecraftVersion}`, (id) => Version.parse(minecraft, id).then(() => true), async () => {
     const entry = (await getVersionList({ fetch: fetchWithSystemNetwork })).versions.find((item) => item.id === minecraftVersion);
@@ -307,12 +379,20 @@ async function installMinecraftBase(
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-base", type: "files", files: baseFiles }] }, runtime, {
     onEvent: (event) => publishInstallerEvent(progress, "라이브러리", event)
   });
+  return resolved;
+}
+
+async function installMinecraftAssets(
+  minecraft: MinecraftFolder,
+  resolved: ResolvedVersion,
+  runtime: InstallRuntime,
+  progress: ProgressSink
+): Promise<void> {
   const assetFiles = await resolveAssetObjectInstallFiles(resolved, minecraft);
   progress({ kind: "info", stage: "게임 리소스", message: `${assetFiles.length}개 준비` });
   await executeInstallManifest({ schemaVersion: 1, tasks: [{ id: "minecraft-assets", type: "files", files: assetFiles }] }, runtime, {
     onEvent: (event) => publishInstallerEvent(progress, "게임 리소스", event)
   });
-  return resolved.id;
 }
 
 async function installForgeFamily(

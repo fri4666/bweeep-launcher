@@ -8,7 +8,7 @@ import * as yauzl from "yauzl";
 import type { LoaderKind, MrpackSource, PackFile, SyncProgress } from "../shared/types.js";
 import { fetchViaDirectSession, fetchWithSystemNetwork } from "./system-network.js";
 import { hashFile } from "./hash.js";
-import { downloadVerified, type Fetcher } from "./download.js";
+import { downloadVerified, runLimited, type Fetcher } from "./download.js";
 import type { HashCache } from "./hash-cache.js";
 
 type ProgressSink = (event: SyncProgress) => void;
@@ -49,6 +49,7 @@ interface MrpackState {
 
 /** Overrides up to this size are read into memory; bigger ones are streamed to a temporary file. */
 const SMALL_ENTRY_BYTES = 2 * 1024 * 1024;
+const OVERRIDE_CONCURRENCY = 4;
 
 /** Downloads only a hash-pinned archive, then accepts only safe, indexed client files. */
 export async function prepareMrpack(
@@ -67,10 +68,13 @@ export async function prepareMrpack(
   const cacheKey = `.bweeep/mrpack/${archiveName}`;
   const statePath = path.join(instanceDir, ".bweeep", "mrpack-state.json");
 
-  // Same archive as the last complete run, nothing to apply: the archive is not even opened.
-  // A default the player deleted is put back, so a missing override sends this launch the long way.
+  // Same archive: check only that the defaults still exist. A missing default
+  // needs that entry again, not another read/hash of every installed default.
   const state = await readState(statePath);
-  if (state && stateIsCurrent(state, source, expected) && await allExist(instanceDir, state.overrides)) {
+  const missing = state && stateIsCurrent(state, source, expected)
+    ? await missingOverrides(instanceDir, state.overrides)
+    : null;
+  if (state && missing?.length === 0) {
     return { files: state.files, applyOverrides: async () => undefined };
   }
 
@@ -95,8 +99,7 @@ export async function prepareMrpack(
     }
   }
 
-  const listing = await listArchive(archivePath);
-  const indexBytes = await readArchiveEntry(archivePath, "modrinth.index.json");
+  const { entries: listing, indexBytes } = await readArchive(archivePath);
   if (!indexBytes) throw new Error("모드팩의 Modrinth 목록을 찾지 못했습니다.");
   const index = parseIndex(indexBytes, expected);
   const files = index.files.filter((entry) => !isServerList(entry.path)).map((entry) => ({
@@ -105,11 +108,16 @@ export async function prepareMrpack(
     sha512: entry.hashes.sha512!,
     url: entry.downloads[0]
   }));
-  const overrides = listing.filter((entry) => entry.name.startsWith("overrides/") && !entry.name.endsWith("/"));
+  const overrides = listing.filter((entry) => entry.fileName.startsWith("overrides/"));
+  const repair = missing ? new Set(missing) : undefined;
+  const overrideNames = new Set(overrides.map((entry) => entry.fileName.slice("overrides/".length)));
+  if (repair && [...repair].some((relative) => !overrideNames.has(relative))) {
+    throw new Error("저장된 모드팩 기본 설정 목록이 압축 파일과 일치하지 않습니다.");
+  }
   return {
     files,
     applyOverrides: async (root, sink) => {
-      const applied = await applyOverrides(root, archivePath, overrides, sink);
+      const applied = await applyOverrides(root, archivePath, overrides, sink, repair);
       await writeState(statePath, { version: 1, archive: source.sha512.toLowerCase(), minecraftVersion: expected.minecraftVersion, loader: expected.loader, files, overrides: applied });
       // Older archives are never needed again: a launch with the same archive does not open it.
       await removeOtherArchives(archiveDir, archiveName);
@@ -123,15 +131,54 @@ function stateIsCurrent(state: MrpackState, source: MrpackSource, expected: Expe
     state.loader.kind === expected.loader.kind && state.loader.version === expected.loader.version;
 }
 
-async function allExist(instanceDir: string, relativePaths: string[]): Promise<boolean> {
+async function missingOverrides(instanceDir: string, relativePaths: string[]): Promise<string[]> {
+  const missing: string[] = [];
+  const parents = new Map<string, string[]>();
   for (const relative of relativePaths) {
-    try {
-      await fsp.access(path.resolve(instanceDir, relative));
-    } catch {
-      return false;
-    }
+    const parent = path.dirname(path.resolve(instanceDir, relative));
+    const children = parents.get(parent) ?? [];
+    children.push(relative);
+    parents.set(parent, children);
   }
-  return true;
+  await runLimited([...parents], 8, async ([parent, relatives]) => {
+    let entries: Map<string, fs.Dirent>;
+    try {
+      entries = new Map((await fsp.readdir(parent, { withFileTypes: true })).map((entry) => [entry.name, entry]));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      missing.push(...relatives);
+      return;
+    }
+    for (const relative of relatives) {
+      const entry = entries.get(path.basename(relative));
+      if (!entry) {
+        // Windows directories can be case-sensitive too. Only an exact name
+        // is conclusive; stat resolves a differently cased candidate according
+        // to this directory's actual rules on every platform.
+        const folded = path.basename(relative).toLowerCase();
+        if ([...entries.keys()].some((name) => name.toLowerCase() === folded)) {
+          try {
+            const stat = await fsp.stat(path.resolve(instanceDir, relative));
+            if (!stat.isFile()) throw new Error(`모드팩 기본 설정 경로가 파일이 아닙니다: ${relative}`);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            missing.push(relative);
+          }
+        } else missing.push(relative);
+      } else if (!entry.isFile()) {
+        // Follow file symlinks just as stat() did; directory and dangling links
+        // must not make an installation look complete.
+        try {
+          const stat = await fsp.stat(path.resolve(instanceDir, relative));
+          if (!stat.isFile()) throw new Error(`모드팩 기본 설정 경로가 파일이 아닙니다: ${relative}`);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          missing.push(relative);
+        }
+      }
+    }
+  });
+  return missing;
 }
 
 async function readState(statePath: string): Promise<MrpackState | null> {
@@ -197,33 +244,50 @@ function parseIndex(bytes: Buffer, expected: Expected): MrpackIndex {
  * player's. Paths from an older launcher's record (no hashes) count as the
  * player's unless they already equal the pack's copy.
  *
- * Entries are handled one at a time: small ones in memory, big ones (a world
- * folder, say) streamed to a temporary file, so the archive is never held whole.
+ * A bounded number of entries are handled together: small ones in memory, big
+ * ones streamed to temporary files, so the archive is never held whole.
  * Returns the override paths that belong to this archive.
  */
-async function applyOverrides(instanceDir: string, archivePath: string, entries: ArchiveEntry[], progress: ProgressSink): Promise<string[]> {
+async function applyOverrides(instanceDir: string, archivePath: string, entries: yauzl.Entry[], progress: ProgressSink, repair?: Set<string>): Promise<string[]> {
   const recordPath = path.join(instanceDir, ".bweeep", "mrpack-overrides.json");
   const tempDir = path.join(instanceDir, ".bweeep", "mrpack-tmp");
   const previous = await readOverrideRecord(recordPath);
-  const next = new Map<string, string | null>();
-  const wanted = new Map<string, ArchiveEntry>();
+  // Repairing one deleted default must not drop the rest of the saved hashes
+  // or treat the other defaults as files removed by a pack update.
+  const next = repair ? new Map(previous) : new Map<string, string | null>();
+  const wanted = new Map<string, yauzl.Entry>();
   for (const entry of entries) {
-    const relative = entry.name.slice("overrides/".length);
+    const relative = entry.fileName.slice("overrides/".length);
     if (!safeRelativePath(relative)) throw new Error("모드팩 override 경로가 안전하지 않습니다.");
-    if (!isServerList(relative)) wanted.set(entry.name, entry);
+    if (!isServerList(relative)) wanted.set(entry.fileName, entry);
   }
-  const total = wanted.size;
+  const selected = entries.filter((entry) => wanted.has(entry.fileName) && (!repair || repair.has(entry.fileName.slice("overrides/".length))));
+  const total = selected.length;
   let completed = 0;
   let written = 0;
   let kept = 0;
   await fsp.rm(tempDir, { recursive: true, force: true });
   await fsp.mkdir(tempDir, { recursive: true });
+  const directories = new Map<string, Promise<unknown>>();
+  const ensureParent = (target: string) => {
+    const parent = path.dirname(target);
+    let pending = directories.get(parent);
+    if (!pending) {
+      pending = fsp.mkdir(parent, { recursive: true });
+      directories.set(parent, pending);
+    }
+    return pending;
+  };
   try {
-    await walkArchive(archivePath, async (entry, open) => {
-      if (!wanted.has(entry.fileName)) return;
+    await withArchive(archivePath, async (zip) => processEntries(selected, async (entry) => {
       const relative = entry.fileName.slice("overrides/".length);
       const target = path.resolve(instanceDir, relative);
-      const copy = await readEntryCopy(entry, open, tempDir);
+      // A mod/player may have recreated it after the initial existence check.
+      if (repair && (await missingOverrides(instanceDir, [relative])).length === 0) {
+        completed += 1;
+        return;
+      }
+      const copy = await readEntryCopy(entry, () => openEntry(zip, entry), tempDir);
       try {
         const current = await sha256IfFile(target);
         const lastWritten = previous.get(relative) ?? null;
@@ -234,7 +298,7 @@ async function applyOverrides(instanceDir: string, archivePath: string, entries:
         } else if (current === copy.sha256) {
           next.set(relative, copy.sha256);
         } else if (current === null || (lastWritten !== null && current === lastWritten)) {
-          await fsp.mkdir(path.dirname(target), { recursive: true });
+          await ensureParent(target);
           await copy.writeTo(target);
           next.set(relative, copy.sha256);
           written += 1;
@@ -248,15 +312,17 @@ async function applyOverrides(instanceDir: string, archivePath: string, entries:
       } finally {
         await copy.discard();
       }
-    });
+    }));
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true });
   }
   // Defaults the pack dropped are removed only while nobody changed them.
-  for (const [relative, lastWritten] of previous) {
-    if (next.has(relative) || lastWritten === null) continue;
-    const target = path.resolve(instanceDir, relative);
-    if (await sha256IfFile(target) === lastWritten) await fsp.rm(target, { force: true });
+  if (!repair) {
+    for (const [relative, lastWritten] of previous) {
+      if (next.has(relative) || lastWritten === null) continue;
+      const target = path.resolve(instanceDir, relative);
+      if (await sha256IfFile(target) === lastWritten) await fsp.rm(target, { force: true });
+    }
   }
   await fsp.mkdir(path.dirname(recordPath), { recursive: true });
   await fsp.writeFile(recordPath, JSON.stringify({ version: 2, files: Object.fromEntries([...next].sort(([a], [b]) => a.localeCompare(b))) }, null, 2), "utf8");
@@ -304,29 +370,16 @@ async function readEntryCopy(entry: yauzl.Entry, open: () => Promise<Readable>, 
   };
 }
 
-interface ArchiveEntry {
-  name: string;
-  size: number;
-}
-
-/** Entry names and sizes from the central directory; no file content is read. */
-async function listArchive(archivePath: string): Promise<ArchiveEntry[]> {
-  const entries: ArchiveEntry[] = [];
-  await walkArchive(archivePath, async (entry) => {
-    if (!safeRelativePath(entry.fileName)) throw new Error("모드팩 압축 경로가 안전하지 않습니다.");
-    entries.push({ name: entry.fileName, size: entry.uncompressedSize });
-  });
-  return entries;
-}
-
-async function readArchiveEntry(archivePath: string, name: string): Promise<Buffer | null> {
-  let found: Buffer | null = null;
+/** Read the directory and index once; retained entries also locate their data. */
+async function readArchive(archivePath: string): Promise<{ entries: yauzl.Entry[]; indexBytes: Buffer | null }> {
+  const entries: yauzl.Entry[] = [];
+  let indexBytes: Buffer | null = null;
   await walkArchive(archivePath, async (entry, open) => {
-    if (entry.fileName !== name) return;
-    found = await collect(await open());
-    return "stop";
+    if (!safeRelativePath(entry.fileName)) throw new Error("모드팩 압축 경로가 안전하지 않습니다.");
+    entries.push(entry);
+    if (entry.fileName === "modrinth.index.json" && indexBytes === null) indexBytes = await collect(await open());
   });
-  return found;
+  return { entries, indexBytes };
 }
 
 /** Reads a whole entry stream. yauzl's streams are consumed with events; async iteration on them never finishes. */
@@ -334,37 +387,128 @@ function collect(stream: Readable): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     stream.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
-    stream.on("error", reject);
+    stream.on("error", (error) => { stream.destroy(); reject(error); });
     stream.on("end", () => resolve(Buffer.concat(chunks)));
   });
 }
 
-/** Visits the entries one at a time (the next is read after the handler finishes); the handler can end the walk early. */
+/** ZIP metadata is visited once; file data is opened later using these entries. */
 async function walkArchive(
   archivePath: string,
-  onEntry: (entry: yauzl.Entry, open: () => Promise<Readable>) => Promise<void | "stop">
+  onEntry: (entry: yauzl.Entry, open: () => Promise<Readable>) => Promise<void>
 ): Promise<void> {
-  const zip = await new Promise<yauzl.ZipFile>((resolve, reject) => {
-    yauzl.open(archivePath, { lazyEntries: true, validateEntrySizes: true, strictFileNames: true, autoClose: false }, (error, opened) => {
-      if (error || !opened) reject(error ?? new Error("모드팩 압축 파일을 열지 못했습니다."));
-      else resolve(opened);
-    });
-  });
-  try {
+  await withArchive(archivePath, async (zip) => {
     await new Promise<void>((resolve, reject) => {
       zip.on("error", reject);
       zip.on("end", resolve);
       zip.on("entry", (entry: yauzl.Entry) => {
         if (entry.fileName.endsWith("/")) return zip.readEntry();
-        const open = () => new Promise<Readable>((resolveStream, rejectStream) => {
-          zip.openReadStream(entry, (error, stream) => (error || !stream ? rejectStream(error ?? new Error("모드팩 파일을 읽지 못했습니다.")) : resolveStream(stream)));
-        });
-        onEntry(entry, open).then((outcome) => (outcome === "stop" ? resolve() : zip.readEntry()), reject);
+        onEntry(entry, () => openEntry(zip, entry)).then(() => zip.readEntry(), reject);
       });
       zip.readEntry();
     });
-  } finally {
-    zip.close();
+  });
+}
+
+/** Bounded file work; aliases of one destination keep their archive order. */
+async function processEntries(entries: yauzl.Entry[], worker: (entry: yauzl.Entry) => Promise<void>): Promise<void> {
+  const byPath = new Map<string, Promise<void>>();
+  let failure: unknown = null;
+  await runLimited(entries, OVERRIDE_CONCURRENCY, async (entry) => {
+    const normalized = path.normalize(entry.fileName);
+    const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+    const previous = byPath.get(key);
+    const task = (async () => {
+      await previous;
+      if (failure === null) {
+        try { await worker(entry); } catch (error) { failure ??= error; throw error; }
+      }
+    })();
+    byPath.set(key, task);
+    try { await task; } finally { if (byPath.get(key) === task) byPath.delete(key); }
+  });
+}
+
+function openEntry(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<Readable> {
+  return new Promise((resolve, reject) => {
+    zip.openReadStream(entry, (error, stream) => error || !stream ? reject(error ?? new Error("모드팩 파일을 읽지 못했습니다.")) : resolve(stream));
+  });
+}
+
+async function withArchive<T>(archivePath: string, work: (zip: yauzl.ZipFile) => Promise<T>): Promise<T> {
+  const file = await fsp.open(archivePath, "r");
+  let zip: yauzl.ZipFile;
+  try {
+    const reader = new CachedArchiveReader(file, (await file.stat()).size);
+    zip = await new Promise<yauzl.ZipFile>((resolve, reject) => {
+      yauzl.fromRandomAccessReader(reader, reader.size, { lazyEntries: true, validateEntrySizes: true, strictFileNames: true, autoClose: false }, (error, opened) => {
+        if (error || !opened) reject(error ?? new Error("모드팩 압축 파일을 열지 못했습니다."));
+        else resolve(opened);
+      });
+    });
+  } catch (error) {
+    await file.close();
+    throw error;
+  }
+  try { return await work(zip); } finally {
+    await new Promise<void>((resolve, reject) => {
+      zip.once("close", resolve);
+      zip.once("error", reject);
+      zip.close();
+    });
+  }
+}
+
+/**
+ * Yauzl still validates ZIP/ZIP64 and entry sizes. A 1 MiB read cache combines
+ * its many tiny directory/header reads; the whole archive is never buffered.
+ */
+class CachedArchiveReader extends yauzl.RandomAccessReader {
+  private readonly blocks = new Map<number, Promise<Buffer>>();
+  private static readonly BLOCK_BYTES = 128 * 1024;
+  private static readonly MAX_BLOCKS = 8;
+
+  constructor(private readonly file: fsp.FileHandle, readonly size: number) { super(); }
+
+  override _readStreamForRange(start: number, end: number): Readable {
+    const self = this;
+    return Readable.from((async function* () {
+      for (let position = start; position < end;) {
+        const blockStart = Math.floor(position / CachedArchiveReader.BLOCK_BYTES) * CachedArchiveReader.BLOCK_BYTES;
+        const bytes = await self.block(blockStart);
+        const offset = position - blockStart;
+        const length = Math.min(bytes.length - offset, end - position);
+        if (length <= 0) throw new Error("모드팩 압축 파일이 예기치 않게 끝났습니다.");
+        yield bytes.subarray(offset, offset + length);
+        position += length;
+      }
+    })(), { objectMode: false });
+  }
+
+  private block(start: number): Promise<Buffer> {
+    let pending = this.blocks.get(start);
+    if (pending) {
+      this.blocks.delete(start);
+    } else {
+      pending = (async () => {
+        const bytes = Buffer.allocUnsafe(Math.min(CachedArchiveReader.BLOCK_BYTES, Math.max(0, this.size - start)));
+        let offset = 0;
+        while (offset < bytes.length) {
+          const { bytesRead } = await this.file.read(bytes, offset, bytes.length - offset, start + offset);
+          if (bytesRead === 0) throw new Error("모드팩 압축 파일이 예기치 않게 끝났습니다.");
+          offset += bytesRead;
+        }
+        return bytes;
+      })();
+    }
+    this.blocks.set(start, pending);
+    if (this.blocks.size > CachedArchiveReader.MAX_BLOCKS) this.blocks.delete(this.blocks.keys().next().value!);
+    return pending;
+  }
+
+  override close(callback: (error: Error | null) => void): void {
+    this.blocks.clear();
+    this.file.close().then(() => callback(null), (error: Error) => callback(error));
   }
 }
 

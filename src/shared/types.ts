@@ -16,6 +16,11 @@ export interface MrpackSource {
   sha512: string;
 }
 
+export interface InitialInstallBundle extends MrpackSource {
+  /** Exact immutable-file subset in this ZIP; omitted for a legacy full bundle. */
+  paths?: string[];
+}
+
 export interface ModpackManifest {
   schemaVersion: 1;
   id: string;
@@ -73,6 +78,8 @@ export interface ModpackManifest {
   defaultKeys?: Record<string, string>;
   /** A pinned Modrinth .mrpack whose indexed files and overrides are installed safely. */
   mrpack?: MrpackSource;
+  /** Optional hash-pinned ZIP of immutable managed files, used only for large initial installs. */
+  initialInstallBundle?: InitialInstallBundle;
   files: PackFile[];
   notes?: string;
 }
