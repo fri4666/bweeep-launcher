@@ -9,6 +9,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+const groupMode = process.env.GROUP_MODE === "1";
 const root = path.resolve(import.meta.dirname, "..");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bweeep-invites-"));
 const container = `bweeep-invites-${randomUUID()}`;
@@ -98,6 +99,12 @@ try {
     select 'old-' || n, '${member}', now() + interval '7 days', now() - interval '2 days' from generate_series(1,3) as n;
     insert into public.launcher_invites (code_hash, created_by, expires_at, uses)
     select 'closed-' || n, '${member}', now() + interval '7 days', 1 from generate_series(1,60) as n;`);
+  if (groupMode) {
+    await sql("alter table public.launcher_members add column group_id text not null default 'original' check (group_id in ('original','friend-a','friend-b')); alter table public.launcher_invites add column group_id text not null default 'original' check (group_id in ('original','friend-a','friend-b')); grant insert(group_id) on public.launcher_invites to service_role, public;");
+    await sql(`update public.launcher_members set group_id=case when user_id='${admin}' then 'friend-b' else 'friend-a' end; update public.launcher_invites set group_id='friend-a';`);
+    await sql(fs.readFileSync(path.join(root, "scripts/fixtures/invite-groups.sql"), "utf8"));
+  }
+  await sql("create function public.launcher_create_invite(uuid,text,integer) returns void language sql as 'select null::void';");
   assert.equal(await sql(`select count(*) from (select * from public.launcher_invites where created_by='${member}' order by created_at desc limit 50) as recent where revoked_at is null and expires_at > now() and uses < max_uses;`), "0");
   assert.equal(await sql(`select count(*) from public.launcher_invites where created_by='${member}' and uses < max_uses;`), "3");
   console.log("ok original history slice hides all three active invites");
@@ -155,6 +162,43 @@ try {
   assert.equal(await sql("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname in ('launcher_create_invite','launcher_list_invites','launcher_revoke_invite') and prosecdef and proconfig @> array['search_path=\"\"'];"), "3");
   await assert.rejects(create(outsider, "not-member"), /NOT_MEMBER/);
   console.log("ok RPC grants and direct-insert bypass denial");
+
+  assert.equal(await sql("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname='launcher_create_invite';"), "1");
+  assert.equal(await sql("select to_regprocedure('public.launcher_create_invite(uuid,text,integer)') is null;"), "t");
+  assert.equal(await sql("select count(*) from pg_proc where oid='public.launcher_create_invite(uuid,text,integer,text)'::regprocedure and pronargdefaults=2;"), "1");
+  await sql(fs.readFileSync(path.join(root, "supabase/migrations", migration), "utf8"));
+  assert.equal(await sql("select count(*) from pg_proc where pronamespace='public'::regnamespace and proname='launcher_create_invite';"), "1");
+  assert.equal(await sql("select has_any_column_privilege('service_role', 'public.launcher_invites', 'INSERT');"), "f");
+  if (groupMode) {
+    assert.equal(made.group_id, "friend-a");
+    assert.equal(await sql("select group_id from public.launcher_invites where code_hash='member-one';"), "friend-a");
+    let groupList = JSON.parse(await sql(`set role service_role; select public.launcher_list_invites('${member}');`));
+    assert.equal(groupList.groupId, "friend-a");
+    assert.ok(groupList.invites.every(i => i.groupId === "friend-a"));
+    const memberInvite = JSON.parse(await sql(`set role service_role; select row_to_json(v) from public.launcher_create_invite('${other}', 'member-group-spoof', 20, 'friend-b') v;`));
+    assert.equal(memberInvite.group_id, "friend-a"); assert.equal(memberInvite.max_uses, 1);
+    const adminInvite = JSON.parse(await sql(`set role service_role; select row_to_json(v) from public.launcher_create_invite('${admin}', 'admin-target-a', 20, 'friend-a') v;`));
+    assert.equal(adminInvite.group_id, "friend-a"); assert.equal(adminInvite.max_uses, 20);
+    const adminDefault = JSON.parse(await create(admin, "admin-own-default"));
+    assert.equal(adminDefault.group_id, "friend-b");
+    await assert.rejects(sql(`set role service_role; select * from public.launcher_create_invite('${admin}', 'bad-group', 1, 'unknown');`), /INVALID_INVITE_GROUP/);
+    const joiner = "00000000-0000-0000-0000-000000000005";
+    await sql(`insert into auth.users values ('${joiner}');`);
+    const redeem = JSON.parse(await sql(`set role service_role; select row_to_json(v) from public.redeem_launcher_invite('admin-target-a', '${joiner}') v;`));
+    assert.equal(redeem.ok, true);
+    assert.equal(await sql(`select group_id from public.launcher_members where user_id='${joiner}';`), "friend-a");
+    await assert.rejects(sql(`set role service_role; insert into public.launcher_invites(group_id) values ('friend-a');`), /permission denied/);
+    const changingGroup = sql(`set application_name='bweeep-invite-group-change'; begin; update public.launcher_members set group_id='friend-b' where user_id='${other}'; select pg_sleep(0.5); commit;`);
+    await waitFor("select count(*) from pg_stat_activity where application_name='bweeep-invite-group-change' and wait_event='PgSleep';");
+    assert.equal(JSON.parse(await create(other, "after-group-change")).group_id, "friend-b");
+    await changingGroup;
+    console.log("ok group inheritance/admin target/list/redeem, group-column bypass and concurrent group change");
+  } else {
+    assert.equal(made.group_id, "original");
+    await assert.rejects(sql(`set role service_role; select * from public.launcher_create_invite('${admin}', 'no-group-schema', 1, 'friend-a');`), /INVALID_INVITE_GROUP/);
+    console.log("ok original schema compatibility and unsupported group fails closed");
+  }
+
   await sql(`update public.launcher_members set role='admin' where user_id='${other}';`);
   const demotion = sql(`set application_name='bweeep-invite-demotion'; begin; update public.launcher_members set role='member' where user_id='${other}'; select pg_sleep(0.5); commit;`);
   await waitFor("select count(*) from pg_stat_activity where application_name='bweeep-invite-demotion' and wait_event='PgSleep';");

@@ -21,7 +21,7 @@ Deno.test("invite creation uses the atomic RPC and returns its authoritative exp
   check(response.status === 200 && body.id === "invite-id" && body.code === codes.create(), "Create response changed.");
   check(body.expiresAt === "2030-01-01T00:00:00Z" && body.maxUses === 1, "Edge must use the database role policy and clock.");
   check(database.calls.length === 1 && database.calls[0].name === "launcher_create_invite", "Creation must be one atomic RPC.");
-  check(JSON.stringify(database.calls[0].args) === JSON.stringify({ p_user_id: "member-id", p_code_hash: "code-hash", p_max_uses: 20 }), "Only a normalized requested limit and hashed code belong in the RPC.");
+  check(JSON.stringify(database.calls[0].args) === JSON.stringify({ p_user_id: "member-id", p_code_hash: "code-hash", p_max_uses: 20, p_group_id: null }), "Only the user identity, normalized request and hashed code belong in the RPC.");
 });
 
 Deno.test("active invite listing preserves older codes beyond both history and Data API row limits", async () => {
@@ -44,10 +44,27 @@ Deno.test("revoking an owned ID never depends on a bounded history list", async 
 
 Deno.test("invite RPC cap, removal and database failures retain public status codes", async () => {
   const request: InviteRequest = { action: "createInvite" };
-  for (const [message, status] of [["INVITE_LIMIT_REACHED", 409], ["NOT_MEMBER", 403], ["database unavailable", 500]] as const) {
+  for (const [message, status] of [["INVITE_LIMIT_REACHED", 409], ["NOT_MEMBER", 403], ["INVALID_INVITE_GROUP", 400], ["database unavailable", 500]] as const) {
     const response = await handleInviteRequest(fakeDatabase(null, message), "user", request, codes);
     const body = await response.json();
     check(response.status === status && typeof body.message === "string" && !JSON.stringify(body).includes("BWEEP-"), "Failures must not expose a usable invite code.");
   }
   check((await handleInviteRequest(fakeDatabase([]), "user", request, codes)).status === 500, "An empty creation result must fail closed.");
+});
+
+Deno.test("group invite creation forwards only the request and returns the database group", async () => {
+  const database = fakeDatabase([{ id: "id", expires_at: "2030-01-01", max_uses: 1, group_id: "friend-a" }]);
+  const response = await handleInviteRequest(database, "member", { action: "createInvite", groupId: "friend-b" }, codes);
+  const body = await response.json();
+  check(database.calls[0].args.p_group_id === "friend-b", "Group request must reach the authoritative row-locked RPC.");
+  check(body.groupId === "friend-a", "Return the database group, never echo an untrusted requested group.");
+});
+
+Deno.test("group listing retains both caller group and invite groups", async () => {
+  const expected = { role: "admin", groupId: "friend-b", maxUsesLimit: 20, activeLimit: null, invites: [
+    { id: "one", groupId: "friend-a" }, { id: "two", groupId: "original" }
+  ] };
+  const database = fakeDatabase(expected);
+  const response = await handleInviteRequest(database, "admin", { action: "listInvites" }, codes);
+  check(JSON.stringify(await response.json()) === JSON.stringify(expected), "Existing group API shape must survive.");
 });

@@ -569,7 +569,7 @@ function isRequestBody(value: unknown): value is RequestBody {
   }
   if (body.action === "listInvites") return true;
   if (body.action === "revokeInvite") return typeof body.inviteId === "string" && /^[0-9a-f-]{36}$/i.test(body.inviteId);
-  return body.action === "createInvite";
+  return body.action === "createInvite" && (body.groupId === undefined || typeof body.groupId === "string");
 }
 
 function createInviteCode(): string {

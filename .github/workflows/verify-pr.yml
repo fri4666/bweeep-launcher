@@ -45,6 +45,7 @@ jobs:
       - run: node scripts/verify-notice-relay.mjs
       - run: node scripts/verify-server-gate.mjs
       - run: node scripts/verify-invite-management.mjs
+      - run: GROUP_MODE=1 node scripts/verify-invite-management.mjs
       - run: node scripts/verify-server-schedule.mjs
       - run: node scripts/verify-notice.mjs
       - run: node scripts/verify-server-errors.mjs
