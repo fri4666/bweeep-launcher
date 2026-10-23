@@ -15,6 +15,15 @@ jobs:
           persist-credentials: false
       - shell: pwsh
         run: ./scripts/verify-file-helper.ps1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/ensure-xmcl-compat.mjs
+      - run: npx tsc -p tsconfig.json
+      - name: 숨김 PowerShell 실행과 해시 거절 확인
+        run: node scripts/verify-protected-installer.mjs
 
   verify:
     runs-on: ubuntu-latest

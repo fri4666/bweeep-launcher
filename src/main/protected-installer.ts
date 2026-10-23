@@ -157,7 +157,7 @@ export function launchProtectedInstaller(installer: PreparedInstaller, root: str
   }
   const powershell = path.win32.join(environment.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const child = (options.spawnProcess ?? spawn)(powershell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(PROTECTED_INSTALLER_COMMAND, "utf16le").toString("base64")], {
-    detached: true, windowsHide: true, stdio: ["pipe", "pipe", "pipe"]
+    detached: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"]
   });
   return new Promise((resolve, reject) => {
     let settled = false;
