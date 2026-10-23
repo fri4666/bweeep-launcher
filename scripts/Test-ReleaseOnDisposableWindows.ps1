@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory=$true)][ValidateSet('FreshNSIS','LegacyBridge','FileBridge')][string]$Mode,
+  [Parameter(Mandatory=$true)][ValidateSet('FreshNSIS','LegacyBridge','FileBridge','FixedFileBridge')][string]$Mode,
   [ValidateSet('x64','arm64')][string]$Architecture='x64',
   [string]$ExpectedStableVersion='0.1.40',
   [string]$ExpectedStableInstallerSha256,
@@ -107,7 +107,7 @@ function Resolve-Release([string]$version,[hashtable]$headers){
 function Download-Installer([string]$version,[string]$destination,[string]$pinnedSha='') {
   $apiHeaders=@{Accept='application/vnd.github+json'}
   if($env:GH_TOKEN){$apiHeaders.Authorization='Bearer '+$env:GH_TOKEN}
-  if(($Mode -eq 'FreshNSIS' -and $version -eq $ExpectedStableVersion -and ($StagedCandidate -or -not $promoted)) -or ($StagedCandidate -and $Architecture -eq 'arm64' -and $Mode -eq 'FileBridge')){
+  if(($Mode -eq 'FreshNSIS' -and $version -eq $ExpectedStableVersion -and ($StagedCandidate -or -not $promoted)) -or ($StagedCandidate -and $Architecture -eq 'arm64' -and $Mode -eq 'FileBridge') -or $Mode -eq 'FixedFileBridge'){
     $extraSha=$pinnedSha;$digestSource=if($pinnedSha){'reviewed-pin'}else{'signed-archive'}
     $metadataSource='not-visible-to-read-token';$releaseId=$null;$assetId=$null
     try{
@@ -175,7 +175,7 @@ try {
   }
   $manifestUrl=if($promoted -and -not $StagedCandidate){'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/channels/stable/'+$Architecture+'.json'}else{'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/manifests/'+$ExpectedStableVersion+'/'+$Architecture+'/stable.json'}
   $receipt.manifestSource=$manifestUrl
-  $baseline=if($Mode -eq 'LegacyBridge'){'0.1.39'}elseif($Mode -eq 'FileBridge'){$FileBaselineVersion}else{$ExpectedStableVersion}
+  $baseline=if($Mode -eq 'LegacyBridge'){'0.1.39'}elseif($Mode -eq 'FileBridge'){$FileBaselineVersion}elseif($Mode -eq 'FixedFileBridge'){"${ExpectedStableVersion}-beta.1"}else{$ExpectedStableVersion}
   $installer=Join-Path $work (Installer-Name $baseline)
   $pin=if($baseline -eq $ExpectedStableVersion){$ExpectedStableInstallerSha256}else{''}
   $receipt.installer=Download-Installer $baseline $installer $pin
@@ -260,7 +260,7 @@ try {
     if(-not(Test-Path -LiteralPath $p -PathType Leaf)){throw "Missing installed manifest file: $($f.path)"}
     if((Get-Item -LiteralPath $p).Length -ne $f.size -or (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne $f.sha256){throw "Installed file mismatch: $($f.path)"}
   }
-  if($Mode -eq 'FileBridge'){
+  if($Mode -in @('FileBridge','FixedFileBridge')){
     $matchingPlans=@()
     foreach($appName in $baselineMetadata.userDataNames){
       $stageDir=Join-Path (Join-Path $env:APPDATA $appName) 'launcher-update-stage'

@@ -5,7 +5,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const modes = ['FreshNSIS', 'LegacyBridge', 'FileBridge'];
+const modes = ['FreshNSIS', 'LegacyBridge', 'FileBridge', 'FixedFileBridge'];
 const armModes = ['FreshNSIS', 'FileBridge'];
 const proofAsset = 'native-protected-validation.json';
 
@@ -25,6 +25,7 @@ function verifyArchitectureProof({ architecture, requiredModes, version, sourceS
     assert.equal(receipt.runnerArch?.toLowerCase(), architecture, `${mode} was not tested on a native ${architecture} runner`);
     assert.equal(receipt.phase, 'passed', `${mode} is not a completed actual pass`);
     assert.equal(receipt.stagedCandidate, true, `${mode} did not test before channel publication`);
+    assert.equal(receipt.helperTraceEnabled, false, 'Diagnostic helper instrumentation cannot qualify a release');
     assert.equal(receipt.sourceSha, sourceSha);
     assert.equal(receipt.finalVersion, version);
     assert.equal(receipt.candidateInstallerSha256, installerSha256);
@@ -36,8 +37,12 @@ function verifyArchitectureProof({ architecture, requiredModes, version, sourceS
     assert.equal(verification.installedFilesVerified, manifest.files.length);
     if (mode === 'FreshNSIS') assert.equal(receipt.installer.sha256, installerSha256);
     else {
-      assert.equal(receipt.baseline, mode === 'LegacyBridge' ? '0.1.39' : architecture === 'x64' ? '0.1.40-beta.4' : `${version}-beta.1`, 'The required migration baseline was changed');
-      if (mode === 'FileBridge') assert.equal(receipt.baselineLaunchEnvironment?.normalizationApplied, architecture === 'x64', 'The original failure environment was not covered as declared');
+      const oldX64Baseline = mode === 'FileBridge' && architecture === 'x64';
+      assert.equal(receipt.baseline, mode === 'LegacyBridge' ? '0.1.39' : oldX64Baseline ? '0.1.40-beta.4' : `${version}-beta.1`, 'The required migration baseline was changed');
+      if (mode === 'FileBridge' || mode === 'FixedFileBridge') {
+        assert.equal(receipt.baselineLaunchEnvironment?.normalizationApplied, oldX64Baseline, 'The original failure environment was not covered as declared');
+        if (!oldX64Baseline) assert.equal(receipt.baselineLaunchEnvironment?.inheritedPSModulePathPresent, true, 'The fixed helper was not tested with the inherited failure environment');
+      }
       assert.equal(receipt.probe?.targetVersion, version, `${mode} lacks the isolated candidate acknowledgement`);
       assert.equal(receipt.probe?.arch, architecture);
       assert.equal(receipt.probe?.signatureBypass, false);
@@ -46,7 +51,7 @@ function verifyArchitectureProof({ architecture, requiredModes, version, sourceS
       assert.ok(receipt.finalMainPids?.length > 0, `${mode} lacks the restarted application process`);
       assert.ok(receipt.finalMainPids.every((pid) => !receipt.initialMainPids.includes(pid)), `${mode} did not restart`);
     }
-    if (mode === 'FileBridge') {
+    if (mode === 'FileBridge' || mode === 'FixedFileBridge') {
       assert.ok(Array.isArray(receipt.actualChanged) && receipt.actualChanged.length > 0);
       assert.deepEqual([...receipt.actualChanged].sort(), [...receipt.expectedChanged].sort());
       assert.equal(receipt.unchangedFilesUntouched + receipt.actualChanged.length, manifest.files.length);

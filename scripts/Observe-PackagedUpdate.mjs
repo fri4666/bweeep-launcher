@@ -13,7 +13,7 @@ const port = Number(portText);
 assert.ok(Number.isInteger(port) && port >= 1024 && port <= 65535);
 assert.ok(path.isAbsolute(root) && path.isAbsolute(output));
 assert.match(version, /^\d+\.\d+\.\d+$/);
-assert.ok(['FileBridge', 'LegacyBridge'].includes(mode));
+assert.ok(['FileBridge', 'FixedFileBridge', 'LegacyBridge'].includes(mode));
 assert.ok(['plain', 'trace'].includes(helperTrace));
 const helperTraceEnabled = helperTrace === 'trace';
 assert.ok(!helperTraceEnabled || mode === 'FileBridge', 'Helper tracing is a file-update diagnostic only');

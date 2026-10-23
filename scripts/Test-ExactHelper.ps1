@@ -51,7 +51,16 @@ try{& '__HELPER__' -PlanPath '__PLAN__'}catch{$result.error=$_.Exception.Message
     $start.EnvironmentVariables['PSModulePath']=''
     $child=[Diagnostics.Process]::Start($start)
     $stdout=$child.StandardOutput.ReadToEndAsync();$stderr=$child.StandardError.ReadToEndAsync()
-    if(-not $child.WaitForExit(15000)){$child.Kill();throw 'Owned restricted helper fixture did not exit'}
+    if(-not $child.WaitForExit(45000)){
+      $child.Kill();[void]$child.WaitForExit(5000)
+      $stdoutComplete=$stdout.Wait(1000);$stderrComplete=$stderr.Wait(1000)
+      $diagnostic=@{case=(Split-Path -Leaf $c.dir);timeoutSeconds=45;elapsedMs=$clock.ElapsedMilliseconds;timedOut=$true;stdout='';stderr='';stdoutComplete=$stdoutComplete;stderrComplete=$stderrComplete}
+      if($stdoutComplete){$diagnostic.stdout=$stdout.Result.Substring(0,[Math]::Min(8192,$stdout.Result.Length))}
+      if($stderrComplete){$diagnostic.stderr=$stderr.Result.Substring(0,[Math]::Min(8192,$stderr.Result.Length))}
+      @{phase='failed';withoutFileHashCmdlet=$true;results=@($results);failedProbe=$diagnostic}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $base 'result.json') -Encoding UTF8
+      $child.Dispose()
+      throw 'Owned restricted helper fixture did not exit within 45 seconds'
+    }
     if($child.ExitCode -ne 0 -or -not(Test-Path -LiteralPath $resultFile)){throw ('Restricted helper fixture setup failed: '+$stderr.Result)}
     $restricted=Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8|ConvertFrom-Json
     $errorText=$restricted.error;$hashCmdletUnavailable=$restricted.hashCmdletUnavailable

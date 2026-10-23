@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$OutputPath)
+param([Parameter(Mandatory=$true)][string]$OutputPath,[ValidateRange(10,120)][int]$TimeoutSeconds=45)
 $ErrorActionPreference='Stop'
 if($env:OS -ne 'Windows_NT'){throw 'Native Windows PowerShell environment probe required'}
 $powershell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -14,6 +14,10 @@ $command=Get-Command Get-FileHash -ErrorAction SilentlyContinue
 [Console]::Out.WriteLine('convertToJson='+[bool](Get-Command ConvertTo-Json -ErrorAction SilentlyContinue))
 '@
 $results=@()
+function Save-ProbeResults([string]$phase,[string]$errorText=''){
+  @{schema=1;phase=$phase;error=$errorText;hostVersion=$PSVersionTable.PSVersion.ToString();hostEdition=$PSVersionTable.PSEdition;hostModulePath=$env:PSModulePath;timeoutSeconds=$TimeoutSeconds;results=$results;scope='Read-only native child PowerShell probes; only child environment changes, no app or login launch'}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $OutputPath -Encoding UTF8
+}
+Save-ProbeResults 'running'
 foreach($mode in @('inherited','default-module-path','autoload-disabled','native-cmdlets-no-autoload')){
   $script=$probe
   if($mode -eq 'autoload-disabled'){$script='$PSModuleAutoLoadingPreference=''None'';'+$probe}
@@ -31,16 +35,37 @@ $PSModuleAutoLoadingPreference='None';
   $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
   if($mode -eq 'default-module-path'){$start.EnvironmentVariables.Remove('PSModulePath')}
   if($mode -in @('autoload-disabled','native-cmdlets-no-autoload')){$start.EnvironmentVariables['PSModulePath']=''}
-  $child=[Diagnostics.Process]::Start($start)
-  $stdoutRead=$child.StandardOutput.ReadToEndAsync();$stderrRead=$child.StandardError.ReadToEndAsync()
-  if(-not $child.WaitForExit(10000)){$child.Kill();$child.Dispose();throw 'Owned module environment probe did not exit'}
-  $stdout=$stdoutRead.Result;$stderr=$stderrRead.Result
-  $entry=@{mode=$mode;exitCode=$child.ExitCode;stderrPresent=([bool]$stderr)}
-  foreach($line in @($stdout -split '\r?\n')){
-    if($line -match '^(version|edition|modulePath|getFileHash|commandModule|commandPath|convertFromJson|convertToJson)=(.*)$'){$entry[$Matches[1]]=$Matches[2]}
+  $clock=[Diagnostics.Stopwatch]::StartNew();$child=$null
+  $entry=@{mode=$mode;startedUtc=[DateTime]::UtcNow.ToString('o');timeoutSeconds=$TimeoutSeconds;elapsedMs=0;timedOut=$false;exitCode=$null;stdout='';stderr='';stdoutComplete=$false;stderrComplete=$false}
+  $failure=$null
+  try{
+    $child=[Diagnostics.Process]::Start($start)
+    $stdoutRead=$child.StandardOutput.ReadToEndAsync();$stderrRead=$child.StandardError.ReadToEndAsync()
+    if(-not $child.WaitForExit($TimeoutSeconds*1000)){
+      $entry.timedOut=$true
+      $child.Kill()
+      [void]$child.WaitForExit(5000)
+      $failure="Owned module environment probe '$mode' did not exit within $TimeoutSeconds seconds"
+    }
+    $entry.stdoutComplete=$stdoutRead.Wait(1000);$entry.stderrComplete=$stderrRead.Wait(1000)
+    if($entry.stdoutComplete){$entry.stdout=$stdoutRead.Result.Substring(0,[Math]::Min(8192,$stdoutRead.Result.Length))}
+    if($entry.stderrComplete){$entry.stderr=$stderrRead.Result.Substring(0,[Math]::Min(8192,$stderrRead.Result.Length))}
+    if($child.HasExited){$entry.exitCode=$child.ExitCode}
+    $entry.stderrPresent=[bool]$entry.stderr
+    foreach($line in @($entry.stdout -split '\r?\n')){
+      if($line -match '^(version|edition|modulePath|getFileHash|commandModule|commandPath|convertFromJson|convertToJson)=(.*)$'){$entry[$Matches[1]]=$Matches[2]}
+    }
+    if(-not $failure -and $entry.exitCode -ne 0){$failure="Owned module environment probe '$mode' failed with exit code $($entry.exitCode)"}
+  }catch{
+    $failure=$_.Exception.Message
+  }finally{
+    $clock.Stop();$entry.elapsedMs=$clock.ElapsedMilliseconds
+    if($failure){$entry.error=$failure.Substring(0,[Math]::Min(1024,$failure.Length))}
+    $results+=@($entry)
+    Save-ProbeResults $(if($failure){'failed'}else{'running'}) $(if($failure){$entry.error}else{''})
+    if($child){$child.Dispose()}
   }
-  $results+=@($entry)
-  $child.Dispose()
+  if($failure){throw $failure}
 }
-@{schema=1;hostVersion=$PSVersionTable.PSVersion.ToString();hostEdition=$PSVersionTable.PSEdition;hostModulePath=$env:PSModulePath;results=$results;scope='Read-only native child PowerShell probes; only child environment changes, no app or login launch'}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $OutputPath -Encoding UTF8
+Save-ProbeResults 'passed'
 Write-Output $OutputPath

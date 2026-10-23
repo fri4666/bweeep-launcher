@@ -7,9 +7,9 @@ on:
         required: true
         default: All
         type: choice
-        options: [All, FreshNSIS, LegacyBridge, FileBridge, BuildCandidate]
+        options: [All, FreshNSIS, LegacyBridge, FileBridge, FixedFileBridge, BuildCandidate]
       architecture:
-        description: All validates native x64 and ARM64; legacy migration exists only on x64
+        description: All runs four x64 and two ARM64 cases; legacy and fixed-helper regressions use x64
         required: true
         default: All
         type: choice
@@ -60,10 +60,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: ${{ fromJSON(inputs.mode == 'FreshNSIS' && '["FreshNSIS"]' || inputs.mode == 'LegacyBridge' && '["LegacyBridge"]' || inputs.mode == 'FileBridge' && '["FileBridge"]' || '["FreshNSIS","LegacyBridge","FileBridge"]') }}
+        mode: ${{ fromJSON(inputs.mode == 'FreshNSIS' && '["FreshNSIS"]' || inputs.mode == 'LegacyBridge' && '["LegacyBridge"]' || inputs.mode == 'FileBridge' && '["FileBridge"]' || inputs.mode == 'FixedFileBridge' && '["FixedFileBridge"]' || '["FreshNSIS","LegacyBridge","FileBridge","FixedFileBridge"]') }}
         architecture: ${{ fromJSON(inputs.architecture == 'x64' && '["x64"]' || inputs.architecture == 'arm64' && '["arm64"]' || '["x64","arm64"]') }}
         exclude:
           - mode: LegacyBridge
+            architecture: arm64
+          - mode: FixedFileBridge
             architecture: arm64
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +92,7 @@ jobs:
           $version = if ($env:TARGET_VERSION) { $env:TARGET_VERSION } else { (Get-Content package.json -Raw | ConvertFrom-Json).version }
           $baseline = if ($env:FILE_BASELINE) { $env:FILE_BASELINE } else { '0.1.40-beta.4' }
           if ('${{ matrix.architecture }}' -eq 'arm64') { $baseline = if ($env:ARM64_FILE_BASELINE) { $env:ARM64_FILE_BASELINE } else { $version + '-beta.1' } }
+          if ('${{ matrix.mode }}' -eq 'FixedFileBridge') { $baseline = $version + '-beta.1' }
           $timeout = if ($env:UPDATE_TIMEOUT_MINUTES) { [int]$env:UPDATE_TIMEOUT_MINUTES } else { 15 }
           $staged = $env:STAGED_CANDIDATE -eq 'true'
           $trace = $env:TRACE_HELPER_FAILURE -eq 'true'

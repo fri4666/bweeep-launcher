@@ -6,8 +6,8 @@ const installerSha256 = 'b'.repeat(64);
 const version = '0.1.41';
 const manifest = { version, channel: 'stable', arch: 'x64', files: [{ path: 'Bweeep.exe' }, { path: 'same' }], signature: 'candidate-signature' };
 const run = { id: 123, path: '.github/workflows/release-validation.yml', event: 'workflow_dispatch', head_branch: 'main', head_sha: sourceSha, status: 'completed', conclusion: 'success' };
-const receipts = Object.fromEntries(['FreshNSIS', 'LegacyBridge', 'FileBridge'].map((mode) => [mode, {
-  receipt: { mode, arch: 'x64', runnerArch: 'X64', phase: 'passed', stagedCandidate: true, sourceSha, finalVersion: version, candidateInstallerSha256: installerSha256, manifestSignature: manifest.signature, verifiedFiles: 2, installer: { sha256: installerSha256 }, probe: { targetVersion: version, arch: 'x64', signatureBypass: false, helperTraceEnabled: false }, initialMainPids: [10], finalMainPids: [20], actualChanged: ['Bweeep.exe'], expectedChanged: ['Bweeep.exe'], unchangedFilesUntouched: 1 },
+const receipts = Object.fromEntries(['FreshNSIS', 'LegacyBridge', 'FileBridge', 'FixedFileBridge'].map((mode) => [mode, {
+  receipt: { mode, arch: 'x64', runnerArch: 'X64', phase: 'passed', stagedCandidate: true, helperTraceEnabled: false, sourceSha, finalVersion: version, candidateInstallerSha256: installerSha256, manifestSignature: manifest.signature, verifiedFiles: 2, installer: { sha256: installerSha256 }, probe: { targetVersion: version, arch: 'x64', signatureBypass: false, helperTraceEnabled: false }, initialMainPids: [10], finalMainPids: [20], actualChanged: ['Bweeep.exe'], expectedChanged: ['Bweeep.exe'], unchangedFilesUntouched: 1 },
   verification: { version, arch: 'x64', signatureVerified: true, installedFilesVerified: 2 }
 }]));
 const arm64 = { installerSha256: 'f'.repeat(64), manifest: { ...manifest, arch: 'arm64', signature: 'arm-candidate-signature' }, receipts: {} };
@@ -23,7 +23,9 @@ receipts.LegacyBridge.receipt.baseline = '0.1.39';
 receipts.FileBridge.receipt.baseline = '0.1.40-beta.4';
 receipts.FileBridge.receipt.baselineLaunchEnvironment = { normalizationApplied: true };
 arm64.receipts.FileBridge.receipt.baseline = `${version}-beta.1`;
-arm64.receipts.FileBridge.receipt.baselineLaunchEnvironment = { normalizationApplied: false };
+arm64.receipts.FileBridge.receipt.baselineLaunchEnvironment = { normalizationApplied: false, inheritedPSModulePathPresent: true };
+receipts.FixedFileBridge.receipt.baseline = `${version}-beta.1`;
+receipts.FixedFileBridge.receipt.baselineLaunchEnvironment = { normalizationApplied: false, inheritedPSModulePathPresent: true };
 assert.equal(verifyPromotionProof(input).nativeProtected, true);
 
 for (const [name, mutate] of [
@@ -51,10 +53,16 @@ for (const [name, mutate] of [
   ['instrumented helper', (value) => { value.receipts.FileBridge.receipt.probe.helperTraceEnabled = true; }],
   ['missing candidate acknowledgement', (value) => { delete value.receipts.LegacyBridge.receipt.probe; }],
   ['skipped old x64 baseline', (value) => { value.receipts.FileBridge.receipt.baseline = `${version}-beta.1`; }],
-  ['masked ARM64 failure environment', (value) => { value.arm64.receipts.FileBridge.receipt.baselineLaunchEnvironment.normalizationApplied = true; }]
+  ['masked ARM64 failure environment', (value) => { value.arm64.receipts.FileBridge.receipt.baselineLaunchEnvironment.normalizationApplied = true; }],
+  ['missing fixed-helper real-app migration', (value) => { delete value.receipts.FixedFileBridge; }],
+  ['wrong fixed-helper baseline', (value) => { value.receipts.FixedFileBridge.receipt.baseline = '0.1.40-beta.4'; }],
+  ['normalized fixed-helper environment', (value) => { value.receipts.FixedFileBridge.receipt.baselineLaunchEnvironment.normalizationApplied = true; }],
+  ['missing inherited failing environment', (value) => { value.receipts.FixedFileBridge.receipt.baselineLaunchEnvironment.inheritedPSModulePathPresent = false; }],
+  ['fixed helper skipped file verification', (value) => { value.receipts.FixedFileBridge.receipt.actualChanged = []; }],
+  ['top-level diagnostic instrumentation', (value) => { value.receipts.FixedFileBridge.receipt.helperTraceEnabled = true; }]
 ]) {
   const changed = structuredClone(input);
   mutate(changed);
   assert.throws(() => verifyPromotionProof(changed), { name: 'AssertionError' }, name);
 }
-console.log('promotion-gate: five native cases accepted; 25 incomplete or mismatched proofs rejected');
+console.log('promotion-gate: six native cases accepted; 31 incomplete or mismatched proofs rejected');
