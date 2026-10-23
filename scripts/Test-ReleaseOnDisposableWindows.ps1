@@ -103,7 +103,9 @@ function Install-NSIS([string]$installer) {
 }
 try {
   Save-Receipt
-  $latest=Invoke-RestMethod -Uri 'https://api.github.com/repos/fri4666/bweeep-launcher/releases/latest' -Headers @{Accept='application/vnd.github+json'}
+  $latestHeaders=@{Accept='application/vnd.github+json'}
+  if($env:GH_TOKEN){$latestHeaders.Authorization='Bearer '+$env:GH_TOKEN}
+  $latest=Invoke-RestMethod -Uri 'https://api.github.com/repos/fri4666/bweeep-launcher/releases/latest' -Headers $latestHeaders
   $promoted=$latest.tag_name -eq ('v'+$ExpectedStableVersion) -and -not $latest.prerelease -and -not $latest.draft
   if(-not $promoted -and $Mode -ne 'FreshNSIS'){
     $receipt.phase='blocked';$receipt.dependency='Stable release must be published before an actual migration bridge can run; no installer/app was launched.'
