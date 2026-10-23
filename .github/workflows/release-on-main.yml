@@ -41,9 +41,14 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "package.json 버전 형식이 올바르지 않습니다: $version" }
           $tag = "v$version"
           $PSNativeCommandUseErrorActionPreference = $false
-          $draft = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft --jq .isDraft 2>$null
-          $published = $LASTEXITCODE -eq 0 -and $draft -eq "false"
-          $hasDraft = $LASTEXITCODE -eq 0 -and $draft -eq "true"
+          $releaseJson = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,publishedAt 2>$null
+          $hasRelease = $LASTEXITCODE -eq 0
+          $release = if ($hasRelease) { $releaseJson | ConvertFrom-Json } else { $null }
+          $published = $hasRelease -and -not $release.isDraft
+          $hasDraft = $hasRelease -and $release.isDraft
+          if ($hasDraft -and $release.publishedAt) {
+            throw "$tag 는 게시 후 철회된 버전입니다. 기존 설치 파일과 서명 보관본을 덮어쓰지 말고 새 버전 PR을 사용해 주세요."
+          }
           $betas = @(gh release list --repo $env:GITHUB_REPOSITORY --limit 200 --json tagName --jq ".[].tagName" | Where-Object { $_ -like "$tag-beta.*" })
           $next = 1 + ($betas | ForEach-Object { [int]($_ -replace "^.*-beta\.", "") } | Measure-Object -Maximum).Maximum
           "version=$version" >> $env:GITHUB_OUTPUT

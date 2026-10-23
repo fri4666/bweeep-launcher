@@ -10,9 +10,14 @@ on:
         description: "게시할 버전 (예: 0.1.35). 비우면 main의 package.json 버전"
         required: false
         type: string
+      validation_run_id:
+        description: Same-main-revision staged Windows validation run; all modes must pass
+        required: true
+        type: string
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: launcher-release
@@ -33,6 +38,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+
+      # Publishing is unreachable until real staged migrations and the actual
+      # protected-folder update prove this exact draft, version and source SHA.
+      - name: 게시 전 실제 설치 및 자동 업데이트 증거 확인
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+        run: |
+          version="${INPUT_VERSION:-$(node -p 'require("./package.json").version')}"
+          node scripts/verify-promotion-gate.mjs "$version" "$VALIDATION_RUN_ID" "$RUNNER_TEMP/promotion-proof"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: promotion-proof
+          path: ${{ runner.temp }}/promotion-proof/promotion-gate.json
+          if-no-files-found: ignore
 
       - name: 초안 게시
         env:
@@ -69,6 +92,18 @@ jobs:
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern file-update-beta-channel-arm64.json --dir "$RUNNER_TEMP/bweeep-release"
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Bweeep-Setup-$version.exe" --dir "$RUNNER_TEMP/bweeep-release"
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "Bweeep-Setup-$version-arm64.exe" --dir "$RUNNER_TEMP/bweeep-release"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import fsp from 'node:fs/promises';
+          import path from 'node:path';
+          const proof = JSON.parse(await fsp.readFile(path.join(process.env.RUNNER_TEMP, 'promotion-proof', 'promotion-gate.json'), 'utf8'));
+          const directory = path.join(process.env.RUNNER_TEMP, 'bweeep-release');
+          for (const name of await fsp.readdir(directory)) {
+            const digest = createHash('sha256').update(await fsp.readFile(path.join(directory, name))).digest('hex');
+            assert.equal(digest, proof.draftAssetDigests[name], `Draft asset changed after validation: ${name}`);
+          }
+          NODE
           node scripts/publish-installer.mjs "$RUNNER_TEMP/bweeep-release/Bweeep-Setup-$version.exe" "$version" x64 stable
           node scripts/publish-installer.mjs "$RUNNER_TEMP/bweeep-release/Bweeep-Setup-$version-arm64.exe" "$version" arm64 stable
           node scripts/publish-release-notes.mjs "$version" stable build/release-notes.txt

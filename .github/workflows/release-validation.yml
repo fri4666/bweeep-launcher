@@ -8,6 +8,12 @@ on:
         default: All
         type: choice
         options: [All, FreshNSIS, LegacyBridge, FileBridge]
+      architecture:
+        description: All validates native x64 and ARM64; legacy migration exists only on x64
+        required: true
+        default: All
+        type: choice
+        options: [All, x64, arm64]
       target_version:
         description: Candidate version; blank uses package.json
         required: false
@@ -28,19 +34,27 @@ on:
         default: '15'
         type: string
       stable_installer_sha256:
-        description: Reviewed candidate installer SHA-256; required for staged validation
+        description: Reviewed x64 candidate installer SHA-256; required for staged x64 validation
+        required: false
+        type: string
+      stable_installer_arm64_sha256:
+        description: Reviewed ARM64 candidate installer SHA-256; required for staged ARM64 validation
         required: false
         type: string
 permissions:
   contents: read
 jobs:
   nsis-and-update:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.architecture == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         mode: ${{ fromJSON(inputs.mode == 'FreshNSIS' && '["FreshNSIS"]' || inputs.mode == 'LegacyBridge' && '["LegacyBridge"]' || inputs.mode == 'FileBridge' && '["FileBridge"]' || '["FreshNSIS","LegacyBridge","FileBridge"]') }}
+        architecture: ${{ fromJSON(inputs.architecture == 'x64' && '["x64"]' || inputs.architecture == 'arm64' && '["arm64"]' || '["x64","arm64"]') }}
+        exclude:
+          - mode: LegacyBridge
+            architecture: arm64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,7 +68,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_STABLE_SHA: ${{ inputs.stable_installer_sha256 }}
+          EXPECTED_X64_SHA: ${{ inputs.stable_installer_sha256 }}
+          EXPECTED_ARM64_SHA: ${{ inputs.stable_installer_arm64_sha256 }}
           TARGET_VERSION: ${{ inputs.target_version }}
           STAGED_CANDIDATE: ${{ inputs.staged_candidate }}
           FILE_BASELINE: ${{ inputs.file_baseline }}
@@ -64,8 +79,9 @@ jobs:
           $baseline = if ($env:FILE_BASELINE) { $env:FILE_BASELINE } else { '0.1.40-beta.4' }
           $timeout = if ($env:UPDATE_TIMEOUT_MINUTES) { [int]$env:UPDATE_TIMEOUT_MINUTES } else { 15 }
           $staged = $env:STAGED_CANDIDATE -eq 'true'
-          if ($staged -and -not $env:EXPECTED_STABLE_SHA) { throw 'Staged release validation requires the reviewed candidate installer SHA-256' }
-          ./scripts/Test-ReleaseOnDisposableWindows.ps1 -Mode '${{ matrix.mode }}' -ExpectedStableVersion $version -ExpectedStableInstallerSha256 $env:EXPECTED_STABLE_SHA -FileBaselineVersion $baseline -UpdateTimeoutMinutes $timeout -StagedCandidate:$staged -InspectorPort 9229
+          $pin = if ('${{ matrix.architecture }}' -eq 'arm64') { $env:EXPECTED_ARM64_SHA } else { $env:EXPECTED_X64_SHA }
+          if ($staged -and -not $pin) { throw 'Staged release validation requires the reviewed installer SHA-256 for this architecture' }
+          ./scripts/Test-ReleaseOnDisposableWindows.ps1 -Mode '${{ matrix.mode }}' -Architecture '${{ matrix.architecture }}' -ExpectedStableVersion $version -ExpectedStableInstallerSha256 $pin -FileBaselineVersion $baseline -UpdateTimeoutMinutes $timeout -StagedCandidate:$staged -InspectorPort 9229
       - name: 실제 교체 도우미의 롤백과 부모 종료 대기
         if: matrix.mode == 'FreshNSIS'
         shell: pwsh
@@ -73,7 +89,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: windows-release-${{ matrix.mode }}
+          name: windows-release-${{ matrix.mode }}${{ matrix.architecture == 'arm64' && '-arm64' || '' }}
           path: |
             ${{ runner.temp }}/bweeep-release-proof-${{ matrix.mode }}/*.json
             ${{ github.workspace }}/scripts/helper-fixture-*/result.json
