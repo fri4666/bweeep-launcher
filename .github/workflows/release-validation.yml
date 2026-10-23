@@ -1,0 +1,64 @@
+name: 실제 Windows 설치 및 자동 업데이트 검증
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      stable_installer_sha256:
+        description: Optional reviewed stable installer SHA-256 pin
+        required: false
+        type: string
+permissions:
+  contents: read
+jobs:
+  nsis-and-update:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [FreshNSIS, LegacyBridge, FileBridge]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 잠금 파일에 고정된 공식 ASAR 판독기 준비
+        run: npm ci --ignore-scripts
+      - name: 정식 설치 파일과 실제 자동 업데이트
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_STABLE_SHA: ${{ inputs.stable_installer_sha256 }}
+        run: ./scripts/Test-ReleaseOnDisposableWindows.ps1 -Mode '${{ matrix.mode }}' -ExpectedStableVersion '0.1.40' -ExpectedStableInstallerSha256 $env:EXPECTED_STABLE_SHA
+      - name: 실제 교체 도우미의 롤백과 부모 종료 대기
+        if: matrix.mode == 'FreshNSIS'
+        shell: pwsh
+        run: ./scripts/Test-ExactHelper.ps1 -HelperPath './build/file-update-helper.ps1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-release-${{ matrix.mode }}
+          path: |
+            ${{ runner.temp }}/bweeep-release-proof-${{ matrix.mode }}/*.json
+            ${{ github.workspace }}/scripts/helper-fixture-*/result.json
+          retention-days: 7
+  protected-medium-token:
+    name: 보호 폴더 제약 관찰 (수정 검증 아님)
+    continue-on-error: true
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 기본 Program Files 권한과 제한된 토큰의 실제 도우미 확인
+        shell: pwsh
+        run: ./scripts/Test-ProtectedHelperOnRunner.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: protected-medium-token-evidence
+          path: ${{ runner.temp }}/bweeep-protected-helper-proof/*.json
+          retention-days: 7

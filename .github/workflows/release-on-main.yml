@@ -119,6 +119,8 @@ jobs:
           node scripts/publish-file-release.mjs release-installer-beta-arm64/win-arm64-unpacked release-installer-beta-arm64/file-update-beta-arm64.json files
           node scripts/publish-installer.mjs "release-installer/Bweeep-Setup-$env:VERSION.exe" $env:VERSION x64 archive
           node scripts/publish-installer.mjs "release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe" $env:VERSION arm64 archive
+          node scripts/publish-installer.mjs "release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe" $env:BETA_VERSION x64 archive
+          node scripts/publish-installer.mjs "release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe" $env:BETA_VERSION arm64 archive
           node scripts/publish-release-notes.mjs $env:BETA_VERSION beta build/release-notes.txt
           node scripts/publish-file-release.mjs - release-installer-beta/file-update-beta.json channel
           node scripts/publish-file-release.mjs - release-installer-beta-arm64/file-update-beta-arm64.json channel
