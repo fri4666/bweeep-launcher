@@ -1,10 +1,34 @@
 name: 실제 Windows 설치 및 자동 업데이트 검증
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
+      mode:
+        description: A single mode is diagnostic only; promotion requires All
+        required: true
+        default: All
+        type: choice
+        options: [All, FreshNSIS, LegacyBridge, FileBridge]
+      target_version:
+        description: Candidate version; blank uses package.json
+        required: false
+        type: string
+      staged_candidate:
+        description: Validate archived signed candidate without publishing a channel
+        required: true
+        default: true
+        type: boolean
+      file_baseline:
+        description: Installed baseline for the real file updater
+        required: true
+        default: 0.1.40-beta.4
+        type: string
+      update_timeout_minutes:
+        description: Actual automatic-update timeout in minutes
+        required: true
+        default: '15'
+        type: string
       stable_installer_sha256:
-        description: Optional reviewed stable installer SHA-256 pin
+        description: Reviewed candidate installer SHA-256; required for staged validation
         required: false
         type: string
 permissions:
@@ -16,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [FreshNSIS, LegacyBridge, FileBridge]
+        mode: ${{ fromJSON(inputs.mode == 'FreshNSIS' && '["FreshNSIS"]' || inputs.mode == 'LegacyBridge' && '["LegacyBridge"]' || inputs.mode == 'FileBridge' && '["FileBridge"]' || '["FreshNSIS","LegacyBridge","FileBridge"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,7 +55,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_STABLE_SHA: ${{ inputs.stable_installer_sha256 }}
-        run: ./scripts/Test-ReleaseOnDisposableWindows.ps1 -Mode '${{ matrix.mode }}' -ExpectedStableVersion '0.1.40' -ExpectedStableInstallerSha256 $env:EXPECTED_STABLE_SHA
+          TARGET_VERSION: ${{ inputs.target_version }}
+          STAGED_CANDIDATE: ${{ inputs.staged_candidate }}
+          FILE_BASELINE: ${{ inputs.file_baseline }}
+          UPDATE_TIMEOUT_MINUTES: ${{ inputs.update_timeout_minutes }}
+        run: |
+          $version = if ($env:TARGET_VERSION) { $env:TARGET_VERSION } else { (Get-Content package.json -Raw | ConvertFrom-Json).version }
+          $baseline = if ($env:FILE_BASELINE) { $env:FILE_BASELINE } else { '0.1.40-beta.4' }
+          $timeout = if ($env:UPDATE_TIMEOUT_MINUTES) { [int]$env:UPDATE_TIMEOUT_MINUTES } else { 15 }
+          $staged = $env:STAGED_CANDIDATE -eq 'true'
+          if ($staged -and -not $env:EXPECTED_STABLE_SHA) { throw 'Staged release validation requires the reviewed candidate installer SHA-256' }
+          ./scripts/Test-ReleaseOnDisposableWindows.ps1 -Mode '${{ matrix.mode }}' -ExpectedStableVersion $version -ExpectedStableInstallerSha256 $env:EXPECTED_STABLE_SHA -FileBaselineVersion $baseline -UpdateTimeoutMinutes $timeout -StagedCandidate:$staged -InspectorPort 9229
       - name: 실제 교체 도우미의 롤백과 부모 종료 대기
         if: matrix.mode == 'FreshNSIS'
         shell: pwsh
