@@ -4,10 +4,19 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { PassThrough, Writable } from "node:stream";
 import { isProtectedInstallRoot, launchProtectedInstaller, prepareProtectedInstaller, PROTECTED_INSTALLER_COMMAND, verifyInstallerDescriptor } from "../dist/src/main/protected-installer.js";
 import { UPDATE_CHUNK_SIZE, UPDATE_STORAGE_ROOT } from "../dist/src/main/file-update-manifest.js";
+import { FILE_UPDATE_BROKER_COMMAND, startFileUpdateHelper } from "../dist/src/main/file-update-broker.js";
+
+if (process.argv[2] === "--file-helper-lifetime-child") {
+  assert.equal(process.platform, "win32");
+  const [helper, plan, entry, receipt] = process.argv.slice(3);
+  await fs.writeFile(plan, JSON.stringify({ parentPid: process.pid, entry, receipt }));
+  await startFileUpdateHelper(helper, plan);
+  process.exit(0);
+}
 
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "bweeep-protected-installer-"));
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -18,6 +27,8 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const env = { ProgramFiles: "C:\\Program Files", "ProgramFiles(x86)": "C:\\Program Files (x86)", ProgramW6432: "C:\\Program Files", SystemRoot: "C:\\Windows" };
 const root = "C:\\Program Files\\Bweeep";
 let checks = 0;
+let nativePowerShellProof = null;
+let nativeFileHelperProof = null;
 function pass(name) { checks++; console.log(`PASS ${name}`); }
 function descriptor(version = "0.1.40", arch = "x64", bytes = payload) {
   const signed = { schema: 1, version, arch, size: bytes.length, sha256: sha256(bytes), chunkSize: UPDATE_CHUNK_SIZE, chunks: Math.ceil(bytes.length / UPDATE_CHUNK_SIZE) };
@@ -42,7 +53,8 @@ function fetchFixture(options = {}) {
 const prepare = (extra = {}) => prepareProtectedInstaller({ version: "0.1.40", arch: "x64", publicKey: publicPem, stage: temporary,
   signal: new AbortController().signal, progress: () => {}, fetcher: fetchFixture(), ...extra });
 
-// No Windows process or real installer is started. These children model only the UAC acknowledgement protocol.
+// These children model the UAC acknowledgement protocol. The Windows-only negative
+// regression below also executes real PowerShell, with an intentionally wrong hash.
 function childFixture(action, capture) {
   return (executable, args, options) => {
     capture.executable = executable; capture.args = args; capture.options = options;
@@ -109,6 +121,7 @@ try {
   assert.equal(Buffer.from(accepted.args.at(-1), "base64").toString("utf16le"), PROTECTED_INSTALLER_COMMAND);
   assert.equal(accepted.input.root, root); assert.equal(accepted.input.sha256, manifest.sha256);
   assert.equal(accepted.options.windowsHide, true);
+  assert.equal(accepted.options.detached, false);
   pass("wait-for-uac-start-ack-never-process-spawn-alone");
 
   assert.equal(await launchProtectedInstaller(preparedWindows, root, { environment: env, spawnProcess: childFixture((child) => child.stdout.write("BWEEP_INSTALLER_CANCELLED\n"), {}) }), "cancelled");
@@ -141,7 +154,85 @@ try {
   assert.match(workflow, /publish-installer\.mjs "release-installer-beta-arm64\/Bweeep-Setup-\$env:BETA_VERSION-arm64\.exe" \$env:BETA_VERSION arm64 archive/);
   pass("archive-beta-installers-without-promoting-beta-to-stable");
 
-  console.log(JSON.stringify({ checks, pass: true, scope: "isolated network/child protocol fixtures; actual Windows UAC/NSIS remains unverified" }));
+  const helperWindows = "C:\\Users\\Member\\helper.ps1", planWindows = "C:\\Users\\Member\\plan.json";
+  const brokerCapture = {};
+  await startFileUpdateHelper(helperWindows, planWindows, { environment: env, spawnProcess: childFixture((child) => child.stdout.write("BWEEP_FILE_HELPER_STARTED:1234\n"), brokerCapture) });
+  assert.equal(brokerCapture.options.detached, false);
+  assert.equal(brokerCapture.options.windowsHide, true);
+  assert.deepEqual(brokerCapture.input, { helper: helperWindows, plan: planWindows });
+  assert.equal(Buffer.from(brokerCapture.args.at(-1), "base64").toString("utf16le"), FILE_UPDATE_BROKER_COMMAND);
+  assert.ok(!FILE_UPDATE_BROKER_COMMAND.includes("-Verb"));
+  for (const action of [(child) => child.emit("close", 0), (child) => { child.stdout.write("BWEEP_FILE_HELPER_STARTED:0\n"); child.emit("close", 0); }]) {
+    await assert.rejects(() => startFileUpdateHelper(helperWindows, planWindows, { environment: env, spawnProcess: childFixture(action, {}) }));
+  }
+  await assert.rejects(() => startFileUpdateHelper(helperWindows + "\n", planWindows, { environment: env }));
+  pass("writable-file-helper-requires-real-process-ack-without-uac");
+
+  if (process.platform === "win32") {
+    // Use an owned workspace fixture, never an actual installer or Program Files IO.
+    // A known wrong hash MUST reach the PowerShell catch before Start-Process/RunAs.
+    const fixtureParent = path.resolve("design");
+    await fs.mkdir(fixtureParent, { recursive: true });
+    const nativeTemporary = await fs.mkdtemp(path.join(fixtureParent, "protected-installer-native-"));
+    assert.ok(path.resolve(nativeTemporary).startsWith(fixtureParent + path.sep));
+    try {
+      const koreanDirectory = path.join(nativeTemporary, "한글 사용자");
+      await fs.mkdir(koreanDirectory);
+      const fixture = path.join(koreanDirectory, "synthetic-installer.exe");
+      const bytes = Buffer.from("Not a PE executable. This owned fixture must never execute.");
+      await fs.writeFile(fixture, bytes, { flag: "wx" });
+      assert.notEqual(sha256(bytes), "0".repeat(64));
+      let nativeExit;
+      let nativeOutput = "", nativeError = "";
+      const forwardedSpawn = (executable, args, options) => {
+        assert.equal(options.detached, false, "Windows PowerShell must actually execute before acknowledging the installer");
+        assert.equal(options.windowsHide, true);
+        const child = spawn(executable, args, options);
+        nativeExit = new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
+        child.stdout.on("data", (data) => { nativeOutput += data.toString("utf8"); });
+        child.stderr.on("data", (data) => { nativeError += data.toString("utf8"); });
+        return child;
+      };
+      const protectedRoot = path.join(process.env.ProgramFiles, "Bweeep");
+      await assert.rejects(() => launchProtectedInstaller({ path: fixture, sha256: "0".repeat(64), version: "0.1.40", arch: "x64" }, protectedRoot, { spawnProcess: forwardedSpawn }));
+      assert.ok(nativeExit, "the production launch function must spawn real native PowerShell");
+      const exit = await nativeExit;
+      assert.equal(exit.code, 1, "silent exit 0 is not successful validation: the PowerShell body must run");
+      assert.equal(exit.signal, null);
+      assert.match(nativeError, /Installer could not start/);
+      assert.ok(!nativeOutput.includes("BWEEP_INSTALLER_"), "hash rejection must not acknowledge UAC or installer execution");
+      nativePowerShellProof = { exitCode: exit.code, signal: exit.signal, rejectionReported: true, acknowledgement: false };
+      pass("native-hidden-powershell-executes-and-rejects-wrong-hash-without-uac");
+
+      const markerHelper = path.join(koreanDirectory, "owned-marker-helper.ps1");
+      const markerPlan = path.join(koreanDirectory, "owned-marker-plan.json");
+      const entry = path.join(koreanDirectory, "entry.txt"), receipt = path.join(koreanDirectory, "after-parent-exit.json");
+      await fs.writeFile(markerHelper, "param([string]$PlanPath)\n$ErrorActionPreference='Stop'\n$p=Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8|ConvertFrom-Json\n[IO.File]::WriteAllText($p.entry,'entered')\n$deadline=[DateTime]::UtcNow.AddSeconds(10)\nwhile(Get-Process -Id $p.parentPid -ErrorAction SilentlyContinue){if([DateTime]::UtcNow -gt $deadline){throw 'parent did not exit'};Start-Sleep -Milliseconds 25}\n[IO.File]::WriteAllText($p.receipt,(@{parentDetectedAbsent=$true}|ConvertTo-Json))\n");
+      const parentExit = await new Promise((resolve, reject) => {
+        const parent = spawn(process.execPath, [process.argv[1], "--file-helper-lifetime-child", markerHelper, markerPlan, entry, receipt], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+        let error = "";
+        parent.stderr.on("data", (bytes) => { error += bytes.toString("utf8"); });
+        parent.once("error", reject);
+        parent.once("close", (code) => resolve({ code, error }));
+      });
+      assert.equal(parentExit.code, 0, parentExit.error);
+      let proof = null;
+      const deadline = Date.now() + 12_000;
+      while (Date.now() < deadline) {
+        try { proof = JSON.parse(await fs.readFile(receipt, "utf8")); break; } catch (error) { if (error.code !== "ENOENT") throw error; }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.equal(proof?.parentDetectedAbsent, true, "the actual broker's helper must execute after the launcher process has exited");
+      assert.equal(await fs.readFile(entry, "utf8"), "entered");
+      nativeFileHelperProof = { nodeParentExitCode: parentExit.code, parentDetectedAbsent: true, durableReceipt: true };
+      pass("native-file-helper-broker-survives-node-parent-exit-without-app-launch");
+    } finally {
+      // nativeTemporary was resolved inside fixtureParent above and is exclusively test-owned.
+      await fs.rm(nativeTemporary, { recursive: true, force: true });
+    }
+  }
+
+  console.log(JSON.stringify({ checks, pass: true, nativePowerShellNegativeTest: process.platform === "win32", nativePowerShellProof, nativeFileHelperProof, scope: "network/child fixtures, Windows real PowerShell wrong-hash rejection and helper lifetime; actual UAC/NSIS installation remains unverified" }));
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
 }

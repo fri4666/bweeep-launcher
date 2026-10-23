@@ -3,13 +3,13 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import type { LauncherUpdate, LauncherUpdateStatus } from "../shared/types.js";
 import { releaseFileUrl, safeUpdatePath, updatePartCount, UPDATE_CHUNK_SIZE, UPDATE_STORAGE_ROOT, verifyFileUpdateManifest, type FileUpdateEntry, type FileUpdateManifest } from "./file-update-manifest.js";
 import { isProtectedInstallRoot, launchProtectedInstaller, prepareProtectedInstaller, type PreparedInstaller } from "./protected-installer.js";
+import { startFileUpdateHelper } from "./file-update-broker.js";
 
 const CHECK_INTERVAL_MS = 60_000;
 const arch = process.arch === "arm64" ? "arm64" : "x64";
@@ -221,14 +221,7 @@ async function handOffUpdate(manifest: FileUpdateManifest, stage: string, files:
   const planPath = path.join(stage, `plan-${id}.json`);
   const plan = { id, root, staged: stage, parentPid: process.pid, changed: files, removed };
   await fsp.writeFile(planPath, JSON.stringify(plan), { mode: 0o600 });
-  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper, "-PlanPath", planPath], {
-    detached: true, windowsHide: true, stdio: "ignore"
-  });
-  await new Promise<void>((resolve, reject) => {
-    child.once("spawn", resolve);
-    child.once("error", reject);
-  });
-  child.unref();
+  await startFileUpdateHelper(helper, planPath);
   app.quit();
 }
 
