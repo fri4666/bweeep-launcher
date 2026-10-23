@@ -4,8 +4,8 @@ import { createClient } from "@supabase/supabase-js";
 import { UPDATE_CHUNK_SIZE } from "../dist/src/main/file-update-manifest.js";
 
 const [file, version, arch, mode] = process.argv.slice(2);
-if (!file || !/^\d+\.\d+\.\d+$/.test(version ?? "") || !["x64", "arm64"].includes(arch) ||
-    !["archive", "stable"].includes(mode)) {
+if (!file || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(version ?? "") || !["x64", "arm64"].includes(arch) ||
+    !["archive", "stable"].includes(mode) || (mode === "stable" && version.includes("-"))) {
   throw new Error("usage: publish-installer <setup-exe> <version> <x64|arm64> <archive|stable>");
 }
 const serviceKey = process.env.SUPABASE_SECRET_KEY;

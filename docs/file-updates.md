@@ -2,14 +2,24 @@
 
 ## Release layout
 
-The Windows installer remains a one-time bootstrap for shortcuts, uninstall,
-and the invite URL protocol. It installs an unpacked Electron app. Later app
-updates use an Ed25519-signed file list. Supabase Storage serves gzip-compressed, immutable
+The Windows installer bootstraps shortcuts, uninstall, and the invite URL
+protocol. It installs an unpacked Electron app. Writable per-user installations
+use an Ed25519-signed file list for later app updates. Supabase Storage serves gzip-compressed, immutable
 `blobs/<compressed-sha256>/part-<number>.bin` objects and a small mutable
 `channels/<stable|beta>/<arch>.json` pointer. The channel pointer is updated
 only after every file is uploaded. The launcher verifies the signature, hashes
 local files, downloads and expands changed files, hashes each download, waits for the game
 to exit, then starts a separate PowerShell helper to replace files and restart.
+Installations under the standard Program Files directories use a full signed
+NSIS installer when updating. The launcher verifies an installer descriptor for
+the exact update version and architecture, downloads its hash-addressed parts,
+and verifies the complete executable. Only the NSIS executable requests Windows
+administrator approval; a user-editable file-replacement plan or PowerShell
+helper is never elevated. The installer keeps the existing installation path
+and uses the normal-user restart supplied by NSIS. Cancelling approval leaves
+the launcher open and suppresses automatic retries in that running instance
+until the user retries.
+
 Files larger than 5 MiB are stored as numbered parts, so each Supabase object
 stays below the Free plan's per-object size limit. The first installer is also
 stored in parts. A public `launcher-download` Edge Function verifies the signed
@@ -56,8 +66,10 @@ users can inspect.
    channel is held until the manual promotion workflow runs.
 6. Install the published v0.1.40 beta, trigger another beta build, and
    verify it updates from Supabase by downloading only changed files, waiting
-   for an active game, replacing files, and restarting. Check protected
-   Windows install paths before promoting the stable release.
+   for an active game, replacing files, and restarting. Check both writable per-user and protected
+   Program Files installation paths before promoting the stable release. Run
+   the protected-path check from a normal non-elevated user token; an elevated
+   CI helper test is not evidence that this path works.
 7. Promote stable after the beta checks pass. Then verify an installed
    v0.1.39 upgrades to v0.1.40 through the still-public GitHub release.
    Confirm the direct Supabase installer download, stable channel, beta channel, and
@@ -80,5 +92,7 @@ requires `BWEEP_UPDATE_PUBLIC_KEY_BASE64`, and release publishing requires
 the signing and Supabase credentials above.
 
 Validate on an actual Windows install before promotion, including install
-paths protected by UAC. A protected installation folder may need an elevated
-helper or a one-time move to the per-user install path.
+paths protected by UAC. A protected installation folder requires the signed NSIS fallback and Windows
+administrator approval. Validate approval, cancellation, unchanged user data,
+and normal-user restart before treating a release as ready for private source
+hosting. Do not move an existing installation or relax its ACLs as a test.

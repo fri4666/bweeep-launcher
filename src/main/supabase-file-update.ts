@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import type { LauncherUpdate, LauncherUpdateStatus } from "../shared/types.js";
 import { releaseFileUrl, safeUpdatePath, updatePartCount, UPDATE_CHUNK_SIZE, UPDATE_STORAGE_ROOT, verifyFileUpdateManifest, type FileUpdateEntry, type FileUpdateManifest } from "./file-update-manifest.js";
+import { isProtectedInstallRoot, launchProtectedInstaller, prepareProtectedInstaller, type PreparedInstaller } from "./protected-installer.js";
 
 const CHECK_INTERVAL_MS = 60_000;
 const arch = process.arch === "arm64" ? "arm64" : "x64";
@@ -22,6 +23,8 @@ let changed: FileUpdateEntry[] = [];
 let checkInFlight = false;
 let installScheduled = false;
 let activeDownload: AbortController | null = null;
+let protectedInstaller: PreparedInstaller | null = null;
+let declinedVersion: string | null = null;
 
 export function fileUpdatesAvailable(): boolean {
   return process.platform === "win32" && (process.arch === "x64" || process.arch === "arm64") &&
@@ -48,6 +51,7 @@ export function setFileUpdateAudience(tester: boolean): void {
   currentManifest = null;
   staged = null;
   changed = [];
+  protectedInstaller = null;
   installScheduled = false;
   setStatus({ state: "checking" });
   void checkFileUpdates();
@@ -56,6 +60,7 @@ export function setFileUpdateAudience(tester: boolean): void {
 export function installFileUpdate(options: { playerAsked?: boolean } = {}): void {
   const playerAsked = options.playerAsked === true;
   if (status.state !== "ready" || !currentManifest || !staged || installScheduled || !canInstall(playerAsked)) return;
+  if (!playerAsked && declinedVersion === currentManifest.version) return;
   const manifest = currentManifest;
   const stage = staged;
   const files = changed;
@@ -97,7 +102,7 @@ async function checkFileUpdates(): Promise<void> {
     currentManifest = manifest;
     const controller = new AbortController();
     activeDownload = controller;
-    await prepareFiles(manifest, controller.signal, update);
+    await prepareFiles(manifest, controller.signal, update, key);
     if (audience !== requestedAudience || currentManifest !== manifest) return;
     setStatus({ state: "ready", update });
     installFileUpdate();
@@ -111,10 +116,21 @@ async function checkFileUpdates(): Promise<void> {
   }
 }
 
-async function prepareFiles(manifest: FileUpdateManifest, signal: AbortSignal, update: LauncherUpdate): Promise<void> {
+async function prepareFiles(manifest: FileUpdateManifest, signal: AbortSignal, update: LauncherUpdate, publicKey: string): Promise<void> {
   const root = path.dirname(app.getPath("exe"));
   const stage = path.join(app.getPath("userData"), "launcher-update-stage", `${manifest.version}-${manifest.arch}`);
   await fsp.mkdir(stage, { recursive: true });
+  protectedInstaller = null;
+  if (isProtectedInstallRoot(root)) {
+    protectedInstaller = await prepareProtectedInstaller({
+      version: manifest.version, arch: manifest.arch, publicKey, stage, signal,
+      fetcher: net.fetch,
+      progress: (received, total) => setStatus({ state: "downloading", update, percent: Math.round(received / total * 100) })
+    });
+    staged = stage;
+    changed = [];
+    return;
+  }
   const needed: FileUpdateEntry[] = [];
   for (const file of manifest.files) {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -175,6 +191,19 @@ async function matchesFile(filePath: string, expected: FileUpdateEntry): Promise
 
 async function handOffUpdate(manifest: FileUpdateManifest, stage: string, files: FileUpdateEntry[]): Promise<void> {
   const root = path.dirname(app.getPath("exe"));
+  if (isProtectedInstallRoot(root)) {
+    const installer = protectedInstaller;
+    if (!installer || installer.version !== manifest.version || installer.arch !== manifest.arch) throw new Error("검증된 설치 파일이 없습니다.");
+    const result = await launchProtectedInstaller(installer, root);
+    if (result === "cancelled") {
+      declinedVersion = manifest.version;
+      installScheduled = false;
+      setStatus({ state: "ready", update: status.update });
+      return;
+    }
+    app.quit();
+    return;
+  }
   const currentList = path.join(process.resourcesPath, "bweeep-update-files.json");
   let removed: string[] = [];
   try {
