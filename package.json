@@ -1,6 +1,6 @@
 {
   "name": "bweeep-launcher",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "private": true,
   "description": "붸에엡 Minecraft modpack launcher",
   "author": "fri4666",
@@ -15,8 +15,8 @@
     "package:win": "npm run build && electron-builder --win nsis --x64",
     "package:win:beta": "npm run build && electron-builder --win nsis --x64 --config build/electron-builder.beta.js",
     "package:win:test": "npm run build && electron-builder --win nsis --x64 --config build/electron-builder.test.js",
-    "package:win:arm64": "npm run build && electron-builder --win nsis --arm64 --config build/electron-builder.arm64.js",
-    "package:win:beta:arm64": "npm run build && electron-builder --win nsis --arm64 --config build/electron-builder.beta-arm64.js",
+    "package:win:arm64": "npm run build && cross-env ELECTRON_BUILDER_7Z_FILTER=BCJ electron-builder --win nsis --arm64 --config build/electron-builder.arm64.js",
+    "package:win:beta:arm64": "npm run build && cross-env ELECTRON_BUILDER_7Z_FILTER=BCJ electron-builder --win nsis --arm64 --config build/electron-builder.beta-arm64.js",
     "package:win:all": "npm run package:win && npm run package:win:arm64",
     "verify:electron-startup": "npm run build && node scripts/verify-electron-startup.mjs",
     "verify:deep-link": "npm run build && node scripts/verify-deep-link.mjs",

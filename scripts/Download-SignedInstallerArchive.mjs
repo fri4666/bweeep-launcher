@@ -6,7 +6,7 @@ import path from 'node:path';
 const [filename, version, publicKeyFile, output, suppliedSha = '', digestSource = 'signed-archive', requestedArch = 'x64'] = process.argv.slice(2);
 const optionalSha = suppliedSha === '-' ? '' : suppliedSha;
 assert.ok(filename && output && publicKeyFile);
-assert.match(version, /^\d+\.\d+\.\d+$/);
+assert.match(version, /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/);
 assert.ok(['x64', 'arm64'].includes(requestedArch));
 if (optionalSha) assert.match(optionalSha, /^[a-f0-9]{64}$/);
 const keyBytes = Buffer.from((await fsp.readFile(publicKeyFile, 'utf8')).replace(/\r\n/g, '\n'));

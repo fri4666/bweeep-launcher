@@ -19,6 +19,11 @@ for (const mode of ['FreshNSIS', 'FileBridge']) {
 }
 const native = { schema: 1, phase: 'passed', version, sourceSha, installerSha256, manifestSignature: manifest.signature, rootProtected: true, protectedUpdateVerified: true, signatureVerified: true, verifiedFiles: 2, normalProfile: true, elevatedBefore: false, elevatedAfter: false, initialMainPid: 30, finalMainPid: 40 };
 const input = { version, sourceSha, run, installerSha256, manifest, receipts, native, arm64 };
+receipts.LegacyBridge.receipt.baseline = '0.1.39';
+receipts.FileBridge.receipt.baseline = '0.1.40-beta.4';
+receipts.FileBridge.receipt.baselineLaunchEnvironment = { normalizationApplied: true };
+arm64.receipts.FileBridge.receipt.baseline = `${version}-beta.1`;
+arm64.receipts.FileBridge.receipt.baselineLaunchEnvironment = { normalizationApplied: false };
 assert.equal(verifyPromotionProof(input).nativeProtected, true);
 
 for (const [name, mutate] of [
@@ -44,10 +49,12 @@ for (const [name, mutate] of [
   ['wrong ARM64 artifact', (value) => { value.arm64.receipts.FreshNSIS.receipt.installer.sha256 = installerSha256; }],
   ['wrong ARM64 manifest', (value) => { value.arm64.receipts.FileBridge.receipt.manifestSignature = manifest.signature; }],
   ['instrumented helper', (value) => { value.receipts.FileBridge.receipt.probe.helperTraceEnabled = true; }],
-  ['missing candidate acknowledgement', (value) => { delete value.receipts.LegacyBridge.receipt.probe; }]
+  ['missing candidate acknowledgement', (value) => { delete value.receipts.LegacyBridge.receipt.probe; }],
+  ['skipped old x64 baseline', (value) => { value.receipts.FileBridge.receipt.baseline = `${version}-beta.1`; }],
+  ['masked ARM64 failure environment', (value) => { value.arm64.receipts.FileBridge.receipt.baselineLaunchEnvironment.normalizationApplied = true; }]
 ]) {
   const changed = structuredClone(input);
   mutate(changed);
   assert.throws(() => verifyPromotionProof(changed), { name: 'AssertionError' }, name);
 }
-console.log('promotion-gate: five native cases accepted; 23 incomplete or mismatched proofs rejected');
+console.log('promotion-gate: five native cases accepted; 25 incomplete or mismatched proofs rejected');

@@ -36,6 +36,8 @@ function verifyArchitectureProof({ architecture, requiredModes, version, sourceS
     assert.equal(verification.installedFilesVerified, manifest.files.length);
     if (mode === 'FreshNSIS') assert.equal(receipt.installer.sha256, installerSha256);
     else {
+      assert.equal(receipt.baseline, mode === 'LegacyBridge' ? '0.1.39' : architecture === 'x64' ? '0.1.40-beta.4' : `${version}-beta.1`, 'The required migration baseline was changed');
+      if (mode === 'FileBridge') assert.equal(receipt.baselineLaunchEnvironment?.normalizationApplied, architecture === 'x64', 'The original failure environment was not covered as declared');
       assert.equal(receipt.probe?.targetVersion, version, `${mode} lacks the isolated candidate acknowledgement`);
       assert.equal(receipt.probe?.arch, architecture);
       assert.equal(receipt.probe?.signatureBypass, false);

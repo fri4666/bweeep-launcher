@@ -107,7 +107,7 @@ function Resolve-Release([string]$version,[hashtable]$headers){
 function Download-Installer([string]$version,[string]$destination,[string]$pinnedSha='') {
   $apiHeaders=@{Accept='application/vnd.github+json'}
   if($env:GH_TOKEN){$apiHeaders.Authorization='Bearer '+$env:GH_TOKEN}
-  if($Mode -eq 'FreshNSIS' -and $version -eq $ExpectedStableVersion -and ($StagedCandidate -or -not $promoted)){
+  if(($Mode -eq 'FreshNSIS' -and $version -eq $ExpectedStableVersion -and ($StagedCandidate -or -not $promoted)) -or ($StagedCandidate -and $Architecture -eq 'arm64' -and $Mode -eq 'FileBridge')){
     $extraSha=$pinnedSha;$digestSource=if($pinnedSha){'reviewed-pin'}else{'signed-archive'}
     $metadataSource='not-visible-to-read-token';$releaseId=$null;$assetId=$null
     try{
@@ -208,7 +208,18 @@ try {
       # This exact root was absent at preflight. Stop only the clean runner's
       # baseline app before its isolated debugger launch; never a user process.
       foreach($owned in @(Main-Processes)){Stop-Process -Id $owned.ProcessId -Force;Wait-Process -Id $owned.ProcessId -Timeout 15 -ErrorAction SilentlyContinue}
-      $started=Start-Process -FilePath (Join-Path $root 'Bweeep.exe') -ArgumentList @('--disable-gpu',('--inspect-brk=127.0.0.1:'+$InspectorPort)) -WorkingDirectory $root -WindowStyle Hidden -PassThru
+      # The published x64 beta.4 helper predates the PS7 module-path fix. Only
+      # that stock baseline gets the normal Explorer/Windows PowerShell child
+      # environment; new fixed baselines retain the failing inherited path.
+      $normalizeOldBaseline=$Architecture -eq 'x64' -and $Mode -eq 'FileBridge' -and $FileBaselineVersion -eq '0.1.40-beta.4'
+      $originalModulePath=[Environment]::GetEnvironmentVariable('PSModulePath','Process')
+      $receipt.baselineLaunchEnvironment=@{inheritedPSModulePathPresent=[bool]$originalModulePath;normalizationApplied=$normalizeOldBaseline;normalization=if($normalizeOldBaseline){'PSModulePath omitted only for this old baseline child to reproduce normal Windows launch'}else{'None; inherited PowerShell 7 module path retained'}}
+      try{
+        if($normalizeOldBaseline){[Environment]::SetEnvironmentVariable('PSModulePath',$null,'Process')}
+        $started=Start-Process -FilePath (Join-Path $root 'Bweeep.exe') -ArgumentList @('--disable-gpu',('--inspect-brk=127.0.0.1:'+$InspectorPort)) -WorkingDirectory $root -WindowStyle Hidden -PassThru
+      }finally{
+        if($normalizeOldBaseline){[Environment]::SetEnvironmentVariable('PSModulePath',$originalModulePath,'Process')}
+      }
       $receipt.launchedPid=$started.Id
       $observerArguments=@((Join-Path $PSScriptRoot 'Observe-PackagedUpdate.mjs'),$InspectorPort,$root,$ExpectedStableVersion,$work,$Mode)
       if($Mode -eq 'LegacyBridge'){$observerArguments+=@($candidateInstaller,$ExpectedStableInstallerSha256)}else{$observerArguments+=@('-','-')}

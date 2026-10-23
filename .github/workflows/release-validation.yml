@@ -7,7 +7,7 @@ on:
         required: true
         default: All
         type: choice
-        options: [All, FreshNSIS, LegacyBridge, FileBridge]
+        options: [All, FreshNSIS, LegacyBridge, FileBridge, BuildCandidate]
       architecture:
         description: All validates native x64 and ARM64; legacy migration exists only on x64
         required: true
@@ -27,6 +27,10 @@ on:
         description: Installed baseline for the real file updater
         required: true
         default: 0.1.40-beta.4
+        type: string
+      arm64_file_baseline:
+        description: Fixed ARM64 NSIS baseline; blank uses target-version-beta.1 (old ARM64 installers cannot boot)
+        required: false
         type: string
       update_timeout_minutes:
         description: Actual automatic-update timeout in minutes
@@ -50,6 +54,7 @@ permissions:
   contents: read
 jobs:
   nsis-and-update:
+    if: inputs.mode != 'BuildCandidate'
     runs-on: ${{ matrix.architecture == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
     timeout-minutes: 25
     strategy:
@@ -78,11 +83,13 @@ jobs:
           TARGET_VERSION: ${{ inputs.target_version }}
           STAGED_CANDIDATE: ${{ inputs.staged_candidate }}
           FILE_BASELINE: ${{ inputs.file_baseline }}
+          ARM64_FILE_BASELINE: ${{ inputs.arm64_file_baseline }}
           UPDATE_TIMEOUT_MINUTES: ${{ inputs.update_timeout_minutes }}
           TRACE_HELPER_FAILURE: ${{ inputs.trace_helper_failure }}
         run: |
           $version = if ($env:TARGET_VERSION) { $env:TARGET_VERSION } else { (Get-Content package.json -Raw | ConvertFrom-Json).version }
           $baseline = if ($env:FILE_BASELINE) { $env:FILE_BASELINE } else { '0.1.40-beta.4' }
+          if ('${{ matrix.architecture }}' -eq 'arm64') { $baseline = if ($env:ARM64_FILE_BASELINE) { $env:ARM64_FILE_BASELINE } else { $version + '-beta.1' } }
           $timeout = if ($env:UPDATE_TIMEOUT_MINUTES) { [int]$env:UPDATE_TIMEOUT_MINUTES } else { 15 }
           $staged = $env:STAGED_CANDIDATE -eq 'true'
           $trace = $env:TRACE_HELPER_FAILURE -eq 'true'
@@ -92,16 +99,21 @@ jobs:
       - name: 실제 교체 도우미의 롤백과 부모 종료 대기
         if: matrix.mode == 'FreshNSIS'
         shell: pwsh
-        run: ./scripts/Test-ExactHelper.ps1 -HelperPath './build/file-update-helper.ps1'
+        run: |
+          ./scripts/Test-FileHelperEnvironment.ps1 -OutputPath (Join-Path $env:RUNNER_TEMP 'file-helper-environment.json')
+          ./scripts/Test-ExactHelper.ps1 -HelperPath './build/file-update-helper.ps1'
+          ./scripts/Test-ExactHelper.ps1 -HelperPath './build/file-update-helper.ps1' -WithoutFileHashCmdlet
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-release-${{ matrix.mode }}${{ matrix.architecture == 'arm64' && '-arm64' || '' }}
           path: |
             ${{ runner.temp }}/bweeep-release-proof-${{ matrix.mode }}/*.json
+            ${{ runner.temp }}/file-helper-environment.json
             ${{ github.workspace }}/scripts/helper-fixture-*/result.json
           retention-days: 7
   protected-medium-token:
+    if: inputs.mode != 'BuildCandidate'
     name: 보호 폴더 제약 관찰 (수정 검증 아님)
     continue-on-error: true
     runs-on: windows-latest
@@ -118,4 +130,124 @@ jobs:
         with:
           name: protected-medium-token-evidence
           path: ${{ runner.temp }}/bweeep-protected-helper-proof/*.json
+          retention-days: 7
+  build-candidate:
+    name: 채널을 게시하지 않고 서명된 후보 보관본 만들기
+    if: inputs.mode == 'BuildCandidate'
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: 후보 버전 확인
+        id: candidate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Candidate version must be stable semver' }
+          if ($version -eq '0.1.40') { throw 'Withdrawn 0.1.40 archives must not be rebuilt or overwritten' }
+          $release = Invoke-WebRequest -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/v$version" -Headers @{Accept='application/vnd.github+json';Authorization=('Bearer '+$env:GH_TOKEN)} -SkipHttpErrorCheck
+          if ([int]$release.StatusCode -eq 200) {
+            if (-not ($release.Content | ConvertFrom-Json).draft) { throw 'A published version cannot be rebuilt as a candidate' }
+          } elseif ([int]$release.StatusCode -ne 404) { throw 'Cannot verify that the candidate version is unpublished' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "beta_version=$version-beta.1" >> $env:GITHUB_OUTPUT
+      - name: 의존성과 업데이트 회귀 검사
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $sevenZip = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
+          if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe' }
+          if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) { throw 'Full 7-Zip CLI is required to inspect NSIS payloads before upload' }
+          "NSIS_SEVEN_ZIP=$sevenZip" >> $env:GITHUB_ENV
+          npm ci
+          npm run typecheck
+          npm run build
+          node scripts/verify-launcher-update.mjs
+          node scripts/verify-file-update.mjs
+          node scripts/verify-protected-installer.mjs
+          node scripts/verify-promotion-gate.test.mjs
+          node scripts/verify-nsis-codecs.test.mjs
+          New-Item -ItemType Directory -Path candidate-proof -Force | Out-Null
+          ./scripts/Test-FileHelperEnvironment.ps1 -OutputPath "$pwd/candidate-proof/file-helper-environment.json"
+          ./scripts/Test-ExactHelper.ps1 -HelperPath './build/file-update-helper.ps1'
+          ./scripts/Test-ExactHelper.ps1 -HelperPath './build/file-update-helper.ps1' -WithoutFileHashCmdlet
+      - name: x64 및 ARM64 정식·베타 후보 만들기
+        shell: pwsh
+        env:
+          BWEEP_BETA_BUILD: '1'
+          BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm run package:win -- --publish never
+          npm run package:win:beta -- --publish never
+          npm run package:win:arm64 -- --publish never
+          npm run package:win:beta:arm64 -- --publish never
+      - name: 실제 설치 파일의 NSIS 압축 코덱 확인
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.candidate.outputs.version }}
+          BETA_VERSION: ${{ steps.candidate.outputs.beta_version }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $sevenZip = $env:NSIS_SEVEN_ZIP
+          node scripts/verify-nsis-codecs.mjs "$pwd/release-installer/Bweeep-Setup-$env:VERSION.exe" x64 "$pwd/candidate-proof/stable-x64" $sevenZip
+          node scripts/verify-nsis-codecs.mjs "$pwd/release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe" x64 "$pwd/candidate-proof/beta-x64" $sevenZip
+          node scripts/verify-nsis-codecs.mjs "$pwd/release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe" arm64 "$pwd/candidate-proof/stable-arm64" $sevenZip
+          node scripts/verify-nsis-codecs.mjs "$pwd/release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe" arm64 "$pwd/candidate-proof/beta-arm64" $sevenZip
+      - name: 파일·설치 파일 보관본만 서명해 업로드
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.candidate.outputs.version }}
+          BETA_VERSION: ${{ steps.candidate.outputs.beta_version }}
+          BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
+          BWEEP_UPDATE_SIGNING_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_SIGNING_KEY_BASE64 }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          node scripts/create-file-release.mjs release-installer/win-unpacked $env:VERSION stable x64 release-installer/file-update-stable.json
+          node scripts/create-file-release.mjs release-installer/win-unpacked $env:VERSION beta x64 release-installer/file-update-beta-channel.json
+          node scripts/create-file-release.mjs release-installer-beta/win-unpacked $env:BETA_VERSION beta x64 release-installer-beta/file-update-beta.json
+          node scripts/create-file-release.mjs release-installer-arm64/win-arm64-unpacked $env:VERSION stable arm64 release-installer-arm64/file-update-stable-arm64.json
+          node scripts/create-file-release.mjs release-installer-arm64/win-arm64-unpacked $env:VERSION beta arm64 release-installer-arm64/file-update-beta-channel-arm64.json
+          node scripts/create-file-release.mjs release-installer-beta-arm64/win-arm64-unpacked $env:BETA_VERSION beta arm64 release-installer-beta-arm64/file-update-beta-arm64.json
+          node scripts/publish-file-release.mjs release-installer/win-unpacked release-installer/file-update-stable.json files
+          node scripts/publish-file-release.mjs release-installer-beta/win-unpacked release-installer-beta/file-update-beta.json files
+          node scripts/publish-file-release.mjs release-installer-arm64/win-arm64-unpacked release-installer-arm64/file-update-stable-arm64.json files
+          node scripts/publish-file-release.mjs release-installer-beta-arm64/win-arm64-unpacked release-installer-beta-arm64/file-update-beta-arm64.json files
+          node scripts/publish-installer.mjs "release-installer/Bweeep-Setup-$env:VERSION.exe" $env:VERSION x64 archive
+          node scripts/publish-installer.mjs "release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe" $env:VERSION arm64 archive
+          node scripts/publish-installer.mjs "release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe" $env:BETA_VERSION x64 archive
+          node scripts/publish-installer.mjs "release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe" $env:BETA_VERSION arm64 archive
+      - name: 검증할 후보의 정확한 소스·파일 식별 기록
+        shell: pwsh
+        run: node scripts/write-candidate-proof.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: staged-release-candidate
+          path: |
+            candidate-proof/**/*.json
+            scripts/helper-fixture-*/result.json
+            release-installer/*.exe
+            release-installer/*.exe.blockmap
+            release-installer/*.yml
+            release-installer/file-update-*.json
+            release-installer-beta/*.exe
+            release-installer-beta/*.exe.blockmap
+            release-installer-beta/*.yml
+            release-installer-beta/file-update-*.json
+            release-installer-arm64/*.exe
+            release-installer-arm64/*.exe.blockmap
+            release-installer-arm64/file-update-*.json
+            release-installer-beta-arm64/*.exe
+            release-installer-beta-arm64/*.exe.blockmap
+            release-installer-beta-arm64/file-update-*.json
           retention-days: 7
