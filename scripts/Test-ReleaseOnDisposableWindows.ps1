@@ -6,7 +6,8 @@ param(
   [string]$FileBaselineVersion='0.1.40-beta.4',
   [ValidateRange(1,15)][int]$UpdateTimeoutMinutes=15,
   [ValidateRange(1024,65535)][int]$InspectorPort=9229,
-  [switch]$StagedCandidate
+  [switch]$StagedCandidate,
+  [switch]$TraceHelperFailure
 )
 $ErrorActionPreference='Stop'
 if($ExpectedStableInstallerSha256 -and $ExpectedStableInstallerSha256 -notmatch '^[a-f0-9]{64}$'){throw 'Optional stable SHA pin must be lowercase SHA-256'}
@@ -19,7 +20,7 @@ $root=Join-Path $env:LOCALAPPDATA 'Programs\Bweeep'
 if (Test-Path -LiteralPath $root) { throw 'Runner is not clean: Bweeep directory exists' }
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 $elevated=(New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$receipt=@{mode=$Mode;arch=$Architecture;runnerArch=$env:RUNNER_ARCH; runner=$env:RUNNER_NAME; elevated=$elevated; root=$root; startedUtc=[DateTime]::UtcNow.ToString('o'); phase='preflight'; stagedCandidate=[bool]$StagedCandidate; updateTimeoutMinutes=$UpdateTimeoutMinutes; sourceSha=$env:GITHUB_SHA; candidateInstallerSha256=$ExpectedStableInstallerSha256}
+$receipt=@{mode=$Mode;arch=$Architecture;runnerArch=$env:RUNNER_ARCH; runner=$env:RUNNER_NAME; elevated=$elevated; root=$root; startedUtc=[DateTime]::UtcNow.ToString('o'); phase='preflight'; stagedCandidate=[bool]$StagedCandidate; helperTraceEnabled=[bool]$TraceHelperFailure; updateTimeoutMinutes=$UpdateTimeoutMinutes; sourceSha=$env:GITHUB_SHA; candidateInstallerSha256=$ExpectedStableInstallerSha256}
 function Save-Receipt { $receipt | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $work 'receipt.json') -Encoding UTF8 }
 function Installer-Name([string]$version) {
   $suffix=if($Architecture -eq 'arm64'){'-arm64'}else{''}
@@ -35,18 +36,28 @@ function Version-AtRoot {
 function Main-Processes {
   return @(Get-CimInstance Win32_Process -Filter "Name='Bweeep.exe'" | Where-Object { $_.ExecutablePath -eq (Join-Path $root 'Bweeep.exe') -and $_.CommandLine -notmatch '--type=' })
 }
+function Owned-Processes {
+  return @(Get-CimInstance Win32_Process -Filter "Name='Bweeep.exe'" | Where-Object { $_.ExecutablePath -eq (Join-Path $root 'Bweeep.exe') } | ForEach-Object {
+    $role='main';if($_.CommandLine -match '--type=([a-zA-Z0-9-]+)'){$role=$Matches[1]}
+    @{pid=$_.ProcessId;parentPid=$_.ParentProcessId;role=$role;creationDate=$_.CreationDate;executablePath=$_.ExecutablePath}
+  })
+}
 # Read only this disposable installation's process metadata and update staging.
 # Authentication/session files and arbitrary application log events are excluded.
 function Save-Diagnostics([string]$phase) {
   try {
-    $snapshot=@{at=[DateTime]::UtcNow.ToString('o');phase=$phase;installedVersion=Version-AtRoot;mainProcesses=@(Main-Processes | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath);profiles=@()}
+    $snapshot=@{at=[DateTime]::UtcNow.ToString('o');phase=$phase;installedVersion=Version-AtRoot;mainProcesses=@(Main-Processes | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath);ownedProcesses=@(Owned-Processes);installedChangedFiles=@();profiles=@()}
+    foreach($relative in @($receipt.expectedChanged|Select-Object -First 10)){
+      $target=Join-Path $root $relative
+      if(Test-Path -LiteralPath $target -PathType Leaf){$item=Get-Item -LiteralPath $target;$snapshot.installedChangedFiles+=@{path=$relative;bytes=$item.Length;attributes=[string]$item.Attributes;writeUtc=$item.LastWriteTimeUtc.ToString('o')}}
+    }
     $names=@('bweeep-launcher','Bweeep')
     if($baselineMetadata){$names+=@($baselineMetadata.userDataNames)}
     foreach($name in @($names | Sort-Object -Unique)) {
       if($name -notmatch '^[a-z0-9][a-z0-9 ._-]{0,80}$'){continue}
       $profileRoot=Join-Path $env:APPDATA $name
       $stageRoot=Join-Path $profileRoot 'launcher-update-stage'
-      $profile=@{name=$name;exists=(Test-Path -LiteralPath $profileRoot);stageFiles=@();initializations=@();plans=@()}
+      $profile=@{name=$name;exists=(Test-Path -LiteralPath $profileRoot);stageFiles=@();initializations=@();plans=@();originalApplyErrors=@()}
       if(Test-Path -LiteralPath $stageRoot){
         $profile.stageFiles=@(Get-ChildItem -LiteralPath $stageRoot -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 100 | ForEach-Object {@{path=$_.FullName.Substring($stageRoot.Length).TrimStart('\');bytes=$_.Length;writeUtc=$_.LastWriteTimeUtc.ToString('o')}})
         foreach($file in @(Get-ChildItem -LiteralPath $stageRoot -Recurse -Filter 'plan-*.json' -File -ErrorAction SilentlyContinue | Select-Object -First 4)){
@@ -56,6 +67,9 @@ function Save-Diagnostics([string]$phase) {
               $profile.plans+=@{id=$plan.id;parentPid=$plan.parentPid;root=$plan.root;staged=$plan.staged;changed=@($plan.changed|Select-Object path,size,sha256);removed=@($plan.removed)}
             }
           }catch{}
+        }
+        foreach($file in @(Get-ChildItem -LiteralPath $stageRoot -Recurse -Filter 'original-apply-error.json' -File -ErrorAction SilentlyContinue | Select-Object -First 4)){
+          try{if($file.Length -le 16384){$errorRecord=Get-Content -LiteralPath $file.FullName -Raw|ConvertFrom-Json;$profile.originalApplyErrors+=@($errorRecord|Select-Object message,innerMessage,type,innerType,hresult,innerHresult,line,category)}}catch{}
         }
       }
       $authLog=Join-Path $profileRoot 'logs\auth.jsonl'
@@ -149,6 +163,7 @@ function Install-NSIS([string]$installer) {
 try {
   if($ExpectedStableVersion -notmatch '^\d+\.\d+\.\d+$' -or $FileBaselineVersion -notmatch '^\d+\.\d+\.\d+(?:-beta\.\d+)?$'){throw 'Invalid fixed release version'}
   if($StagedCandidate -and -not $ExpectedStableInstallerSha256){throw 'Prepublication installation requires an explicit reviewed installer SHA-256 pin'}
+  if($TraceHelperFailure -and (-not $StagedCandidate -or $Mode -ne 'FileBridge')){throw 'Helper error tracing is permitted only for staged file-update diagnostics'}
   Save-Receipt
   $latestHeaders=@{Accept='application/vnd.github+json'}
   if($env:GH_TOKEN){$latestHeaders.Authorization='Bearer '+$env:GH_TOKEN}
@@ -196,7 +211,8 @@ try {
       $started=Start-Process -FilePath (Join-Path $root 'Bweeep.exe') -ArgumentList @('--disable-gpu',('--inspect-brk=127.0.0.1:'+$InspectorPort)) -WorkingDirectory $root -WindowStyle Hidden -PassThru
       $receipt.launchedPid=$started.Id
       $observerArguments=@((Join-Path $PSScriptRoot 'Observe-PackagedUpdate.mjs'),$InspectorPort,$root,$ExpectedStableVersion,$work,$Mode)
-      if($Mode -eq 'LegacyBridge'){$observerArguments+=@($candidateInstaller,$ExpectedStableInstallerSha256)}
+      if($Mode -eq 'LegacyBridge'){$observerArguments+=@($candidateInstaller,$ExpectedStableInstallerSha256)}else{$observerArguments+=@('-','-')}
+      $observerArguments+=@($(if($TraceHelperFailure){'trace'}else{'plain'}))
       $observer=Start-Process -FilePath (Get-Command node).Source -ArgumentList $observerArguments -WindowStyle Hidden -PassThru
       $receipt.observerPid=$observer.Id
       $receipt.updateFeedFixture=if($Mode -eq 'LegacyBridge'){'Only exact GitHub stable provider redirected to loopback feed serving the pinned, signed candidate installer'}else{'Only exact stable channel URL redirected to immutable signed candidate manifest in disposable packaged app memory'}
@@ -209,7 +225,7 @@ try {
         Start-Sleep -Milliseconds 250
       }
       $probe=Get-Content -LiteralPath $readyFile -Raw|ConvertFrom-Json
-      if($probe.pid -ne $started.Id -or $probe.targetVersion -ne $ExpectedStableVersion -or $probe.arch -ne $Architecture -or $probe.signatureBypass -ne $false){throw 'Candidate mapping acknowledgement differs from this test'}
+      if($probe.pid -ne $started.Id -or $probe.targetVersion -ne $ExpectedStableVersion -or $probe.arch -ne $Architecture -or $probe.signatureBypass -ne $false -or $probe.helperTraceEnabled -ne [bool]$TraceHelperFailure){throw 'Candidate mapping acknowledgement differs from this test'}
       $receipt.probe=$probe
     }elseif((Main-Processes).Count -eq 0){$started=Start-Process -FilePath (Join-Path $root 'Bweeep.exe') -ArgumentList '--disable-gpu' -WindowStyle Hidden -PassThru;$receipt.launchedPid=$started.Id}
     $initial=@((Main-Processes)|ForEach-Object ProcessId)

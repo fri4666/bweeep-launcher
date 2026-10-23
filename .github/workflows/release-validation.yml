@@ -33,6 +33,11 @@ on:
         required: true
         default: '15'
         type: string
+      trace_helper_failure:
+        description: Diagnostic FileBridge only; instrument catch logging and prohibit promotion
+        required: true
+        default: false
+        type: boolean
       stable_installer_sha256:
         description: Reviewed x64 candidate installer SHA-256; required for staged x64 validation
         required: false
@@ -74,14 +79,16 @@ jobs:
           STAGED_CANDIDATE: ${{ inputs.staged_candidate }}
           FILE_BASELINE: ${{ inputs.file_baseline }}
           UPDATE_TIMEOUT_MINUTES: ${{ inputs.update_timeout_minutes }}
+          TRACE_HELPER_FAILURE: ${{ inputs.trace_helper_failure }}
         run: |
           $version = if ($env:TARGET_VERSION) { $env:TARGET_VERSION } else { (Get-Content package.json -Raw | ConvertFrom-Json).version }
           $baseline = if ($env:FILE_BASELINE) { $env:FILE_BASELINE } else { '0.1.40-beta.4' }
           $timeout = if ($env:UPDATE_TIMEOUT_MINUTES) { [int]$env:UPDATE_TIMEOUT_MINUTES } else { 15 }
           $staged = $env:STAGED_CANDIDATE -eq 'true'
+          $trace = $env:TRACE_HELPER_FAILURE -eq 'true'
           $pin = if ('${{ matrix.architecture }}' -eq 'arm64') { $env:EXPECTED_ARM64_SHA } else { $env:EXPECTED_X64_SHA }
           if ($staged -and -not $pin) { throw 'Staged release validation requires the reviewed installer SHA-256 for this architecture' }
-          ./scripts/Test-ReleaseOnDisposableWindows.ps1 -Mode '${{ matrix.mode }}' -Architecture '${{ matrix.architecture }}' -ExpectedStableVersion $version -ExpectedStableInstallerSha256 $pin -FileBaselineVersion $baseline -UpdateTimeoutMinutes $timeout -StagedCandidate:$staged -InspectorPort 9229
+          ./scripts/Test-ReleaseOnDisposableWindows.ps1 -Mode '${{ matrix.mode }}' -Architecture '${{ matrix.architecture }}' -ExpectedStableVersion $version -ExpectedStableInstallerSha256 $pin -FileBaselineVersion $baseline -UpdateTimeoutMinutes $timeout -StagedCandidate:$staged -InspectorPort 9229 -TraceHelperFailure:$trace
       - name: 실제 교체 도우미의 롤백과 부모 종료 대기
         if: matrix.mode == 'FreshNSIS'
         shell: pwsh

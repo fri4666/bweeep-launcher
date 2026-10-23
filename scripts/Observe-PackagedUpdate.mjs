@@ -8,12 +8,15 @@ import { pathToFileURL } from 'node:url';
 
 assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Disposable CI runner only');
 assert.equal(process.platform, 'win32', 'Native Windows runner required');
-const [portText, root, version, output, mode = 'FileBridge', candidateInstaller, candidatePin] = process.argv.slice(2);
+const [portText, root, version, output, mode = 'FileBridge', candidateInstaller, candidatePin, helperTrace = 'plain'] = process.argv.slice(2);
 const port = Number(portText);
 assert.ok(Number.isInteger(port) && port >= 1024 && port <= 65535);
 assert.ok(path.isAbsolute(root) && path.isAbsolute(output));
 assert.match(version, /^\d+\.\d+\.\d+$/);
 assert.ok(['FileBridge', 'LegacyBridge'].includes(mode));
+assert.ok(['plain', 'trace'].includes(helperTrace));
+const helperTraceEnabled = helperTrace === 'trace';
+assert.ok(!helperTraceEnabled || mode === 'FileBridge', 'Helper tracing is a file-update diagnostic only');
 const architecture = process.arch;
 assert.ok(['x64', 'arm64'].includes(architecture), 'Native x64 or ARM64 Node required');
 assert.ok(mode !== 'LegacyBridge' || architecture === 'x64', 'No legacy ARM64 baseline exists');
@@ -25,6 +28,7 @@ const save = async (phase, detail = {}) => {
   await fsp.writeFile(path.join(output, 'inspector-diagnostics.json'), JSON.stringify(timeline, null, 2));
 };
 let socket;
+let inspectorClosed = false;
 let feedServer;
 const pending = new Map();
 const scripts = new Map();
@@ -43,7 +47,7 @@ const call = (method, params = {}) => new Promise((resolve, reject) => {
   socket.send(JSON.stringify({ id, method, params }));
 });
 const evaluate = async (expression) => {
-  const response = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+  const response = await call('Runtime.evaluate', { expression, awaitPromise: false, returnByValue: true });
   if (response.exceptionDetails) {
     const description = response.exceptionDetails.exception?.description?.split('\n')[0] || response.exceptionDetails.text || 'exception';
     throw new Error('Controlled inspector evaluation failed: ' + description.replace(/https?:\/\/\S+/g, 'remote-url').slice(0, 300));
@@ -120,6 +124,7 @@ try {
     else request.resolve(message.result);
   });
   socket.addEventListener('close', () => {
+    inspectorClosed = true;
     for (const request of pending.values()) { clearTimeout(request.timeout); request.reject(new Error('Packaged main inspector closed')); }
     pending.clear();
   });
@@ -140,6 +145,44 @@ try {
   }
   assert.ok(atEntry(pause), 'Unexpected breakpoint before packaged application entry');
   await call('Debugger.removeBreakpoint', { breakpointId: breakpoint.breakpointId });
+  const helperErrorTrace = String.raw`
+  try {
+    [pscustomobject]@{
+      message = $failure.Exception.Message
+      innerMessage = $failure.Exception.InnerException.Message
+      type = $failure.Exception.GetType().FullName
+      innerType = if ($failure.Exception.InnerException) { $failure.Exception.InnerException.GetType().FullName } else { $null }
+      hresult = $failure.Exception.HResult
+      innerHresult = $failure.Exception.InnerException.HResult
+      line = $failure.InvocationInfo.ScriptLineNumber
+      category = [string]$failure.CategoryInfo.Category
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $staged 'original-apply-error.json') -Encoding UTF8
+  } catch {}
+`;
+  const helperTraceSetup = helperTraceEnabled ? `
+    const traceIO = require('node:fs/promises');
+    const tracePath = require('node:path');
+    const traceHash = bytes => require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+    const expectedSource = tracePath.join(process.resourcesPath, 'file-update-helper.ps1');
+    const expectedDestination = tracePath.join(app.getPath('userData'), 'launcher-update-stage', target + '-' + process.arch, 'file-update-helper.ps1');
+    const copyHelper = traceIO.copyFile.bind(traceIO);
+    traceIO.copyFile = async (source, destination, ...options) => {
+      const copied = await copyHelper(source, destination, ...options);
+      if (typeof source !== 'string' || typeof destination !== 'string' || tracePath.resolve(source).toLowerCase() !== expectedSource.toLowerCase() || tracePath.resolve(destination).toLowerCase() !== expectedDestination.toLowerCase()) return copied;
+      const originalBytes = await traceIO.readFile(source);
+      const stagedBytes = await traceIO.readFile(destination);
+      if (traceHash(originalBytes) !== traceHash(stagedBytes)) throw new Error('Diagnostic helper copy differs from installed baseline');
+      const text = stagedBytes.toString('utf8');
+      const anchor = '  $failure = $_';
+      if (text.split(anchor).length !== 2) throw new Error('Diagnostic helper catch anchor is not unique');
+      const instrumented = Buffer.from(text.replace(anchor, anchor + ${JSON.stringify(helperErrorTrace)}), 'utf8');
+      await traceIO.writeFile(destination, instrumented);
+      const proof = { helperTraceEnabled: true, diagnosticOnly: true, originalSha256: traceHash(originalBytes), instrumentedSha256: traceHash(instrumented), insertion: 'Original caught apply error logging only; rollback and throw retained' };
+      globalThis.__bweeepUpdateProbe.helperTrace = proof;
+      await traceIO.writeFile(${JSON.stringify(path.join(output, 'helper-trace.json'))}, JSON.stringify(proof, null, 2));
+      return copied;
+    };
+  ` : '';
   const setup = `(() => {
     const require = process.getBuiltinModule('module').createRequire(${JSON.stringify(packageFile)});
     if (process.execPath.toLowerCase() !== ${JSON.stringify(path.join(root, 'Bweeep.exe').toLowerCase())}) throw new Error('Unexpected inspector executable');
@@ -149,7 +192,8 @@ try {
     const original = net.fetch.bind(net);
     const prefix = ${JSON.stringify(storage)};
     const target = ${JSON.stringify(version)};
-    globalThis.__bweeepUpdateProbe = { requests: [], mappedChannelRequests: 0, mappedLegacyFeeds: 0, runtimeErrors: [] };
+    globalThis.__bweeepUpdateProbe = { requests: [], mappedChannelRequests: 0, mappedLegacyFeeds: 0, runtimeErrors: [], helperTraceEnabled: ${JSON.stringify(helperTraceEnabled)} };
+    ${helperTraceSetup}
     process.on('unhandledRejection', error => globalThis.__bweeepUpdateProbe.runtimeErrors.push({ name: String(error?.name || 'Error').slice(0, 80), code: /^[A-Z0-9_]+$/.test(error?.code || '') ? error.code : undefined, frames: typeof error?.stack === 'string' ? error.stack.split('\\n').slice(1, 5) : [] }));
     if (${JSON.stringify(mode)} === 'LegacyBridge') {
       const updater = require('electron-updater').autoUpdater;
@@ -178,7 +222,7 @@ try {
       try { const response = await original(requestInput, options); if (record) record.status = response.status; return response; }
       catch (error) { if (record) record.errorName = String(error?.name || 'Error').slice(0, 80); throw error; }
     };
-    return { installed: true, pid: process.pid, arch: process.arch, version: require('electron').app.getVersion() };
+    return { installed: true, pid: process.pid, arch: process.arch, version: require('electron').app.getVersion(), helperTraceEnabled: ${JSON.stringify(helperTraceEnabled)} };
   })()`;
   // Paused application entry cannot advance promise microtasks. Configure the
   // synchronous probe on its actual frame; async snapshots begin after resume.
@@ -192,17 +236,27 @@ try {
   await save('probe-installed', installed);
   await fsp.writeFile(path.join(output, 'inspector-ready.json'), JSON.stringify({ ...installed, targetVersion: version, mapping: mode === 'LegacyBridge' ? 'github-stable-provider-to-loopback-verified-candidate-feed' : `exact-stable-${architecture}-channel-to-versioned-signed-manifest`, signatureBypass: false }, null, 2));
   await call('Debugger.resume').catch(() => undefined);
-  const moduleUrl = pathToFileURL(path.join(appPath, 'dist', 'src', 'main', 'launcher-update.js')).href;
+  const moduleFile = path.join(appPath, 'dist', 'src', 'main', 'launcher-update.js');
   let previous = '';
+  let previousError = '';
   for (let index = 0; index < 450; index++) {
     await new Promise(resolve => setTimeout(resolve, 2000));
     let snapshot;
     try {
-      snapshot = await evaluate(`(async () => {
-        const update = await import(${JSON.stringify(moduleUrl)});
-        return { version: process.versions.electron, ready: process.getBuiltinModule('module').createRequire(${JSON.stringify(packageFile)})('electron').app.isReady(), update: update.getLauncherUpdateStatus(), probe: globalThis.__bweeepUpdateProbe };
+      if (inspectorClosed) { await save('main-inspector-closed'); break; }
+      snapshot = await evaluate(`(() => {
+        const require = process.getBuiltinModule('module').createRequire(${JSON.stringify(packageFile)});
+        let update;
+        let updateError;
+        try { update = require(${JSON.stringify(moduleFile)}).getLauncherUpdateStatus(); }
+        catch (error) { updateError = { name: String(error?.name || 'Error').slice(0, 80), code: /^[A-Z0-9_]+$/.test(error?.code || '') ? error.code : undefined }; }
+        return { version: process.versions.electron, ready: require('electron').app.isReady(), update, updateError, probe: globalThis.__bweeepUpdateProbe };
       })()`);
-    } catch { await save('main-inspector-closed'); break; }
+    } catch (error) {
+      if (inspectorClosed) { await save('main-inspector-closed'); break; }
+      if (previousError !== error.message) { previousError = error.message; await save('snapshot-evaluation-failed', { error: error.message }); }
+      continue;
+    }
     const detail = { ...snapshot, ...(mode === 'LegacyBridge' ? { localFeedRequests } : {}) };
     const serialized = JSON.stringify(detail);
     if (serialized !== previous) { previous = serialized; await save('updater-snapshot', detail); }

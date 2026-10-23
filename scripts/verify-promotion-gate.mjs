@@ -36,6 +36,10 @@ function verifyArchitectureProof({ architecture, requiredModes, version, sourceS
     assert.equal(verification.installedFilesVerified, manifest.files.length);
     if (mode === 'FreshNSIS') assert.equal(receipt.installer.sha256, installerSha256);
     else {
+      assert.equal(receipt.probe?.targetVersion, version, `${mode} lacks the isolated candidate acknowledgement`);
+      assert.equal(receipt.probe?.arch, architecture);
+      assert.equal(receipt.probe?.signatureBypass, false);
+      assert.equal(receipt.probe?.helperTraceEnabled, false, 'An instrumented helper cannot qualify a release');
       assert.ok(receipt.initialMainPids?.length > 0, `${mode} lacks the original application process`);
       assert.ok(receipt.finalMainPids?.length > 0, `${mode} lacks the restarted application process`);
       assert.ok(receipt.finalMainPids.every((pid) => !receipt.initialMainPids.includes(pid)), `${mode} did not restart`);

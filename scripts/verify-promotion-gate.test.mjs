@@ -7,7 +7,7 @@ const version = '0.1.41';
 const manifest = { version, channel: 'stable', arch: 'x64', files: [{ path: 'Bweeep.exe' }, { path: 'same' }], signature: 'candidate-signature' };
 const run = { id: 123, path: '.github/workflows/release-validation.yml', event: 'workflow_dispatch', head_branch: 'main', head_sha: sourceSha, status: 'completed', conclusion: 'success' };
 const receipts = Object.fromEntries(['FreshNSIS', 'LegacyBridge', 'FileBridge'].map((mode) => [mode, {
-  receipt: { mode, arch: 'x64', runnerArch: 'X64', phase: 'passed', stagedCandidate: true, sourceSha, finalVersion: version, candidateInstallerSha256: installerSha256, manifestSignature: manifest.signature, verifiedFiles: 2, installer: { sha256: installerSha256 }, initialMainPids: [10], finalMainPids: [20], actualChanged: ['Bweeep.exe'], expectedChanged: ['Bweeep.exe'], unchangedFilesUntouched: 1 },
+  receipt: { mode, arch: 'x64', runnerArch: 'X64', phase: 'passed', stagedCandidate: true, sourceSha, finalVersion: version, candidateInstallerSha256: installerSha256, manifestSignature: manifest.signature, verifiedFiles: 2, installer: { sha256: installerSha256 }, probe: { targetVersion: version, arch: 'x64', signatureBypass: false, helperTraceEnabled: false }, initialMainPids: [10], finalMainPids: [20], actualChanged: ['Bweeep.exe'], expectedChanged: ['Bweeep.exe'], unchangedFilesUntouched: 1 },
   verification: { version, arch: 'x64', signatureVerified: true, installedFilesVerified: 2 }
 }]));
 const arm64 = { installerSha256: 'f'.repeat(64), manifest: { ...manifest, arch: 'arm64', signature: 'arm-candidate-signature' }, receipts: {} };
@@ -15,6 +15,7 @@ for (const mode of ['FreshNSIS', 'FileBridge']) {
   arm64.receipts[mode] = structuredClone(receipts[mode]);
   Object.assign(arm64.receipts[mode].receipt, { arch: 'arm64', runnerArch: 'ARM64', candidateInstallerSha256: arm64.installerSha256, manifestSignature: arm64.manifest.signature, installer: { sha256: arm64.installerSha256 } });
   arm64.receipts[mode].verification.arch = 'arm64';
+  arm64.receipts[mode].receipt.probe.arch = 'arm64';
 }
 const native = { schema: 1, phase: 'passed', version, sourceSha, installerSha256, manifestSignature: manifest.signature, rootProtected: true, protectedUpdateVerified: true, signatureVerified: true, verifiedFiles: 2, normalProfile: true, elevatedBefore: false, elevatedAfter: false, initialMainPid: 30, finalMainPid: 40 };
 const input = { version, sourceSha, run, installerSha256, manifest, receipts, native, arm64 };
@@ -41,10 +42,12 @@ for (const [name, mutate] of [
   ['failed ARM64 migration', (value) => { value.arm64.receipts.FileBridge.receipt.phase = 'failed'; }],
   ['ARM64 simulated on x64', (value) => { value.arm64.receipts.FileBridge.receipt.runnerArch = 'X64'; }],
   ['wrong ARM64 artifact', (value) => { value.arm64.receipts.FreshNSIS.receipt.installer.sha256 = installerSha256; }],
-  ['wrong ARM64 manifest', (value) => { value.arm64.receipts.FileBridge.receipt.manifestSignature = manifest.signature; }]
+  ['wrong ARM64 manifest', (value) => { value.arm64.receipts.FileBridge.receipt.manifestSignature = manifest.signature; }],
+  ['instrumented helper', (value) => { value.receipts.FileBridge.receipt.probe.helperTraceEnabled = true; }],
+  ['missing candidate acknowledgement', (value) => { delete value.receipts.LegacyBridge.receipt.probe; }]
 ]) {
   const changed = structuredClone(input);
   mutate(changed);
   assert.throws(() => verifyPromotionProof(changed), { name: 'AssertionError' }, name);
 }
-console.log('promotion-gate: five native cases accepted; 21 incomplete or mismatched proofs rejected');
+console.log('promotion-gate: five native cases accepted; 23 incomplete or mismatched proofs rejected');
