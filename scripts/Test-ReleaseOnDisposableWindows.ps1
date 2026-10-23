@@ -1,5 +1,6 @@
 param(
   [Parameter(Mandatory=$true)][ValidateSet('FreshNSIS','LegacyBridge','FileBridge')][string]$Mode,
+  [ValidateSet('x64','arm64')][string]$Architecture='x64',
   [string]$ExpectedStableVersion='0.1.40',
   [string]$ExpectedStableInstallerSha256,
   [string]$FileBaselineVersion='0.1.40-beta.4',
@@ -10,14 +11,20 @@ param(
 $ErrorActionPreference='Stop'
 if($ExpectedStableInstallerSha256 -and $ExpectedStableInstallerSha256 -notmatch '^[a-f0-9]{64}$'){throw 'Optional stable SHA pin must be lowercase SHA-256'}
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') { throw 'NSIS tests require a disposable GitHub Windows runner' }
+if ($env:RUNNER_ARCH -ine $Architecture) { throw 'A native runner matching the candidate architecture is required' }
+if ($Architecture -eq 'arm64' -and $Mode -eq 'LegacyBridge') { throw 'Version 0.1.39 has no ARM64 installer; this migration is not applicable' }
 $work=Join-Path $env:RUNNER_TEMP ('bweeep-release-proof-'+$Mode)
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $root=Join-Path $env:LOCALAPPDATA 'Programs\Bweeep'
 if (Test-Path -LiteralPath $root) { throw 'Runner is not clean: Bweeep directory exists' }
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 $elevated=(New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$receipt=@{mode=$Mode; runner=$env:RUNNER_NAME; elevated=$elevated; root=$root; startedUtc=[DateTime]::UtcNow.ToString('o'); phase='preflight'; stagedCandidate=[bool]$StagedCandidate; updateTimeoutMinutes=$UpdateTimeoutMinutes; sourceSha=$env:GITHUB_SHA; candidateInstallerSha256=$ExpectedStableInstallerSha256}
+$receipt=@{mode=$Mode;arch=$Architecture;runnerArch=$env:RUNNER_ARCH; runner=$env:RUNNER_NAME; elevated=$elevated; root=$root; startedUtc=[DateTime]::UtcNow.ToString('o'); phase='preflight'; stagedCandidate=[bool]$StagedCandidate; updateTimeoutMinutes=$UpdateTimeoutMinutes; sourceSha=$env:GITHUB_SHA; candidateInstallerSha256=$ExpectedStableInstallerSha256}
 function Save-Receipt { $receipt | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $work 'receipt.json') -Encoding UTF8 }
+function Installer-Name([string]$version) {
+  $suffix=if($Architecture -eq 'arm64'){'-arm64'}else{''}
+  return 'Bweeep-Setup-'+$version+$suffix+'.exe'
+}
 function Version-AtRoot {
   try{
     $metadata=& node (Join-Path $PSScriptRoot 'Read-InstalledPackage.cjs') $root
@@ -86,12 +93,12 @@ function Resolve-Release([string]$version,[hashtable]$headers){
 function Download-Installer([string]$version,[string]$destination,[string]$pinnedSha='') {
   $apiHeaders=@{Accept='application/vnd.github+json'}
   if($env:GH_TOKEN){$apiHeaders.Authorization='Bearer '+$env:GH_TOKEN}
-  if($Mode -eq 'FreshNSIS' -and $version -eq $ExpectedStableVersion -and -not $promoted){
+  if($Mode -eq 'FreshNSIS' -and $version -eq $ExpectedStableVersion -and ($StagedCandidate -or -not $promoted)){
     $extraSha=$pinnedSha;$digestSource=if($pinnedSha){'reviewed-pin'}else{'signed-archive'}
     $metadataSource='not-visible-to-read-token';$releaseId=$null;$assetId=$null
     try{
       $draftLookup=Resolve-Release $version $apiHeaders
-      $draftAsset=@($draftLookup.release.assets|Where-Object name -eq ('Bweeep-Setup-'+$version+'.exe'))
+      $draftAsset=@($draftLookup.release.assets|Where-Object name -eq (Installer-Name $version))
       if($draftAsset.Count -ne 1 -or $draftAsset[0].digest -notmatch '^sha256:([a-f0-9]{64})$'){throw 'Visible Draft installer metadata is ambiguous or lacks a digest'}
       $githubSha=$Matches[1]
       if($extraSha -and $extraSha -ne $githubSha){throw 'Reviewed pin differs from visible GitHub Draft digest'}
@@ -103,7 +110,7 @@ function Download-Installer([string]$version,[string]$destination,[string]$pinne
     # Read-only PR tokens may not expose Drafts. The public archive is already
     # signed with the pinned release key, so no stronger GitHub token is needed.
     $pinArgument=if($extraSha){$extraSha}else{'-'}
-    & node (Join-Path $PSScriptRoot 'Download-SignedInstallerArchive.mjs') $destination $version (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work $pinArgument $digestSource | Write-Host
+    & node (Join-Path $PSScriptRoot 'Download-SignedInstallerArchive.mjs') $destination $version (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work $pinArgument $digestSource $Architecture | Write-Host
     if($LASTEXITCODE -ne 0){throw 'Anonymous signed installer reconstruction failed before execution'}
     $download=Get-Content -LiteralPath (Join-Path $work 'installer-download.json') -Raw|ConvertFrom-Json
     return @{version=$version;sha256=$download.sha256;bytes=$download.bytes;source=$download.source;metadataSource=$metadataSource;releaseId=$releaseId;assetId=$assetId;signatureVerified=$download.signatureVerified;additionalDigestVerified=$download.additionalDigestVerified}
@@ -111,8 +118,8 @@ function Download-Installer([string]$version,[string]$destination,[string]$pinne
   $lookup=Resolve-Release $version $apiHeaders
   $release=$lookup.release
   if ($release.draft -and $Mode -ne 'FreshNSIS') { throw 'Requested bridge installer is still draft' }
-  $asset=@($release.assets | Where-Object name -eq ('Bweeep-Setup-'+$version+'.exe'))
-  if ($asset.Count -ne 1) { throw 'Exactly one x64 installer asset required' }
+  $asset=@($release.assets | Where-Object name -eq (Installer-Name $version))
+  if ($asset.Count -ne 1) { throw "Exactly one $Architecture installer asset required" }
   $sha=$pinnedSha
   if($pinnedSha -and $asset[0].digest -and $asset[0].digest -ne ('sha256:'+$pinnedSha)){throw 'Explicit SHA pin differs from current GitHub asset digest'}
   if (-not $sha) {
@@ -124,13 +131,13 @@ function Download-Installer([string]$version,[string]$destination,[string]$pinne
     $url=$asset[0].url
     Invoke-WebRequest -Uri $url -Headers @{Accept='application/octet-stream';Authorization=('Bearer '+$env:GH_TOKEN)} -OutFile $destination
   }else{
-    $url=if($version -eq $ExpectedStableVersion){'https://tmwvrglzjfzauuygofpp.supabase.co/functions/v1/launcher-download?arch=x64'}else{$asset[0].browser_download_url}
+    $url=if($version -eq $ExpectedStableVersion){'https://tmwvrglzjfzauuygofpp.supabase.co/functions/v1/launcher-download?arch='+$Architecture}else{$asset[0].browser_download_url}
     Invoke-WebRequest -Uri $url -OutFile $destination
   }
   $actual=(Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($actual -ne $sha) { throw "Installer hash mismatch: $version" }
   if($version -eq $ExpectedStableVersion){
-    & node (Join-Path $PSScriptRoot 'Verify-InstallerArchive.mjs') $destination $version $sha (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work | Write-Host
+    & node (Join-Path $PSScriptRoot 'Verify-InstallerArchive.mjs') $destination $version $sha (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work $Architecture | Write-Host
     if($LASTEXITCODE -ne 0){throw 'Archived installer signature/hash verification failed before execution'}
   }
   return @{version=$version; sha256=$actual; bytes=(Get-Item -LiteralPath $destination).Length; source=$url;metadataSource=$lookup.source;releaseId=$release.id;assetId=$asset[0].id}
@@ -151,10 +158,10 @@ try {
     $receipt.phase='blocked';$receipt.dependency='Stable release must be published before an actual migration bridge can run; no installer/app was launched.'
     Save-Receipt;Write-Output $receipt.dependency;exit 0
   }
-  $manifestUrl=if($promoted -and -not $StagedCandidate){'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/channels/stable/x64.json'}else{'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/manifests/'+$ExpectedStableVersion+'/x64/stable.json'}
+  $manifestUrl=if($promoted -and -not $StagedCandidate){'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/channels/stable/'+$Architecture+'.json'}else{'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/manifests/'+$ExpectedStableVersion+'/'+$Architecture+'/stable.json'}
   $receipt.manifestSource=$manifestUrl
   $baseline=if($Mode -eq 'LegacyBridge'){'0.1.39'}elseif($Mode -eq 'FileBridge'){$FileBaselineVersion}else{$ExpectedStableVersion}
-  $installer=Join-Path $work ('Bweeep-Setup-'+$baseline+'.exe')
+  $installer=Join-Path $work (Installer-Name $baseline)
   $pin=if($baseline -eq $ExpectedStableVersion){$ExpectedStableInstallerSha256}else{''}
   $receipt.installer=Download-Installer $baseline $installer $pin
   Install-NSIS $installer
@@ -164,8 +171,8 @@ try {
   if($LASTEXITCODE -ne 0){throw 'Cannot read baseline application package metadata'}
   $receipt.baselineMetadata=$baselineMetadata
   if($StagedCandidate -and $Mode -eq 'LegacyBridge'){
-    $candidateInstaller=Join-Path $work ('Bweeep-Setup-'+$ExpectedStableVersion+'.exe')
-    & node (Join-Path $PSScriptRoot 'Download-SignedInstallerArchive.mjs') $candidateInstaller $ExpectedStableVersion (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work $ExpectedStableInstallerSha256 'reviewed-pin' | Write-Host
+    $candidateInstaller=Join-Path $work (Installer-Name $ExpectedStableVersion)
+    & node (Join-Path $PSScriptRoot 'Download-SignedInstallerArchive.mjs') $candidateInstaller $ExpectedStableVersion (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work $ExpectedStableInstallerSha256 'reviewed-pin' $Architecture | Write-Host
     if($LASTEXITCODE -ne 0){throw 'Legacy candidate signed archive verification failed before serving'}
     $receipt.candidateInstaller=Get-Content -LiteralPath (Join-Path $work 'installer-download.json') -Raw|ConvertFrom-Json
   }
@@ -173,6 +180,7 @@ try {
   if (-not $receipt.protocolRegistered) { throw 'Invite protocol not registered by real NSIS' }
   $pointer=Invoke-RestMethod -Uri $manifestUrl
   if ($pointer.version -ne $ExpectedStableVersion) { throw 'Stable channel version mismatch' }
+  if ($pointer.arch -ne $Architecture) { throw 'Candidate manifest architecture mismatch' }
   $receipt.manifestSignature=$pointer.signature
   $before=@{}
   foreach($f in $pointer.files) {
@@ -201,7 +209,7 @@ try {
         Start-Sleep -Milliseconds 250
       }
       $probe=Get-Content -LiteralPath $readyFile -Raw|ConvertFrom-Json
-      if($probe.pid -ne $started.Id -or $probe.targetVersion -ne $ExpectedStableVersion -or $probe.signatureBypass -ne $false){throw 'Candidate mapping acknowledgement differs from this test'}
+      if($probe.pid -ne $started.Id -or $probe.targetVersion -ne $ExpectedStableVersion -or $probe.arch -ne $Architecture -or $probe.signatureBypass -ne $false){throw 'Candidate mapping acknowledgement differs from this test'}
       $receipt.probe=$probe
     }elseif((Main-Processes).Count -eq 0){$started=Start-Process -FilePath (Join-Path $root 'Bweeep.exe') -ArgumentList '--disable-gpu' -WindowStyle Hidden -PassThru;$receipt.launchedPid=$started.Id}
     $initial=@((Main-Processes)|ForEach-Object ProcessId)
@@ -246,7 +254,7 @@ try {
   }
   if(-not(Test-Path -LiteralPath (Join-Path $root 'resources\bweeep-update-public-key.pem'))){throw 'Public key absent'}
   if(-not(Test-Path -LiteralPath (Join-Path $root 'resources\file-update-helper.ps1'))){throw 'Helper absent'}
-  & node (Join-Path $PSScriptRoot 'Verify-InstalledManifest.mjs') $root $work $ExpectedStableVersion $manifestUrl
+  & node (Join-Path $PSScriptRoot 'Verify-InstalledManifest.mjs') $root $work $ExpectedStableVersion $manifestUrl $Architecture
   if($LASTEXITCODE -ne 0){throw 'Installed signed manifest verification failed'}
   $receipt.verifiedFiles=$pointer.files.Count;$receipt.finalVersion=Version-AtRoot;$receipt.phase='passed'
   $receipt.coverage='Actual NSIS/automatic update on clean runner in writable per-user path; excludes protected Program Files and actual game-running behavior.'

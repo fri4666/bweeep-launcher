@@ -14,6 +14,9 @@ assert.ok(Number.isInteger(port) && port >= 1024 && port <= 65535);
 assert.ok(path.isAbsolute(root) && path.isAbsolute(output));
 assert.match(version, /^\d+\.\d+\.\d+$/);
 assert.ok(['FileBridge', 'LegacyBridge'].includes(mode));
+const architecture = process.arch;
+assert.ok(['x64', 'arm64'].includes(architecture), 'Native x64 or ARM64 Node required');
+assert.ok(mode !== 'LegacyBridge' || architecture === 'x64', 'No legacy ARM64 baseline exists');
 const storage = 'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates';
 const timeline = [];
 const localFeedRequests = [];
@@ -141,6 +144,7 @@ try {
     const require = process.getBuiltinModule('module').createRequire(${JSON.stringify(packageFile)});
     if (process.execPath.toLowerCase() !== ${JSON.stringify(path.join(root, 'Bweeep.exe').toLowerCase())}) throw new Error('Unexpected inspector executable');
     const { net, app } = require('electron');
+    if (process.arch !== ${JSON.stringify(architecture)}) throw new Error('Packaged app architecture differs from native test runner');
     app.once('before-quit', () => require('node:inspector').close());
     const original = net.fetch.bind(net);
     const prefix = ${JSON.stringify(storage)};
@@ -159,25 +163,34 @@ try {
       };
     }
     net.fetch = async (input, options) => {
-      const originalUrl = typeof input === 'string' ? input : input.url;
+      const originalUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url;
       let requestUrl = originalUrl;
-      if (originalUrl === prefix + '/channels/stable/x64.json') {
-        requestUrl = prefix + '/manifests/' + target + '/x64/stable.json';
+      let requestInput = input;
+      if (originalUrl === prefix + '/channels/stable/' + process.arch + '.json') {
+        requestUrl = prefix + '/manifests/' + target + '/' + process.arch + '/stable.json';
+        requestInput = requestUrl;
         globalThis.__bweeepUpdateProbe.mappedChannelRequests++;
       }
       const tracked = typeof requestUrl === 'string' && requestUrl.startsWith(prefix + '/') &&
         ['/channels/', '/manifests/', '/blobs/', '/installers/'].some(part => requestUrl.slice(prefix.length).startsWith(part));
       const record = tracked ? { path: requestUrl.slice(prefix.length), at: new Date().toISOString() } : null;
       if (record) globalThis.__bweeepUpdateProbe.requests.push(record);
-      try { const response = await original(requestUrl, options); if (record) record.status = response.status; return response; }
+      try { const response = await original(requestInput, options); if (record) record.status = response.status; return response; }
       catch (error) { if (record) record.errorName = String(error?.name || 'Error').slice(0, 80); throw error; }
     };
-    return { installed: true, pid: process.pid, version: require('electron').app.getVersion() };
+    return { installed: true, pid: process.pid, arch: process.arch, version: require('electron').app.getVersion() };
   })()`;
-  const installed = await evaluate(setup);
+  // Paused application entry cannot advance promise microtasks. Configure the
+  // synchronous probe on its actual frame; async snapshots begin after resume.
+  const configured = await call('Debugger.evaluateOnCallFrame', { callFrameId: pause.callFrames[0].callFrameId, expression: setup, returnByValue: true });
+  if (configured.exceptionDetails) {
+    const description = configured.exceptionDetails.exception?.description?.split('\n')[0] || configured.exceptionDetails.text || 'exception';
+    throw new Error('Controlled paused-frame setup failed: ' + description.replace(/https?:\/\/\S+/g, 'remote-url').slice(0, 300));
+  }
+  const installed = configured.result?.value;
   assert.equal(installed?.installed, true);
   await save('probe-installed', installed);
-  await fsp.writeFile(path.join(output, 'inspector-ready.json'), JSON.stringify({ ...installed, targetVersion: version, mapping: mode === 'LegacyBridge' ? 'github-stable-provider-to-loopback-verified-candidate-feed' : 'exact-stable-x64-channel-to-versioned-signed-manifest', signatureBypass: false }, null, 2));
+  await fsp.writeFile(path.join(output, 'inspector-ready.json'), JSON.stringify({ ...installed, targetVersion: version, mapping: mode === 'LegacyBridge' ? 'github-stable-provider-to-loopback-verified-candidate-feed' : `exact-stable-${architecture}-channel-to-versioned-signed-manifest`, signatureBypass: false }, null, 2));
   await call('Debugger.resume').catch(() => undefined);
   const moduleUrl = pathToFileURL(path.join(appPath, 'dist', 'src', 'main', 'launcher-update.js')).href;
   let previous = '';
