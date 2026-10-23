@@ -24,7 +24,11 @@ function New-Case([string]$name){
   [IO.File]::WriteAllText((Join-Path $r 'data\value'),'old');[IO.File]::WriteAllText((Join-Path $s 'data\value'),'new')
   return @{dir=$dir;root=$r;stage=$s;id=[guid]::NewGuid().ToString()}
 }
-function Item([hashtable]$c,[string]$p){return @{path=$p;sha256=(Get-FileHash -LiteralPath (Join-Path $c.stage $p) -Algorithm SHA256).Hash.ToLowerInvariant()}}
+function Fixture-Sha256([string]$path){
+  $hasher=[Security.Cryptography.SHA256]::Create();$stream=$null
+  try{$stream=[IO.File]::OpenRead($path);return [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}finally{if($stream){$stream.Dispose()};$hasher.Dispose()}
+}
+function Item([hashtable]$c,[string]$p){return @{path=$p;sha256=(Fixture-Sha256 (Join-Path $c.stage $p))}}
 function Run([hashtable]$c,[object[]]$items,[object[]]$removed=@(),[int]$parent=2147483647){
   $plan=Join-Path $c.dir 'plan.json';@{id=$c.id;root=$c.root;staged=$c.stage;parentPid=$parent;changed=$items;removed=$removed}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $plan -Encoding UTF8
   $clock=[Diagnostics.Stopwatch]::StartNew();$errorText=$null
@@ -90,5 +94,5 @@ $c=New-Case 'parent-wait';$p=Start-Process -FilePath powershell.exe -ArgumentLis
 $r=Run $c @((Item $c 'data/value')) @() $p.Id
 Check ($null -eq $r.error -and $r.elapsedMs -ge 1400 -and $r.restart) 'Parent wait/restart failed'
 [void]$results.Add(@{case='parent-wait';passed=$true;detail=$r})
-@{helperSha256=(Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant();withoutFileHashCmdlet=[bool]$WithoutFileHashCmdlet;results=$results;coverage='Exact production helper with owned executable fixtures; restricted mode loads native Windows cmdlet assemblies but no hash function, disables autoload and clears only the child module path. No real app/NSIS/game/ACL changes.'}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $base 'result.json') -Encoding UTF8
+@{helperSha256=(Fixture-Sha256 $helper);withoutFileHashCmdlet=[bool]$WithoutFileHashCmdlet;results=$results;coverage='Exact production helper with owned executable fixtures; restricted mode loads native Windows cmdlet assemblies but no hash function, disables autoload and clears only the child module path. No real app/NSIS/game/ACL changes.'}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $base 'result.json') -Encoding UTF8
 Write-Output (Join-Path $base 'result.json')
