@@ -113,7 +113,7 @@ try {
   }
   $manifestUrl=if($promoted){'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/channels/stable/x64.json'}else{'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/manifests/'+$ExpectedStableVersion+'/x64/stable.json'}
   $receipt.manifestSource=$manifestUrl
-  $baseline=if($Mode -eq 'LegacyBridge'){'0.1.39'}elseif($Mode -eq 'FileBridge'){'0.1.40-beta.1'}else{$ExpectedStableVersion}
+  $baseline=if($Mode -eq 'LegacyBridge'){'0.1.39'}elseif($Mode -eq 'FileBridge'){'0.1.40-beta.4'}else{$ExpectedStableVersion}
   $installer=Join-Path $work ('Bweeep-Setup-'+$baseline+'.exe')
   $pin=if($baseline -eq $ExpectedStableVersion){$ExpectedStableInstallerSha256}else{''}
   $receipt.installer=Download-Installer $baseline $installer $pin
