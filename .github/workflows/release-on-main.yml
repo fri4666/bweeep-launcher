@@ -1,4 +1,4 @@
-name: 런처 릴리스
+name: 런처 후보 보관본과 릴리스 초안
 
 on:
   push:
@@ -29,8 +29,8 @@ jobs:
           node-version: 24
           cache: npm
 
-      # 정식판이 이미 게시된 버전이면 아무것도 하지 않습니다. 초안만 있으면
-      # (테스트 중이면) 병합할 때마다 새 베타를 내고 초안도 새로 만듭니다.
+      # 게시된 버전은 건드리지 않습니다. 아직 초안이면 병합할 때마다 후보
+      # 보관본과 베타·정식 초안만 갱신하며 자동 업데이트 채널은 게시하지 않습니다.
       - name: 게시 상태 확인
         id: version
         shell: pwsh
@@ -76,6 +76,10 @@ jobs:
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
+          $sevenZip = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
+          if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe' }
+          if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) { throw 'Full 7-Zip CLI is required to inspect NSIS payloads before upload' }
+          "NSIS_SEVEN_ZIP=$sevenZip" >> $env:GITHUB_ENV
           npm ci
           npm run typecheck
           npm run verify:deep-link
@@ -83,9 +87,10 @@ jobs:
           node scripts/verify-launcher-update.mjs
           node scripts/verify-file-update.mjs
           node scripts/verify-release-notes.mjs
+          node scripts/verify-nsis-codecs.test.mjs
 
-      # 같은 정식 런처를 두 번 만듭니다. 베타(X.Y.Z-beta.N, beta.yml)는 테스터와
-      # 관리자가 일반 런처에서 먼저 받고, 정식판(X.Y.Z, latest.yml)은 초안으로 둡니다.
+      # x64·ARM64의 정식판과 베타판을 모두 보관본으로만 만듭니다.
+      # 실제 설치·자동 업데이트 검증이 끝나기 전에는 어느 채널에도 노출하지 않습니다.
       # 따로 설치하던 "Bweeep Test" 앱은 더 만들지 않습니다(설치본 코드는 그대로 둠).
       - name: Windows 설치본 만들기
         if: steps.version.outputs.published != 'True'
@@ -100,7 +105,21 @@ jobs:
           npm run package:win:arm64 -- --publish never
           npm run package:win:beta:arm64 -- --publish never
 
-      - name: Supabase 파일 릴리스 준비와 베타 게시
+      - name: 네 설치 파일의 실제 NSIS 압축 코덱 확인
+        if: steps.version.outputs.published != 'True'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BETA_VERSION: ${{ steps.version.outputs.version }}-beta.${{ steps.version.outputs.beta_build }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $sevenZip = $env:NSIS_SEVEN_ZIP
+          node scripts/verify-nsis-codecs.mjs "$pwd/release-installer/Bweeep-Setup-$env:VERSION.exe" x64 "$pwd/candidate-proof/stable-x64" $sevenZip
+          node scripts/verify-nsis-codecs.mjs "$pwd/release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe" x64 "$pwd/candidate-proof/beta-x64" $sevenZip
+          node scripts/verify-nsis-codecs.mjs "$pwd/release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe" arm64 "$pwd/candidate-proof/stable-arm64" $sevenZip
+          node scripts/verify-nsis-codecs.mjs "$pwd/release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe" arm64 "$pwd/candidate-proof/beta-arm64" $sevenZip
+
+      - name: 서명된 파일·설치 파일 보관본만 업로드
         if: steps.version.outputs.published != 'True'
         shell: pwsh
         env:
@@ -109,7 +128,6 @@ jobs:
           BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
           BWEEP_UPDATE_SIGNING_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_SIGNING_KEY_BASE64 }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           node scripts/create-file-release.mjs release-installer/win-unpacked $env:VERSION stable x64 release-installer/file-update-stable.json
@@ -126,11 +144,8 @@ jobs:
           node scripts/publish-installer.mjs "release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe" $env:VERSION arm64 archive
           node scripts/publish-installer.mjs "release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe" $env:BETA_VERSION x64 archive
           node scripts/publish-installer.mjs "release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe" $env:BETA_VERSION arm64 archive
-          node scripts/publish-release-notes.mjs $env:BETA_VERSION beta build/release-notes.txt
-          node scripts/publish-file-release.mjs - release-installer-beta/file-update-beta.json channel
-          node scripts/publish-file-release.mjs - release-installer-beta-arm64/file-update-beta-arm64.json channel
 
-      - name: GitHub 베타 릴리스 게시
+      - name: GitHub 베타 릴리스 초안 올리기
         if: steps.version.outputs.published != 'True'
         shell: pwsh
         env:
@@ -147,13 +162,12 @@ jobs:
             "release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe.blockmap",
             "release-installer-beta-arm64/file-update-beta-arm64.json"
           )
-          $notes = "테스터와 관리자가 먼저 받는 테스트 버전이에요. 확인이 끝나면 같은 내용으로 정식 버전이 나와요.`n`n" + (Get-Content build/release-notes.txt -Raw -Encoding utf8)
+          $notes = "설치와 자동 업데이트를 검증하기 위한 베타 초안이에요. 검증 전에는 다운로드와 자동 업데이트 채널에 게시하지 않아요.`n`n" + (Get-Content build/release-notes.txt -Raw -Encoding utf8)
           $notesFile = Join-Path $env:RUNNER_TEMP "beta-release-notes.txt"
           Set-Content -Path $notesFile -Value $notes -Encoding utf8
-          gh release create $env:BETA_TAG $assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --title "붸에엡 v$env:BETA_VERSION (테스트)" --notes-file $notesFile
+          gh release create $env:BETA_TAG $assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --prerelease --title "붸에엡 v$env:BETA_VERSION (검증 초안)" --notes-file $notesFile
 
-      # 정식판은 초안으로만 올립니다. 초안은 자동 업데이트에 보이지 않으므로,
-      # 테스터가 베타를 확인한 뒤 "정식 배포" 워크플로로 게시합니다.
+      # 최종 main 빌드의 실제 검증과 지원 채널 확인 전까지 정식도 초안으로 둡니다.
       - name: GitHub 정식 릴리스 초안 올리기
         if: steps.version.outputs.published != 'True'
         shell: pwsh
@@ -186,3 +200,11 @@ jobs:
               --title "붸에엡 v$env:VERSION" `
               --notes-file build/release-notes.txt
           }
+
+      - name: main 후보의 압축 코덱 검증 증거 보관
+        if: always() && steps.version.outputs.published != 'True'
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-release-candidate-proof
+          path: candidate-proof/**/*.json
+          retention-days: 7
