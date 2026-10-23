@@ -39,6 +39,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: node scripts/verify-file-update.mjs
+      - run: node scripts/verify-promotion-gate.test.mjs
+      - run: node scripts/verify-nsis-codecs.test.mjs
       - run: node scripts/verify-protected-installer.mjs
       - run: node scripts/verify-manifest.mjs
       - run: node scripts/verify-launcher-update.mjs

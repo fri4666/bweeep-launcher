@@ -31,7 +31,15 @@ try {
   foreach ($item in $plan.changed) {
     $source = Resolve-UpdatePath $staged $item.path
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing staged file: $($item.path)" }
-    $actual = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    $sourceStream = $null
+    try {
+      $sourceStream = [IO.File]::OpenRead($source)
+      $actual = [BitConverter]::ToString($hasher.ComputeHash($sourceStream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+      if ($sourceStream) { $sourceStream.Dispose() }
+      $hasher.Dispose()
+    }
     if ($actual -ne $item.sha256) { throw "Staged file hash mismatch: $($item.path)" }
   }
 
@@ -63,6 +71,17 @@ try {
   Start-Process -FilePath (Join-Path $root 'Bweeep.exe') -WorkingDirectory $root
 } catch {
   $failure = $_
+  try {
+    $message = $failure.Exception.Message
+    [pscustomobject]@{
+      schema = 1
+      at = [DateTime]::UtcNow.ToString('o')
+      message = $message.Substring(0, [Math]::Min($message.Length, 512))
+      type = $failure.Exception.GetType().FullName
+      hresult = $failure.Exception.HResult
+      line = $failure.InvocationInfo.ScriptLineNumber
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $staged 'apply-error.json') -Encoding UTF8
+  } catch {}
   try {
     for ($index = $applied.Count - 1; $index -ge 0; $index--) {
       $item = $applied[$index]
