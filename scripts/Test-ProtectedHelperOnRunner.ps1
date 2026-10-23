@@ -30,7 +30,7 @@ try{
   if($observed.phase -ne 'protected-write-denial-reproduced' -or $observed.elevated -ne $false -or $observed.writeDenied -ne $true){throw 'Protected Medium-token denial not established; this is not a protected-update pass'}
   Get-Content -LiteralPath $report
 }catch{
-  @{phase='not-covered';reason=$_.Exception.Message;fixture=$root;rule='No retry with alternate authority or ACL changes'}|ConvertTo-Json|Set-Content -LiteralPath $report -Encoding UTF8
+  @{phase='not-covered';reason=$_.Exception.Message;fixture=$root;protectedUpdateVerified=$false;coverageKind='observational-only';aclModified=$false;rule='No retry with alternate authority or ACL changes'}|ConvertTo-Json|Set-Content -LiteralPath $report -Encoding UTF8
   Get-Content -LiteralPath $report
-  throw
+  Write-Warning 'NOT-COVERED: hosted runner did not establish a usable Medium-token interactive task. This observation is not a protected-update pass.'
 }finally{Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue}

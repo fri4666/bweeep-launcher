@@ -48,6 +48,28 @@ function Resolve-Release([string]$version,[hashtable]$headers){
 function Download-Installer([string]$version,[string]$destination,[string]$pinnedSha='') {
   $apiHeaders=@{Accept='application/vnd.github+json'}
   if($env:GH_TOKEN){$apiHeaders.Authorization='Bearer '+$env:GH_TOKEN}
+  if($Mode -eq 'FreshNSIS' -and $version -eq $ExpectedStableVersion -and -not $promoted){
+    $extraSha=$pinnedSha;$digestSource=if($pinnedSha){'reviewed-pin'}else{'signed-archive'}
+    $metadataSource='not-visible-to-read-token';$releaseId=$null;$assetId=$null
+    try{
+      $draftLookup=Resolve-Release $version $apiHeaders
+      $draftAsset=@($draftLookup.release.assets|Where-Object name -eq ('Bweeep-Setup-'+$version+'.exe'))
+      if($draftAsset.Count -ne 1 -or $draftAsset[0].digest -notmatch '^sha256:([a-f0-9]{64})$'){throw 'Visible Draft installer metadata is ambiguous or lacks a digest'}
+      $githubSha=$Matches[1]
+      if($extraSha -and $extraSha -ne $githubSha){throw 'Reviewed pin differs from visible GitHub Draft digest'}
+      $extraSha=$githubSha;$digestSource='github-asset';$metadataSource=$draftLookup.source
+      $releaseId=$draftLookup.release.id;$assetId=$draftAsset[0].id
+    }catch{
+      if($_.Exception.Message -notlike 'Exact release tag not found:*'){throw}
+    }
+    # Read-only PR tokens may not expose Drafts. The public archive is already
+    # signed with the pinned release key, so no stronger GitHub token is needed.
+    $pinArgument=if($extraSha){$extraSha}else{'-'}
+    & node (Join-Path $PSScriptRoot 'Download-SignedInstallerArchive.mjs') $destination $version (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work $pinArgument $digestSource | Write-Host
+    if($LASTEXITCODE -ne 0){throw 'Anonymous signed installer reconstruction failed before execution'}
+    $download=Get-Content -LiteralPath (Join-Path $work 'installer-download.json') -Raw|ConvertFrom-Json
+    return @{version=$version;sha256=$download.sha256;bytes=$download.bytes;source=$download.source;metadataSource=$metadataSource;releaseId=$releaseId;assetId=$assetId;signatureVerified=$download.signatureVerified;additionalDigestVerified=$download.additionalDigestVerified}
+  }
   $lookup=Resolve-Release $version $apiHeaders
   $release=$lookup.release
   if ($release.draft -and $Mode -ne 'FreshNSIS') { throw 'Requested bridge installer is still draft' }
@@ -70,7 +92,7 @@ function Download-Installer([string]$version,[string]$destination,[string]$pinne
   $actual=(Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($actual -ne $sha) { throw "Installer hash mismatch: $version" }
   if($version -eq $ExpectedStableVersion){
-    & node (Join-Path $PSScriptRoot 'Verify-InstallerArchive.mjs') $destination $version $sha (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work
+    & node (Join-Path $PSScriptRoot 'Verify-InstallerArchive.mjs') $destination $version $sha (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work | Write-Host
     if($LASTEXITCODE -ne 0){throw 'Archived installer signature/hash verification failed before execution'}
   }
   return @{version=$version; sha256=$actual; bytes=(Get-Item -LiteralPath $destination).Length; source=$url;metadataSource=$lookup.source;releaseId=$release.id;assetId=$asset[0].id}
