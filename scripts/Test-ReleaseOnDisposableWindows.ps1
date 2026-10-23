@@ -142,7 +142,6 @@ function Install-NSIS([string]$installer) {
 try {
   if($ExpectedStableVersion -notmatch '^\d+\.\d+\.\d+$' -or $FileBaselineVersion -notmatch '^\d+\.\d+\.\d+(?:-beta\.\d+)?$'){throw 'Invalid fixed release version'}
   if($StagedCandidate -and -not $ExpectedStableInstallerSha256){throw 'Prepublication installation requires an explicit reviewed installer SHA-256 pin'}
-  if($StagedCandidate -and $Mode -eq 'LegacyBridge'){throw 'Prepublication legacy GitHub-feed fixture is not implemented; coverage cannot be reported as passed'}
   Save-Receipt
   $latestHeaders=@{Accept='application/vnd.github+json'}
   if($env:GH_TOKEN){$latestHeaders.Authorization='Bearer '+$env:GH_TOKEN}
@@ -164,6 +163,12 @@ try {
   $baselineMetadata=(& node (Join-Path $PSScriptRoot 'Read-InstalledPackage.cjs') $root)|ConvertFrom-Json
   if($LASTEXITCODE -ne 0){throw 'Cannot read baseline application package metadata'}
   $receipt.baselineMetadata=$baselineMetadata
+  if($StagedCandidate -and $Mode -eq 'LegacyBridge'){
+    $candidateInstaller=Join-Path $work ('Bweeep-Setup-'+$ExpectedStableVersion+'.exe')
+    & node (Join-Path $PSScriptRoot 'Download-SignedInstallerArchive.mjs') $candidateInstaller $ExpectedStableVersion (Join-Path $PSScriptRoot 'expected-update-public-key.pem') $work $ExpectedStableInstallerSha256 'reviewed-pin' | Write-Host
+    if($LASTEXITCODE -ne 0){throw 'Legacy candidate signed archive verification failed before serving'}
+    $receipt.candidateInstaller=Get-Content -LiteralPath (Join-Path $work 'installer-download.json') -Raw|ConvertFrom-Json
+  }
   $receipt.protocolRegistered=[bool](Test-Path 'HKCU:\Software\Classes\bwe-e-ep')
   if (-not $receipt.protocolRegistered) { throw 'Invite protocol not registered by real NSIS' }
   $pointer=Invoke-RestMethod -Uri $manifestUrl
@@ -182,9 +187,22 @@ try {
       foreach($owned in @(Main-Processes)){Stop-Process -Id $owned.ProcessId -Force;Wait-Process -Id $owned.ProcessId -Timeout 15 -ErrorAction SilentlyContinue}
       $started=Start-Process -FilePath (Join-Path $root 'Bweeep.exe') -ArgumentList @('--disable-gpu',('--inspect-brk=127.0.0.1:'+$InspectorPort)) -WorkingDirectory $root -WindowStyle Hidden -PassThru
       $receipt.launchedPid=$started.Id
-      $observer=Start-Process -FilePath (Get-Command node).Source -ArgumentList @((Join-Path $PSScriptRoot 'Observe-PackagedUpdate.mjs'),$InspectorPort,$root,$ExpectedStableVersion,$work) -WindowStyle Hidden -PassThru
+      $observerArguments=@((Join-Path $PSScriptRoot 'Observe-PackagedUpdate.mjs'),$InspectorPort,$root,$ExpectedStableVersion,$work,$Mode)
+      if($Mode -eq 'LegacyBridge'){$observerArguments+=@($candidateInstaller,$ExpectedStableInstallerSha256)}
+      $observer=Start-Process -FilePath (Get-Command node).Source -ArgumentList $observerArguments -WindowStyle Hidden -PassThru
       $receipt.observerPid=$observer.Id
-      $receipt.updateFeedFixture='Only exact stable channel URL redirected to immutable signed candidate manifest in disposable packaged app memory'
+      $receipt.updateFeedFixture=if($Mode -eq 'LegacyBridge'){'Only exact GitHub stable provider redirected to loopback feed serving the pinned, signed candidate installer'}else{'Only exact stable channel URL redirected to immutable signed candidate manifest in disposable packaged app memory'}
+      $readyFile=Join-Path $work 'inspector-ready.json'
+      $probeDeadline=[DateTime]::UtcNow.AddSeconds(75)
+      while(-not(Test-Path -LiteralPath $readyFile)){
+        $observer.Refresh()
+        if($observer.HasExited){throw 'Packaged updater probe exited before candidate mapping; inspect inspector-diagnostics.json'}
+        if([DateTime]::UtcNow -ge $probeDeadline){throw 'Packaged updater probe did not acknowledge candidate mapping'}
+        Start-Sleep -Milliseconds 250
+      }
+      $probe=Get-Content -LiteralPath $readyFile -Raw|ConvertFrom-Json
+      if($probe.pid -ne $started.Id -or $probe.targetVersion -ne $ExpectedStableVersion -or $probe.signatureBypass -ne $false){throw 'Candidate mapping acknowledgement differs from this test'}
+      $receipt.probe=$probe
     }elseif((Main-Processes).Count -eq 0){$started=Start-Process -FilePath (Join-Path $root 'Bweeep.exe') -ArgumentList '--disable-gpu' -WindowStyle Hidden -PassThru;$receipt.launchedPid=$started.Id}
     $initial=@((Main-Processes)|ForEach-Object ProcessId)
     if($receipt.launchedPid){$initial+=@($receipt.launchedPid)}
