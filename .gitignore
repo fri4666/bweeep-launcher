@@ -5,6 +5,7 @@ release-installer*/
 Bweeep-Setup-*.exe
 Bweeep-Setup-*.blockmap
 previews/
+design/screens/
 create-aeronautics/
 resources/*.local.json
 supabase/.temp/

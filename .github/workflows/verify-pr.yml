@@ -87,6 +87,27 @@ jobs:
           BWEEP_PREVIEW_PATCH_NOTES_OFFLINE=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_SERVER_SLEEPING=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_SERVER_CLOSED=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_ADMIN=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_MEMBER=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_MOVE_AND_MODS=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_AUTH_OUTAGE=true node scripts/capture-preview.mjs
+      - name: 통합 설정과 펼치는 공지 배치 확인
+        shell: bash
+        run: |
+          npx vite --config scripts/vite.design.config.ts --host 127.0.0.1 --port 5195 --strictPort >/tmp/bweeep-design-vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail http://127.0.0.1:5195/ >/dev/null; then break; fi
+            sleep 1
+          done
+          BWEEP_PREVIEW_URL=http://127.0.0.1:5195 node scripts/capture-design-review.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: launcher-design-preview
+          path: design/screens/
+          if-no-files-found: ignore
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

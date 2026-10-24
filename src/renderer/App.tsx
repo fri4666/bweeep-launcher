@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   AccessStatus,
@@ -10,6 +10,7 @@ import type {
   LoaderKind,
   ServerPreset,
   ServerSoftwareKind,
+  SkinState,
   SyncProgress,
   UserContentFolders,
   UserContentKind,
@@ -17,18 +18,22 @@ import type {
 } from "../shared/types.js";
 import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./styles.css";
+import "./settings.css";
 import { AdminPanel } from "./AdminPanel.js";
 import { AuthFailureLine, DiagnosticsButton } from "./AuthFailureNotice.js";
 import { ModsPanel } from "./ModsPanel.js";
 import { InstallMoveDialog } from "./InstallMoveDialog.js";
 import { DiscordPresencePanel } from "./DiscordPresencePanel.js";
 import { PatchNotesPanel, ReleaseMeta, ReleaseNoteSections, releaseTitle } from "./PatchNotesPanel.js";
-import { ServerOffIcon, ServerSwitcher, serverState as describeServerState } from "./ServerSwitcher.js";
+import { ServerConnectionBadge, ServerOffIcon, serverState as describeServerState } from "./ServerSwitcher.js";
 import { MemoryPanel, savedMemoryMb } from "./MemoryPanel.js";
 import { useNotice } from "./useNotice.js";
 import { useOfflineLaunchConsent, useServerStatuses } from "./useServerStatuses.js";
 import { authOutageFromMessage, authOutageMessages } from "../shared/auth-outage.js";
+import { SkinFront } from "./SkinFront.js";
+import { SettingsHub, type SettingsSection } from "./SettingsHub.js";
 import { closedMessage } from "../shared/open-hours.js";
+import type { LauncherNotice } from "../shared/notice.js";
 
 // The 3D skin preview brings in three.js, so it loads when the skin tab first opens.
 const SkinPanel = lazy(() => import("./SkinPanel.js").then((module) => ({ default: module.SkinPanel })));
@@ -37,6 +42,7 @@ const selectedPackStorageKey = "bweeep.selected-pack-id";
 const instanceRootStorageKey = "bweeep.instance-root";
 const gameNamePattern = /^[A-Za-z0-9_]{3,16}$/;
 const adminInviteSizes = [1, 5, 10, 20];
+const launcherIconUrl = new URL("../../build/icon-source-v2.png", import.meta.url).href;
 
 type LogEntry = SyncProgress & { at: number };
 type CatalogState = "loading" | "ready" | "error";
@@ -98,30 +104,54 @@ function Spinner() {
   return <span className="spinner" aria-hidden="true" />;
 }
 
-function ProfileAvatar({ user }: { user: LauncherUser }) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const showDiscordAvatar = Boolean(user.avatarUrl) && !imageFailed;
-
-  if (showDiscordAvatar) {
-    return <img src={user.avatarUrl!} alt="" onError={() => setImageFailed(true)} />;
+function ProfileAvatar({ skin }: { skin: SkinState | null }) {
+  const character = skin?.current ?? skin?.defaults[0];
+  if (character) {
+    return (
+      <SkinFront
+        dataUrl={character.dataUrl}
+        model={character.model}
+        className="profileCharacter"
+        label={skin?.current ? "적용 중인 Minecraft 캐릭터" : "기본 Minecraft 캐릭터 미리보기"}
+      />
+    );
   }
-
+  // A local block character keeps the profile visible before a skin is available.
   return (
-    <span className="avatarFallback" aria-label="기본 프로필 이미지">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="8" r="3.5" />
-        <path d="M5 20c.8-3.4 3.1-5.2 7-5.2s6.2 1.8 7 5.2" />
-      </svg>
-    </span>
+    <svg className="profileCharacter" viewBox="0 0 16 32" role="img" aria-label="기본 캐릭터 미리보기" shapeRendering="crispEdges">
+      <path fill="#b5c8e4" d="M4 8h8v12H4zM0 8h4v12H0zM12 8h4v12h-4z" />
+      <path fill="#8dabc9" d="M4 8h2v12H4zM12 8h2v12h-2z" />
+      <path fill="#e1bda1" d="M4 0h8v8H4zM0 18h4v2H0zM12 18h4v2h-4z" />
+      <path fill="#344156" d="M4 0h8v2H4zM4 2h2v2H4zM11 2h1v2h-1zM4 20h8v12H4z" />
+      <path fill="#172237" d="M7 21h2v11H7zM4 30h8v2H4zM6 4h1v1H6zM9 4h1v1H9z" />
+      <path fill="#b58270" d="M7 6h2v1H7z" />
+    </svg>
   );
+}
+
+function SettingsIcon({ kind }: { kind: string }) {
+  const paths: Record<string, ReactNode> = {
+    account: <><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v2" /></>,
+    skin: <path d="m8 4-5 4 3 4 2-1v9h8v-9l2 1 3-4-5-4c-1 3-7 3-8 0Z" />,
+    game: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 21h8M12 16v5" /></>,
+    mods: <><path d="M7 7h10c2 0 3 2 3.5 5l1 5c.4 2-1.5 3-3 1l-3-3h-7l-3 3c-1.5 2-3.4 1-3-1l1-5C4 9 5 7 7 7Z" /><path d="M8 10v4M6 12h4M16 11h.01M18 13h.01" /></>,
+    community: <><circle cx="9" cy="8" r="3" /><path d="M3 20v-2a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2" /></>,
+    patch: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
+    admin: <><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6zM9 12l2 2 4-4" /></>
+  };
+  return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[kind]}</svg>;
 }
 
 function EntryLayout({ eyebrow, title, children }: { eyebrow: string; title: string; children?: ReactNode }) {
   return (
     <main className="entryScreen">
       <WindowControls />
+      <div className="entryVisual" aria-hidden="true">
+        <span className="entryWordmark"><img className="launcherMark" src={launcherIconUrl} alt="" /></span>
+        <div><p>MINECRAFT JAVA EDITION</p><strong>함께하는 세계,<br />다음 이야기를 시작하세요.</strong></div>
+      </div>
       <section className="entryCard">
-        <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
+        <span className="entryBrand"><img className="launcherMark" src={launcherIconUrl} alt="붸에엡 런처" /></span>
         <p className="eyebrow">{eyebrow}</p>
         <h1>{title}</h1>
         {children}
@@ -199,14 +229,10 @@ function App() {
   const [inviteList, setInviteList] = useState<InviteList | null>(null);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState("");
-  const [profileNotice, setProfileNotice] = useState("");
   const [actionToast, setActionToast] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [skinOpen, setSkinOpen] = useState(false);
-  const [modsOpen, setModsOpen] = useState(false);
-  const [patchNotesOpen, setPatchNotesOpen] = useState(false);
-  const [adminOpen, setAdminOpen] = useState(false);
+  const [profileSkin, setProfileSkin] = useState<{ owner: string; root: string; state: SkinState } | null>(null);
+  const skinRevision = useRef(0);
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [whatsNew, setWhatsNew] = useState<WhatsNew | null>(null);
   const [launcherChannel, setLauncherChannel] = useState<"production" | "test">("production");
@@ -323,6 +349,22 @@ function App() {
     };
   }, []);
 
+  // Fetch once per account/install location without blocking the launcher UI.
+  // Library/apply responses refresh the character directly; no polling or 3D loop.
+  useEffect(() => {
+    const revision = ++skinRevision.current;
+    let active = true;
+    if (access?.allowed && user?.id && instanceRoot) {
+      const owner = user.id;
+      void window.bweeep.skinState(instanceRoot).then((state) => {
+        if (active && revision === skinRevision.current) setProfileSkin({ owner, root: instanceRoot, state });
+      }).catch(() => undefined);
+    }
+    return () => { active = false; };
+  }, [access?.allowed, user?.id, instanceRoot]);
+
+  const visibleProfileSkin = profileSkin?.owner === user?.id && profileSkin?.root === instanceRoot ? profileSkin.state : null;
+
   useEffect(() => {
     if (!actionToast) return;
     const timer = window.setTimeout(() => setActionToast(""), 2400);
@@ -332,7 +374,7 @@ function App() {
   useEffect(() => {
     if (!instanceRoot) return;
     void window.bweeep.userContentFolders(instanceRoot).then(setPersonalFolders).catch((error) => {
-      setProfileNotice(errorMessage(error, "개인 콘텐츠 폴더를 불러오지 못했습니다."));
+      setSettingsNotice(errorMessage(error, "개인 콘텐츠 폴더를 불러오지 못했습니다."));
     });
   }, [instanceRoot]);
 
@@ -341,15 +383,10 @@ function App() {
       if (event.key !== "Escape") return;
       if (confirmRequest) setConfirmRequest(null);
       else if (settingsOpen) setSettingsOpen(false);
-      else if (profileOpen) setProfileOpen(false);
-      else if (skinOpen) setSkinOpen(false);
-      else if (modsOpen) setModsOpen(false);
-      else if (patchNotesOpen) setPatchNotesOpen(false);
-      else if (adminOpen) setAdminOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmRequest, settingsOpen, profileOpen, skinOpen, modsOpen, patchNotesOpen, adminOpen]);
+  }, [confirmRequest, settingsOpen]);
 
   useEffect(() => {
     if (!settingsOpen || !user) return;
@@ -553,7 +590,6 @@ function App() {
       setInviteList(null);
       setInviteCopied(false);
       setInviteLinkCopied(false);
-      setProfileOpen(false);
       setSettingsOpen(false);
       setEntryError("");
     } catch (error) {
@@ -578,7 +614,7 @@ function App() {
   }
 
   async function saveGameProfile() {
-    setProfileNotice("");
+    setSettingsNotice("");
     try {
       const saved = await window.bweeep.setGameProfile(trimmedGameName);
       setUser(saved);
@@ -586,14 +622,14 @@ function App() {
       setGameNameInput(saved.gameName ?? "");
       setActionToast("이름 바뀜 · 다음 실행부터");
     } catch (error) {
-      setProfileNotice(errorMessage(error, "인게임 이름을 저장하지 못했습니다."));
+      setSettingsNotice(errorMessage(error, "인게임 이름을 저장하지 못했습니다."));
     }
   }
 
   async function choosePersonalFolders(kind: UserContentKind) {
     if (contentAction) return;
     setContentAction(kind);
-    setProfileNotice("");
+    setSettingsNotice("");
     try {
       const result = await window.bweeep.chooseUserContentFolders(instanceRoot.trim(), kind);
       setPersonalFolders(result.folders);
@@ -601,7 +637,7 @@ function App() {
         setActionToast((kind === "mods" ? "모드" : "셰이더") + " 폴더 추가됨");
       }
     } catch (error) {
-      setProfileNotice(errorMessage(error, "개인 콘텐츠 폴더를 저장하지 못했습니다."));
+      setSettingsNotice(errorMessage(error, "개인 콘텐츠 폴더를 저장하지 못했습니다."));
     } finally {
       setContentAction(null);
     }
@@ -609,19 +645,19 @@ function App() {
 
   async function openPersonalFolder(kind: UserContentKind) {
     const failure = await window.bweeep.openUserContentFolder(instanceRoot.trim(), kind).catch(() => "failed");
-    if (failure) setProfileNotice("폴더를 열지 못했어요.");
+    if (failure) setSettingsNotice("폴더를 열지 못했어요.");
   }
 
   async function removePersonalFolder(kind: UserContentKind, folder: string) {
     if (contentAction) return;
     setContentAction(kind);
-    setProfileNotice("");
+    setSettingsNotice("");
     try {
       const folders = await window.bweeep.removeUserContentFolder(instanceRoot.trim(), kind, folder);
       setPersonalFolders(folders);
       setActionToast((kind === "mods" ? "모드" : "셰이더") + " 폴더 빠짐");
     } catch (error) {
-      setProfileNotice(errorMessage(error, "개인 콘텐츠 폴더를 저장하지 못했습니다."));
+      setSettingsNotice(errorMessage(error, "개인 콘텐츠 폴더를 저장하지 못했습니다."));
     } finally {
       setContentAction(null);
     }
@@ -843,207 +879,64 @@ function App() {
     );
   }
 
-  return (
-    <main className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brandMark" aria-label="붸에엡">
-            <img src="./images/bweeep-pixel-mark-v1.png" alt="" />
-          </span>
-          <div>
-            <p className="eyebrow">Minecraft 런처</p>
-            <h1 className="brandWord">붸에엡</h1>
-          </div>
-        </div>
-
-        <nav className="sideActions" aria-label="메뉴">
-          <button className="sideAction" onClick={() => setProfileOpen(true)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c.8-3.4 3.1-5.2 7-5.2s6.2 1.8 7 5.2" /></svg>
-            <span>계정</span>
-          </button>
-          <button className="sideAction" onClick={() => setSkinOpen(true)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="7" rx="1" /><path d="M7 21v-9h10v9M4 12h3v6H4zM17 12h3v6h-3z" /></svg>
-            <span>스킨</span>
-          </button>
-          <button className="sideAction" disabled={!selected} onClick={() => setModsOpen(true)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M4 7.5l8 4.5 8-4.5M12 12v9" /></svg>
-            <span>편의 모드</span>
-          </button>
-          <button className="sideAction" onClick={() => setPatchNotesOpen(true)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" /><path d="M14 3v4h4M9 12h6M9 16h6" /></svg>
-            <span>패치노트</span>
-          </button>
-          <button className="sideAction" onClick={() => setSettingsOpen(true)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
-            <span>설정</span>
-          </button>
-          {access.isAdmin && (
-            <button className="sideAction" onClick={() => setAdminOpen(true)}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z" /><path d="M9 12l2 2 4-4" /></svg>
-              <span>관리</span>
-            </button>
-          )}
-        </nav>
-        <div className="supportPanel">
-          <span className="accessStamp">멤버 전용</span>
-          <strong>함께하는 서버</strong>
-          <p>초대받은 친구들과 같은 Minecraft 버전으로 바로 접속할 수 있어요.</p>
-        </div>
-      </aside>
-
-      <section className="content">
-        <header className="topbar">
-          <ServerSwitcher
-            servers={availableServers}
-            selected={selected}
-            statuses={serverStatuses}
-            catalogState={catalogState}
-            locked={gameBusy || syncing}
-            onSelect={selectServer}
-            onReloadCatalog={() => void loadCatalog()}
-          />
-          <UpdateIndicator status={launcherUpdate} />
-          <div className="topbarActions">
-            <button className="profileBox" onClick={() => setProfileOpen(true)}>
-              <ProfileAvatar user={user} />
-              <div>
-                <strong>{user.globalName ?? user.username}</strong>
-                <small>{savedGameName ? `인게임 · ${savedGameName}` : "인게임 이름 미설정"}</small>
-              </div>
-            </button>
-            <WindowControls />
-          </div>
-        </header>
-        <section className="hero">
-          <div className="heroBackdrop" />
-          {notice.shown && (
-            <div className={`heroNotice${notice.shown.personal ? " isPersonal" : ""}`} role="status" title={notice.shown.personal ? "나에게만 온 공지" : undefined}>
-              {notice.shown.personal
-                ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></svg>
-                : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6l-6 4z" /><path d="M16.5 9.5a3.5 3.5 0 0 1 0 5M19 7a7 7 0 0 1 0 10" /></svg>}
-              <p>{notice.shown.text}</p>
-              <button className="iconOnly" aria-label="공지 닫기" onClick={notice.dismiss}>×</button>
-            </div>
-          )}
-          <div className="heroCopy">
-            {catalogState === "error" ? (
-              <>
-                <p className="eyebrow">서버 목록</p>
-                <h2>서버에 연결하지 못했어요</h2>
-                <p>인터넷을 확인해 주세요. ({catalogError})</p>
-                <button className="secondaryButton heroRetry" onClick={() => void loadCatalog()}>다시 불러오기</button>
-              </>
-            ) : catalogState === "loading" && !selected ? (
-              <>
-                <p className="eyebrow">서버 목록</p>
-                <h2>서버를 불러오는 중</h2>
-              </>
-            ) : selected && (
-              <>
-                <p className="eyebrow">{selected.environment === "test" ? "테스트 서버" : "함께하는 서버"}</p>
-                <h2>{selected.name}</h2>
-                <p>서버에 맞춰 준비하고 바로 접속해요.</p>
-                <div className="chips">
-                  <span>Minecraft {selected.minecraftVersion}</span>
-                  <span>{serverKindLabel(selected)}</span>
-                  <span>{selected.environment === "test" ? "지정 테스터 전용" : "멤버 전용"}</span>
-                </div>
-              </>
-            )}
-          </div>
-          <div className="actionDock" aria-live="polite">
-            {actionToast && <div className="actionToast" role="status">{actionToast}</div>}
-            {dockError && !gameBusy && !syncing && (
-              <div className="dockError" role="alert">
-                <div>
-                  <strong>{dockError.title}</strong>
-                  {dockError.authFailure ? <AuthFailureLine reason={dockError.authFailure} /> : dockError.message && <p>{dockError.message}</p>}
-                  {!dockError.outage && <DiagnosticsButton key={`${dockError.title}|${dockError.message}|${dockError.authFailure ?? ""}`} />}
-                </div>
-                <div className="dockErrorActions">
-                  {dockError.retryWithoutPersonalMods && (
-                    <button className="secondaryButton" onClick={() => void launchSelected({ withoutPersonalMods: true })}>개인 모드 빼고 시작</button>
-                  )}
-                  {dockError.message && <button className="secondaryButton" onClick={() => void window.bweeep.openLog("game")}>로그 열기</button>}
-                  <button className="iconOnly" aria-label="오류 닫기" onClick={dismissDockError}>×</button>
-                </div>
-              </div>
-            )}
-            {!dockError && !gameBusy && !syncing && access.outage && (
-              <p className="dockHint">{access.outage === "auth" ? "인증 서버 점검 중" : "인터넷 연결 끊김"}</p>
-            )}
-            {!dockError && !gameBusy && !syncing && serverState === "closed" && selected && serverStatuses.byId[selected.id]?.closed && (
-              <p className="dockHint">{closedMessage(serverStatuses.byId[selected.id].closed!.nextOpen)}</p>
-            )}
-            {showLaunchProgress && (
-              <div className={`launchProgress${gameRunning && joinedServer ? " isPlaying" : ""}`} role="status">
-                <div className="launchProgressHeading">
-                  <strong>{progressTitle}</strong>
-                  <span>{progressPercent !== null ? `${progressPercent}%` : gameStatus.startedAt ? <ElapsedTime startedAt={gameStatus.startedAt} /> : ""}</span>
-                </div>
-                {progressDetail && <small title={progressDetail}>{progressDetail}</small>}
-                {!(gameRunning && joinedServer) && <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />}
-              </div>
-            )}
-            <div className="launchRow">
-              <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy || serverState === "closed"} aria-busy={showLaunchProgress} onClick={() => void requestLaunch()}>
-                {gameRunning ? "게임 실행 중" : showLaunchProgress ? <><Spinner />게임 시작 중</> : serverState === "offline" ? <><ServerOffIcon />게임 시작</> : "게임 시작"}
-              </button>
-              {gameRunning && gameStatus.pid && (
-                <button className="stopButton" onClick={requestStopGame}>게임 종료</button>
-              )}
-            </div>
-          </div>
-        </section>
-        <section className="serverSummary" aria-label="서버 정보">
-          <article className="quickFact">
-            <span>인게임 이름</span>
-            <strong>{savedGameName || "미설정"}</strong>
-            <button className="factLink" onClick={() => setProfileOpen(true)}>변경</button>
-          </article>
-          <article className="quickFact"><span>Minecraft</span><strong>{selected?.minecraftVersion ?? "-"}</strong></article>
-          <article className="quickFact"><span>서버</span><strong>{selected ? serverKindLabel(selected) : "-"}</strong><small>{selected ? selected.environment === "test" ? "테섭" : "본섭" : ""}</small></article>
-          <article className="quickFact"><span>클라이언트</span><strong>{selected ? loaderLabel(selected.loader.kind) : "-"}</strong><small>{selected && selected.loader.kind !== "vanilla" ? selected.loader.version : ""}</small></article>
-        </section>
-      </section>
-
-      {settingsOpen && (
-        <div className="modalBackdrop" onClick={() => setSettingsOpen(false)}>
-          <section className="modal settingsModal" role="dialog" aria-modal="true" aria-label="런처 설정" onClick={(event) => event.stopPropagation()}>
+  const closeSettings = () => setSettingsOpen(false);
+  const settingsSections: SettingsSection[] = settingsOpen ? [
+    { id: "account", label: "내 계정", icon: <SettingsIcon kind="account" />, content: (
+      <section className="embeddedPanel profileModal" aria-label="계정">
             <header className="modalHeader">
-              <div>
-                <p className="eyebrow">설정</p>
-                <h2>런처 설정</h2>
+              <div className="profileHeading">
+                <ProfileAvatar skin={visibleProfileSkin} />
+                <div>
+                  <p className="eyebrow">계정</p>
+                  <h2>{user.globalName ?? user.username}</h2>
+                  <small>Discord로 로그인됨</small>
+                </div>
               </div>
-              <button className="closeButton" onClick={() => setSettingsOpen(false)}>닫기</button>
             </header>
-
-            <div className="modalBody">
-              {settingsNotice && <p className="noticeBar" role="alert">{settingsNotice}</p>}
-              <article className="panel">
+        <div className="modalBody">
+              <section className="panel">
                 <div className="panelHeader">
-                  <h3>서버 선택</h3>
-                  <span>본섭과 테섭은 여기에서 바꿔요.</span>
+                  <h3>인게임 이름</h3>
+                  <span>모든 서버에서 이 이름으로 접속해요.</span>
                 </div>
-                <div className="serverChoiceGrid">
-                  {availableServers.map((server) => (
-                    <button
-                      className={`serverChoice${server.id === selected?.id ? " active" : ""}`}
-                      key={server.id}
-                      aria-pressed={server.id === selected?.id}
-                      onClick={() => selectServer(server.id)}
-                      type="button"
-                    >
-                      <span className={`serverBadge${server.environment === "test" ? " isTest" : ""}`}>{server.environment === "test" ? "테섭" : "본섭"}</span>
-                      <strong>{server.name}</strong>
-                      <small>Minecraft {server.minecraftVersion} · {serverKindLabel(server)}</small>
-                      <small className="serverAddress">{server.server.host}:{server.server.port}</small>
-                    </button>
-                  ))}
-                  {availableServers.length === 0 && <p className="emptyText">{catalogError || "불러오는 중…"}</p>}
-                </div>
-              </article>
-
+                <form
+                  className="nameRow"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    requestSaveGameProfile();
+                  }}
+                >
+                  <input
+                    aria-label="인게임 이름"
+                    aria-invalid={Boolean(trimmedGameName) && !gameNameValid}
+                    maxLength={16}
+                    value={gameNameInput}
+                    placeholder="영문·숫자·밑줄 3~16자"
+                    onChange={(event) => setGameNameInput(event.target.value)}
+                  />
+                  <button className="primaryButton" type="submit" disabled={!gameNameValid || !gameNameChanged}>저장</button>
+                </form>
+                {gameNameHint && gameNameChanged && <p className="fieldError">{gameNameHint}</p>}
+                {savedGameName && gameNameChanged && gameNameValid && (
+                  <p className="fieldNote">{savedGameName}은(는) 하루 동안 내 이름으로 남아요.</p>
+                )}
+              </section>
+        </div>
+        <footer className="modalFooter"><button className="textButton dangerText" onClick={() => void logout()}>Discord 로그아웃</button></footer>
+      </section>
+    ) },
+    { id: "skin", label: "캐릭터 스킨", icon: <SettingsIcon kind="skin" />, content: (
+      <Suspense fallback={<div className="settingsLoading">스킨 정보를 불러오는 중…</div>}>
+        <SkinPanel embedded instanceRoot={instanceRoot} serverShowsSkins={selected?.gameAuth === "yggdrasil"}
+          onStateChange={(state) => { skinRevision.current += 1; setProfileSkin({ owner: user.id, root: instanceRoot, state }); }}
+          onClose={closeSettings} />
+      </Suspense>
+    ) },
+    { id: "game", label: "게임 및 파일", icon: <SettingsIcon kind="game" />, content: (
+      <section className="embeddedPanel settingsModal" aria-label="게임 및 파일">
+        <header className="modalHeader"><div><p className="eyebrow">게임 설정</p><h2>게임 및 파일</h2></div></header>
+        <div className="modalBody">
+          {selected && <article className="panel selectedEnvironment"><div className="panelHeader"><h3>선택한 서버</h3><span>메인 화면의 서버 카드에서 바꿀 수 있어요.</span></div><strong>{selected.name}</strong><p>Minecraft {selected.minecraftVersion} · {serverKindLabel(selected)} · {loaderLabel(selected.loader.kind)} 클라이언트 {selected.loader.kind !== "vanilla" ? selected.loader.version : ""}</p></article>}
               <MemoryPanel servers={availableServers} />
 
               <article className="panel">
@@ -1058,8 +951,67 @@ function App() {
                 </div>
               </article>
 
-              <DiscordPresencePanel />
-
+              <section className="panel">
+                <div className="panelHeader">
+                  <h3>내 모드와 셰이더</h3>
+                  <span>게임을 시작할 때 이 폴더의 파일을 함께 넣어요.</span>
+                </div>
+                <div className="contentFolderGroups">
+                  {(["mods", "shaderpacks"] as const).map((kind) => (
+                    <div className="contentFolderGroup" key={kind}>
+                      <div className="contentFolderLabel">
+                        <strong>{kind === "mods" ? "모드 폴더" : "셰이더 폴더"}</strong>
+                        <span>{kind === "mods" ? ".jar" : ".zip"} 파일 · 여러 폴더 가능</span>
+                      </div>
+                      <div className="contentFolderList">
+                        {personalFolders[kind].length === 0 ? <p>선택한 폴더가 없어요.</p> : personalFolders[kind].map((folder) => (
+                          <div className="contentFolderItem" key={folder} title={folder}>
+                            <span>{shortenPath(folder)}</span>
+                            <button aria-label={`${kind === "mods" ? "모드" : "셰이더"} 폴더 제거`} disabled={contentAction !== null} onClick={() => void removePersonalFolder(kind, folder)}>×</button>
+                          </div>
+                        ))}
+                      </div>
+                      <button className="secondaryButton contentFolderAdd" disabled={!instanceRoot.trim() || contentAction !== null} onClick={() => void choosePersonalFolders(kind)}>
+                        {contentAction === kind ? "저장 중…" : `${kind === "mods" ? "모드" : "셰이더"} 폴더 선택`}
+                      </button>
+                      {kind === "shaderpacks" && (
+                        <button className="secondaryButton contentFolderAdd" disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder(kind)}>
+                          폴더 열기
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <p className="mutedText">서버와 같은 버전·로더용만 넣어 주세요.</p>
+              </section>
+              <section className="panel logPanel">
+                <div className="panelHeader">
+                  <h3>설치 기록</h3>
+                  {logs.length > 0 && <button className="secondaryButton" onClick={() => void copyLogs()}>복사</button>}
+                </div>
+                <div className="log">
+                  {logs.length === 0 ? (
+                    <p className="empty">아직 기록이 없어요.</p>
+                  ) : (
+                    logs.map((entry, index) => (
+                      <p className={`logLine ${entry.kind}`} key={`${entry.at}-${index}`}>
+                        <time>{formatClock(entry.at)}</time>
+                        {entry.stage && <b>{entry.stage}</b>}
+                        <span>{stripStage(entry.stage, entry.message)}</span>
+                      </p>
+                    ))
+                  )}
+                </div>
+              </section>
+        </div>
+        <footer className="modalFooter"><button className="textButton" onClick={requestResetSettings}>설정 초기화</button></footer>
+      </section>
+    ) },
+    ...(selected ? [{ id: "mods", label: "편의 모드", icon: <SettingsIcon kind="mods" />, content: <ModsPanel embedded server={selected} instanceRoot={instanceRoot} onClose={closeSettings} /> }] : []),
+    { id: "community", label: "연결 및 초대", icon: <SettingsIcon kind="community" />, content: (
+      <section className="embeddedPanel communityPanel" aria-label="연결 및 초대">
+        <header className="modalHeader"><div><p className="eyebrow">함께 플레이</p><h2>연결 및 초대</h2></div></header>
+        <div className="modalBody"><DiscordPresencePanel />
               <article className="panel">
                 <div className="panelHeader">
                   <h3>친구 초대</h3>
@@ -1117,139 +1069,139 @@ function App() {
                 )}
               </article>
 
-              <section className="panel logPanel">
-                <div className="panelHeader">
-                  <h3>설치 기록</h3>
-                  {logs.length > 0 && <button className="secondaryButton" onClick={() => void copyLogs()}>복사</button>}
-                </div>
-                <div className="log">
-                  {logs.length === 0 ? (
-                    <p className="empty">아직 기록이 없어요.</p>
-                  ) : (
-                    logs.map((entry, index) => (
-                      <p className={`logLine ${entry.kind}`} key={`${entry.at}-${index}`}>
-                        <time>{formatClock(entry.at)}</time>
-                        {entry.stage && <b>{entry.stage}</b>}
-                        <span>{stripStage(entry.stage, entry.message)}</span>
-                      </p>
-                    ))
-                  )}
-                </div>
-              </section>
-            </div>
-            <footer className="modalFooter">
-              <button className="textButton" onClick={requestResetSettings}>설정 초기화</button>
-              {launcherVersion && <small className="versionText">붸에엡 v{launcherVersion}{launcherChannel === "test" ? " · 테스트 채널" : launcherVersion.includes("-") ? " · 테스트 버전" : ""}</small>}
-            </footer>
-          </section>
         </div>
-      )}
+      </section>
+    ) },
+    { id: "patch", label: "패치노트", icon: <SettingsIcon kind="patch" />, content: <PatchNotesPanel embedded onClose={closeSettings} /> },
+    ...(access.isAdmin ? [{ id: "admin", label: "관리", icon: <SettingsIcon kind="admin" />, content: <AdminPanel embedded selfId={user.id} onClose={closeSettings} confirm={setConfirmRequest} onNoticeChange={notice.replace} /> }] : [])
+  ] : [];
 
-      {profileOpen && (
-        <div className="modalBackdrop" onClick={() => setProfileOpen(false)}>
-          <section className="modal profileModal" role="dialog" aria-modal="true" aria-label="계정" onClick={(event) => event.stopPropagation()}>
-            <header className="modalHeader">
-              <div className="profileHeading">
-                <ProfileAvatar user={user} />
-                <div>
-                  <p className="eyebrow">계정</p>
-                  <h2>{user.globalName ?? user.username}</h2>
-                  <small>Discord로 로그인됨</small>
-                </div>
-              </div>
-              <button className="closeButton" onClick={() => setProfileOpen(false)}>닫기</button>
-            </header>
-            <div className="modalBody">
-              {profileNotice && <p className="noticeBar" role="alert">{profileNotice}</p>}
-              <section className="panel">
-                <div className="panelHeader">
-                  <h3>인게임 이름</h3>
-                  <span>모든 서버에서 이 이름으로 접속해요.</span>
-                </div>
-                <form
-                  className="nameRow"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    requestSaveGameProfile();
-                  }}
-                >
-                  <input
-                    aria-label="인게임 이름"
-                    aria-invalid={Boolean(trimmedGameName) && !gameNameValid}
-                    maxLength={16}
-                    value={gameNameInput}
-                    placeholder="영문·숫자·밑줄 3~16자"
-                    onChange={(event) => setGameNameInput(event.target.value)}
-                  />
-                  <button className="primaryButton" type="submit" disabled={!gameNameValid || !gameNameChanged}>저장</button>
-                </form>
-                {gameNameHint && gameNameChanged && <p className="fieldError">{gameNameHint}</p>}
-                {savedGameName && gameNameChanged && gameNameValid && (
-                  <p className="fieldNote">{savedGameName}은(는) 하루 동안 내 이름으로 남아요.</p>
-                )}
-              </section>
-              <section className="panel">
-                <div className="panelHeader">
-                  <h3>내 모드와 셰이더</h3>
-                  <span>게임을 시작할 때 이 폴더의 파일을 함께 넣어요.</span>
-                </div>
-                <div className="contentFolderGroups">
-                  {(["mods", "shaderpacks"] as const).map((kind) => (
-                    <div className="contentFolderGroup" key={kind}>
-                      <div className="contentFolderLabel">
-                        <strong>{kind === "mods" ? "모드 폴더" : "셰이더 폴더"}</strong>
-                        <span>{kind === "mods" ? ".jar" : ".zip"} 파일 · 여러 폴더 가능</span>
-                      </div>
-                      <div className="contentFolderList">
-                        {personalFolders[kind].length === 0 ? <p>선택한 폴더가 없어요.</p> : personalFolders[kind].map((folder) => (
-                          <div className="contentFolderItem" key={folder} title={folder}>
-                            <span>{shortenPath(folder)}</span>
-                            <button aria-label={`${kind === "mods" ? "모드" : "셰이더"} 폴더 제거`} disabled={contentAction !== null} onClick={() => void removePersonalFolder(kind, folder)}>×</button>
-                          </div>
-                        ))}
-                      </div>
-                      <button className="secondaryButton contentFolderAdd" disabled={!instanceRoot.trim() || contentAction !== null} onClick={() => void choosePersonalFolders(kind)}>
-                        {contentAction === kind ? "저장 중…" : `${kind === "mods" ? "모드" : "셰이더"} 폴더 선택`}
-                      </button>
-                      {kind === "shaderpacks" && (
-                        <button className="secondaryButton contentFolderAdd" disabled={!instanceRoot.trim()} onClick={() => void openPersonalFolder(kind)}>
-                          폴더 열기
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                <p className="mutedText">서버와 같은 버전·로더용만 넣어 주세요.</p>
-              </section>
-            </div>
-            <footer className="modalFooter">
-              <button className="textButton dangerText" onClick={() => void logout()}>Discord 로그아웃</button>
-            </footer>
-          </section>
-        </div>
-      )}
-
-      {modsOpen && selected && (
-        <ModsPanel server={selected} instanceRoot={instanceRoot} onClose={() => setModsOpen(false)} />
-      )}
-
-      {skinOpen && (
-        <Suspense fallback={null}>
-          <SkinPanel
-            instanceRoot={instanceRoot}
-            serverShowsSkins={selected?.gameAuth === "yggdrasil"}
-            onClose={() => setSkinOpen(false)}
+  return (
+    <main className="shell">
+      <header className="launcherHeader topbar">
+        <div className="brand" aria-label="붸에엡 런처"><img className="launcherMark" src={launcherIconUrl} alt="" /></div>
+        {notice.shown && (
+          <LauncherNoticeBanner
+            key={JSON.stringify([notice.shown.id, notice.shown.text, notice.shown.at, settingsOpen, Boolean(confirmRequest)])}
+            notice={notice.shown}
+            onDismiss={notice.dismiss}
           />
-        </Suspense>
-      )}
+        )}
+        <UpdateIndicator status={launcherUpdate} />
+          <div className="topbarActions">
+            <button className="profileBox" aria-haspopup="dialog" aria-label="프로필 및 설정 열기" onClick={() => setSettingsOpen(true)}>
+              <ProfileAvatar skin={visibleProfileSkin} />
+              <div>
+                <strong>{user.globalName ?? user.username}</strong>
+                <small>{savedGameName ? `인게임 · ${savedGameName}` : "인게임 이름 미설정"}</small>
+              </div>
+            </button>
+            <WindowControls />
+          </div>
+      </header>
+      <aside className="sidebar" aria-label="서버 라이브러리">
+        <div className="libraryHeading"><span>내 서버</span><small>{availableServers.length.toString().padStart(2, "0")}</small></div>
+        <div className="serverLibrary" role="group" aria-label="내 서버">
+          {availableServers.map((server) => (
+            <button key={server.id} className={`libraryCard${server.id === selected?.id ? " isSelected" : ""}${server.environment === "test" ? " isTest" : ""}`} aria-pressed={server.id === selected?.id} disabled={gameBusy || syncing} onClick={() => selectServer(server.id)}>
+              <span className="libraryCardArt" aria-hidden="true" />
+              <span className="libraryCardCopy">
+                <strong>{server.name}</strong>
+                <small>Minecraft {server.minecraftVersion}{server.environment === "test" ? " · 테스트" : ""}</small>
+                <ServerConnectionBadge status={serverStatuses.byId[server.id]} />
+              </span>
+              {server.id === selected?.id && <span className="librarySelected" aria-hidden="true" />}
+            </button>
+          ))}
+          {catalogState === "loading" && !availableServers.length && <p className="libraryEmpty">서버를 불러오는 중…</p>}
+          {catalogState === "error" && !availableServers.length && <button className="libraryRetry" onClick={() => void loadCatalog()}>서버 목록 다시 불러오기</button>}
+        </div>
 
-      {patchNotesOpen && <PatchNotesPanel onClose={() => setPatchNotesOpen(false)} />}
+      </aside>
+      <section className="content">
+        <section className="hero">
+          <div className="heroArtwork" aria-hidden="true">
+            <div className="heroBackdrop" />
+            <span className="artworkEdition">MINECRAFT JAVA EDITION</span>
+          </div>
+          <div className="heroFooter">
+            <div className="heroCopy">
+              {catalogState === "error" ? (
+                <>
+                  <p className="eyebrow">서버 목록</p>
+                  <h2>서버에 연결하지 못했어요</h2>
+                  <p>인터넷을 확인해 주세요. ({catalogError})</p>
+                  <button className="secondaryButton heroRetry" onClick={() => void loadCatalog()}>다시 불러오기</button>
+                </>
+              ) : catalogState === "loading" && !selected ? (
+                <>
+                  <p className="eyebrow">서버 목록</p>
+                  <h2>서버를 불러오는 중</h2>
+                </>
+              ) : selected && (
+                <>
+                  <p className="eyebrow">{selected.environment === "test" ? "TEST SERVER" : "YOUR NEXT ADVENTURE"}</p>
+                  <h2>{selected.name}</h2>
+                  <p>{selected.description || "필요한 파일을 확인한 뒤 선택한 서버로 접속합니다."}</p>
+                  <div className="chips">
+                    <span>Minecraft {selected.minecraftVersion}</span>
+                    <span>{serverKindLabel(selected)}</span>
+                    <span>{selected.environment === "test" ? "지정 테스터 전용" : "멤버 전용"}</span>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="actionDock" aria-live="polite">
+              {actionToast && !settingsOpen && <div className="actionToast" role="status">{actionToast}</div>}
+              {dockError && !gameBusy && !syncing && (
+                <div className="dockError" role="alert">
+                  <div>
+                    <strong>{dockError.title}</strong>
+                    {dockError.authFailure ? <AuthFailureLine reason={dockError.authFailure} /> : dockError.message && <p>{dockError.message}</p>}
+                    {!dockError.outage && <DiagnosticsButton key={`${dockError.title}|${dockError.message}|${dockError.authFailure ?? ""}`} />}
+                  </div>
+                  <div className="dockErrorActions">
+                    {dockError.retryWithoutPersonalMods && (
+                      <button className="secondaryButton" onClick={() => void launchSelected({ withoutPersonalMods: true })}>개인 모드 빼고 시작</button>
+                    )}
+                    {dockError.message && <button className="secondaryButton" onClick={() => void window.bweeep.openLog("game")}>로그 열기</button>}
+                    <button className="iconOnly" aria-label="오류 닫기" onClick={dismissDockError}>×</button>
+                  </div>
+                </div>
+              )}
+              {!dockError && !gameBusy && !syncing && access.outage && (
+                <p className="dockHint">{access.outage === "auth" ? "인증 서버 점검 중" : "인터넷 연결 끊김"}</p>
+              )}
+              {!dockError && !gameBusy && !syncing && serverState === "closed" && selected && serverStatuses.byId[selected.id]?.closed && (
+                <p className="dockHint">{closedMessage(serverStatuses.byId[selected.id].closed!.nextOpen)}</p>
+              )}
+              {showLaunchProgress && (
+                <div className={`launchProgress${gameRunning && joinedServer ? " isPlaying" : ""}`} role="status">
+                  <div className="launchProgressHeading">
+                    <strong>{progressTitle}</strong>
+                    <span>{progressPercent !== null ? `${progressPercent}%` : gameStatus.startedAt ? <ElapsedTime startedAt={gameStatus.startedAt} /> : ""}</span>
+                  </div>
+                  {progressDetail && <small title={progressDetail}>{progressDetail}</small>}
+                  {!(gameRunning && joinedServer) && <progress className="launchProgressBar" max={100} value={progressPercent ?? undefined} />}
+                </div>
+              )}
+              <div className="launchRow">
+                <button className="launchButton" disabled={!selected || !canUseLauncher || syncing || gameBusy || serverState === "closed"} aria-busy={showLaunchProgress} onClick={() => void requestLaunch()}>
+                  {gameRunning ? "게임 실행 중" : showLaunchProgress ? <><Spinner />게임 시작 중</> : serverState === "offline" ? <><ServerOffIcon />게임 시작</> : <><svg className="launchPlayIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z" /></svg>게임 시작</>}
+                </button>
+                {gameRunning && gameStatus.pid && (
+                  <button className="stopButton" onClick={requestStopGame}>게임 종료</button>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      {settingsOpen && <SettingsHub sections={settingsSections} version={launcherVersion} notice={actionToast} error={settingsNotice} onClose={closeSettings} />}
 
       {moveTarget && (
         <InstallMoveDialog from={instanceRoot} to={moveTarget} onSwitch={switchInstanceRoot} onClose={() => setMoveTarget(null)} />
-      )}
-      {adminOpen && access.isAdmin && (
-        <AdminPanel selfId={user.id} onClose={() => setAdminOpen(false)} confirm={setConfirmRequest} onNoticeChange={notice.replace} />
       )}
 
       {whatsNew && !confirmRequest && <WhatsNewDialog whatsNew={whatsNew} onClose={closeWhatsNew} />}
@@ -1262,6 +1214,49 @@ function normalizeInviteCode(value: string): string {
   const trimmed = value.trim();
   const fromLink = trimmed.match(/invite\/([A-Za-z0-9-]+)/);
   return (fromLink ? fromLink[1] : trimmed).toUpperCase();
+}
+
+function LauncherNoticeBanner({ notice, onDismiss }: { notice: LauncherNotice; onDismiss: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const container = useRef<HTMLElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const detailsId = useId();
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !container.current?.contains(event.target)) setExpanded(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setExpanded(false);
+      toggle.current?.focus();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [expanded]);
+
+  return (
+    <section ref={container} className={`topbarNotice${notice.personal ? " isPersonal" : ""}${expanded ? " isExpanded" : ""}`} role="status" aria-label="공지사항" title={notice.personal ? "나에게만 온 공지" : "전체 공지"}>
+      <button ref={toggle} type="button" className="noticeToggle" aria-expanded={expanded} aria-controls={detailsId} aria-describedby={`${detailsId}-preview`} aria-label={`공지 전체 내용 ${expanded ? "접기" : "펼치기"}`} onClick={() => setExpanded((current) => !current)}>
+        <svg className="noticeIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h3l6 4V6l-6 4z" /><path d="M16.5 9.5a3.5 3.5 0 0 1 0 5M19 7a7 7 0 0 1 0 10" /></svg>
+        <span className="noticeText">
+          <span className="noticeMeta"><strong>공지사항</strong><span>{notice.personal ? "나에게만" : "전체 공지"}</span><time dateTime={notice.at}>{formatDate(notice.at)}</time></span>
+          <span id={`${detailsId}-preview`} className="noticePreview">{notice.text.replace(/\s+/g, " ").trim()}</span>
+        </span>
+        <svg className="noticeChevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+      </button>
+      <button type="button" className="iconOnly noticeClose" aria-label="공지 닫기" onClick={onDismiss}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg></button>
+      <div id={detailsId} className="noticeDetails" role="region" aria-label="공지 전체 내용" hidden={!expanded} tabIndex={0}>
+        <p>{notice.text}</p>
+      </div>
+    </section>
+  );
 }
 
 function stripStage(stage: string | undefined, message: string | undefined): string {
