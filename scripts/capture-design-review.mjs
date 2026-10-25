@@ -38,7 +38,7 @@ try {
   const weekdayCard = page.locator(".libraryCard").filter({ hasText: "코블박스 평일" });
   assert.equal(await page.locator(".libraryCard").count(), 2);
   assert.match(await weekendCard.locator(".libraryConnection").innerText(), /3명 접속 중/);
-  assert.match(await weekdayCard.locator(".libraryConnection").innerText(), /월 00:00 열림/);
+  assert.match(await weekdayCard.locator(".libraryConnection").innerText(), /일 19:30 열림/);
   assert.deepEqual([...new Set(await page.evaluate(() => window.__serverStatusPorts))].sort((a, b) => a - b), [25565, 31234]);
   await shot("home");
   const cards = page.locator(".libraryCard");

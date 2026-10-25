@@ -374,8 +374,8 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
         return { online: true, host: server.host, port: server.port, latencyMs: 18, message: "서버 연결 가능", players: { online: 0, max: 20 }, version: "1.21.1", sleep: "sleeping" };
       }
       if (server.port === 31234) {
-        // Sunday fixture: the weekday world opens at Monday 00:00 KST.
-        return { online: true, host: server.host, port: server.port, latencyMs: 16, message: "서버 연결 가능", players: { online: 0, max: 20 }, version: "1.21.1", closed: { nextOpen: Date.UTC(2026, 9, 25, 15, 0, 0) } };
+        // Sunday fixture: the weekday world opens as soon as the weekend world closes at 19:30 KST.
+        return { online: true, host: server.host, port: server.port, latencyMs: 16, message: "서버 연결 가능", players: { online: 0, max: 20 }, version: "1.21.1", closed: { nextOpen: Date.UTC(2026, 9, 25, 10, 30, 0) } };
       }
       return {
         online: true,
@@ -1174,7 +1174,7 @@ if (catalogUnavailable) {
   if (!(await page.locator(".libraryCard.isSelected .libraryConnection").innerText()).includes("3명 접속 중")) throw new Error("server card has no player summary");
   await page.locator(".libraryCard").filter({ hasText: "코블박스 평일" }).click();
   await page.locator(".heroCopy h2").filter({ hasText: "코블박스 평일" }).waitFor();
-  if (!(await page.locator(".libraryCard.isSelected .libraryConnection").innerText()).includes("월 00:00 열림")) throw new Error("weekday schedule is missing from its server card");
+  if (!(await page.locator(".libraryCard.isSelected .libraryConnection").innerText()).includes("일 19:30 열림")) throw new Error("weekday schedule is missing from its server card");
   if (!(await page.locator(".launchButton").isDisabled())) throw new Error("closed weekday server can be launched");
   await page.locator(".libraryCard").filter({ hasText: "코블버스 주말" }).click();
   await page.locator(".heroCopy h2").filter({ hasText: "코블버스 주말" }).waitFor();
