@@ -1,3 +1,4 @@
+import { PanelSurface } from "./PanelSurface.js";
 import { useEffect, useState } from "react";
 import type { AdminDiagnostics, AdminNames, AdminRelease, NameHold, UuidReservation } from "../shared/admin-types.js";
 import { type AdminNotice, type LauncherNotice, MAX_NOTICE_LENGTH, noticeProblem, tidyNoticeText } from "../shared/notice.js";
@@ -38,6 +39,7 @@ function formatLeft(value: string, now: number): string {
 
 interface AdminPanelProps {
   selfId: string;
+  embedded?: boolean;
   onClose: () => void;
   confirm: (request: AdminConfirm) => void;
   /** How the main screen learns of a change made here: the notice this admin sees now. */
@@ -45,7 +47,7 @@ interface AdminPanelProps {
 }
 
 /** Admins only: members, the notice, name holds and reservations, server pack versions and join problems. */
-export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPanelProps) {
+export function AdminPanel({ selfId, onClose, confirm, onNoticeChange, embedded }: AdminPanelProps) {
   const [tab, setTab] = useState<Tab>("members");
   const [noticeDraft, setNoticeDraft] = useState("");
   // Who the next notice is for: "all", or a member's id. The list holds every notice shown now.
@@ -186,14 +188,13 @@ export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPa
   for (const release of releases ?? []) packs.set(release.packId, [...(packs.get(release.packId) ?? []), release]);
 
   return (
-    <div className="modalBackdrop" onClick={onClose}>
-      <section className="modal adminModal" role="dialog" aria-modal="true" aria-label="관리" onClick={(event) => event.stopPropagation()}>
+    <PanelSurface embedded={embedded} className="adminModal" label="관리" onClose={onClose}>
         <header className="modalHeader">
           <div>
             <p className="eyebrow">관리자 전용</p>
             <h2>관리</h2>
           </div>
-          <button className="closeButton" onClick={onClose}>닫기</button>
+          {!embedded && <button className="closeButton" onClick={onClose}>닫기</button>}
         </header>
         <div className="modalBody">
           <div className="segmented adminTabs" role="tablist" aria-label="관리 항목">
@@ -461,8 +462,7 @@ export function AdminPanel({ selfId, onClose, confirm, onNoticeChange }: AdminPa
             </>
           )}
         </div>
-        <FeedbackToast feedback={feedback} onClose={clear} />
-      </section>
-    </div>
+        <FeedbackToast feedback={feedback} onClose={clear} host={embedded ? document.getElementById("settings-feedback") : null} />
+    </PanelSurface>
   );
 }

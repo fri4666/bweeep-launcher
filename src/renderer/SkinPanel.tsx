@@ -1,5 +1,7 @@
+import { PanelSurface } from "./PanelSurface.js";
 import { useEffect, useRef, useState } from "react";
 import { SkinViewer, WalkingAnimation } from "skinview3d";
+import { SkinFront } from "./SkinFront.js";
 import type { SkinModel, SkinState } from "../shared/types.js";
 
 type Choice =
@@ -25,7 +27,12 @@ function SkinPreview({ dataUrl, model }: { dataUrl: string | null; model: SkinMo
     viewer.animation.speed = 0.6;
     viewer.zoom = 0.85;
     viewerRef.current = viewer;
+    const observer = new IntersectionObserver(([entry]) => { viewer.renderPaused = !entry.isIntersecting; }, {
+      root: canvasRef.current.closest(".settingsScroll"), threshold: 0.01
+    });
+    observer.observe(canvasRef.current);
     return () => {
+      observer.disconnect();
       viewer.dispose();
       viewerRef.current = null;
     };
@@ -41,77 +48,36 @@ function SkinPreview({ dataUrl, model }: { dataUrl: string | null; model: SkinMo
   return <canvas ref={canvasRef} className="skinCanvas" aria-label="스킨 3D 미리보기. 끌어서 돌려 볼 수 있어요." />;
 }
 
-/** Flat front view drawn from the skin file, for library cards. */
-function SkinFront({ dataUrl, model }: { dataUrl: string; model: SkinModel }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const image = new Image();
-    image.onload = () => {
-      const context = canvasRef.current?.getContext("2d");
-      if (!context) return;
-      const legacy = image.height === 32;
-      const arm = model === "slim" ? 3 : 4;
-      context.clearRect(0, 0, 64, 128);
-      context.imageSmoothingEnabled = false;
-      const part = (sx: number, sy: number, w: number, h: number, dx: number, dy: number, mirror = false) => {
-        context.save();
-        if (mirror) {
-          context.translate((dx + w) * 4, dy * 4);
-          context.scale(-1, 1);
-          context.drawImage(image, sx, sy, w, h, 0, 0, w * 4, h * 4);
-        } else {
-          context.drawImage(image, sx, sy, w, h, dx * 4, dy * 4, w * 4, h * 4);
-        }
-        context.restore();
-      };
-      const x = 4;
-      part(8, 8, 8, 8, x, 0);
-      part(20, 20, 8, 12, x, 8);
-      part(44, 20, arm, 12, x - arm, 8);
-      if (legacy) part(44, 20, arm, 12, x + 8, 8, true); else part(36, 52, arm, 12, x + 8, 8);
-      part(4, 20, 4, 12, x, 20);
-      if (legacy) part(4, 20, 4, 12, x + 4, 20, true); else part(20, 52, 4, 12, x + 4, 20);
-      // Second layer: hat, jacket, sleeves and trousers exist only in 64x64 skins.
-      part(40, 8, 8, 8, x, 0);
-      if (!legacy) {
-        part(20, 36, 8, 12, x, 8);
-        part(44, 36, arm, 12, x - arm, 8);
-        part(52, 52, arm, 12, x + 8, 8);
-        part(4, 36, 4, 12, x, 20);
-        part(4, 52, 4, 12, x + 4, 20);
-      }
-    };
-    image.src = dataUrl;
-  }, [dataUrl, model]);
-
-  return <canvas ref={canvasRef} className="skinFront" width={64} height={128} aria-hidden="true" />;
-}
-
-export function SkinPanel({ instanceRoot, serverShowsSkins, onClose }: {
+export function SkinPanel({ instanceRoot, serverShowsSkins, onClose, onStateChange, embedded }: {
   instanceRoot: string;
   serverShowsSkins: boolean;
   onClose: () => void;
+  embedded?: boolean;
+  onStateChange: (state: SkinState) => void;
 }) {
   const [state, setState] = useState<SkinState | null>(null);
   const [selected, setSelected] = useState<Choice | null>(null);
   const [model, setModel] = useState<SkinModel>("default");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const requestSequence = useRef(0);
 
   async function run(action: () => Promise<SkinState>, fallback: string, done?: string) {
+    const sequence = ++requestSequence.current;
     setBusy(true);
     setNotice(null);
     try {
       const next = await action();
+      if (sequence !== requestSequence.current) return null;
       setState(next);
+      onStateChange(next);
       if (done) setNotice({ text: done, error: false });
       return next;
     } catch (error) {
-      setNotice({ text: message(error, fallback), error: true });
+      if (sequence === requestSequence.current) setNotice({ text: message(error, fallback), error: true });
       return null;
     } finally {
-      setBusy(false);
+      if (sequence === requestSequence.current) setBusy(false);
     }
   }
 
@@ -120,6 +86,7 @@ export function SkinPanel({ instanceRoot, serverShowsSkins, onClose }: {
       if (next?.current) setModel(next.current.model);
       if (next?.serverError) setNotice({ text: `적용된 스킨을 확인하지 못했어요 (${next.serverError})`, error: true });
     });
+    return () => { requestSequence.current += 1; };
   }, [instanceRoot]);
 
   const current = state?.current ?? null;
@@ -161,14 +128,13 @@ export function SkinPanel({ instanceRoot, serverShowsSkins, onClose }: {
   const canApply = !busy && (selected !== null || modelChanged);
 
   return (
-    <div className="modalBackdrop" onClick={onClose}>
-      <section className="modal skinModal" role="dialog" aria-modal="true" aria-label="스킨" onClick={(event) => event.stopPropagation()}>
+    <PanelSurface embedded={embedded} className="skinModal" label="스킨" onClose={onClose}>
         <header className="modalHeader">
           <div>
             <p className="eyebrow">스킨</p>
             <h2>내 스킨</h2>
           </div>
-          <button className="closeButton" onClick={onClose}>닫기</button>
+          {!embedded && <button className="closeButton" onClick={onClose}>닫기</button>}
         </header>
         <div className="modalBody skinBody">
           {notice && <p className={`noticeBar${notice.error ? "" : " isInfo"}`} role={notice.error ? "alert" : "status"}>{notice.text}</p>}
@@ -241,7 +207,6 @@ export function SkinPanel({ instanceRoot, serverShowsSkins, onClose }: {
             </section>
           </div>
         </div>
-      </section>
-    </div>
+    </PanelSurface>
   );
 }

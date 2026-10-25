@@ -1,3 +1,4 @@
+import { PanelSurface } from "./PanelSurface.js";
 import { useEffect, useRef, useState } from "react";
 import type { ModrinthHit, ModTarget, PersonalMod, ServerPreset } from "../shared/types.js";
 
@@ -15,7 +16,7 @@ function formatDownloads(value: number): string {
 const loaderNames: Record<string, string> = { fabric: "Fabric", forge: "Forge", neoforge: "NeoForge", vanilla: "바닐라" };
 
 /** Search Modrinth for client-only mods that fit the selected server and install them as personal mods. */
-export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPreset; instanceRoot: string; onClose: () => void }) {
+export function ModsPanel({ server, instanceRoot, onClose, embedded }: { server: ServerPreset; instanceRoot: string; onClose: () => void; embedded?: boolean }) {
   const target: ModTarget = {
     instanceRoot,
     packId: server.packId,
@@ -118,15 +119,14 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
   }
 
   return (
-    <div className="modalBackdrop" onClick={onClose}>
-      <section className="modal modsModal" role="dialog" aria-modal="true" aria-label="편의 모드" onClick={(event) => event.stopPropagation()}>
+    <PanelSurface embedded={embedded} className="modsModal" label="편의 모드" onClose={onClose}>
         <header className="modalHeader">
           <div>
             <p className="eyebrow">편의 모드</p>
             <h2>{server.name}</h2>
             <small>{loaderNames[server.loader.kind]} · Minecraft {server.minecraftVersion}용</small>
           </div>
-          <button className="closeButton" onClick={onClose}>닫기</button>
+          {!embedded && <button className="closeButton" onClick={onClose}>닫기</button>}
         </header>
         <div className="modalBody">
           {notice && <p className={`noticeBar${notice.error ? "" : " isInfo"}`} role={notice.error ? "alert" : "status"}>{notice.text}</p>}
@@ -234,7 +234,6 @@ export function ModsPanel({ server, instanceRoot, onClose }: { server: ServerPre
             </>
           )}
         </div>
-      </section>
-    </div>
+    </PanelSurface>
   );
 }
