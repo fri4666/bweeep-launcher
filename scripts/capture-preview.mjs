@@ -79,7 +79,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   };
   window.__exitGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
   window.__failGame = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (신호 SIGSEGV)", exitError: true });
-  window.__failWithPersonalMods = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (코드 1)", exitError: true, retryWithoutPersonalMods: "create-aeronautics" });
+  window.__failWithPersonalMods = () => emitGameStatus({ state: "idle", exitMessage: "Minecraft가 비정상 종료되었습니다. (코드 1)", exitError: true, retryWithoutPersonalMods: "bweeep-pokemon-cobbleverse" });
   window.__rejectGame = () => {
     listeners.forEach((listener) => listener({ kind: "error", stage: "서버 접속 실패", message: "선택 서버가 연결을 거절했습니다." }));
     emitGameStatus({ state: "idle", exitMessage: "Minecraft가 종료되었습니다.", exitError: false });
@@ -93,6 +93,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   window.__zeroFileSync = false;
   window.__copiedText = null;
   window.__serverStatusCalls = 0;
+  window.__serverStatusPorts = [];
   window.__stopRequests = 0;
   let inviteRedeemed = false;
   let invites = [];
@@ -161,15 +162,15 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
   const result = {
     manifest: {
       schemaVersion: 1,
-      id: "create-aeronautics",
-      name: "Create Aeronautics",
-      version: "2026.09.14",
+      id: "bweeep-pokemon-cobbleverse",
+      name: "코블버스 주말",
+      version: "1.7.42",
       minecraftVersion: "1.21.1",
-      loader: { kind: "neoforge", version: "21.1.228" },
+      loader: { kind: "fabric", version: "0.16.10" },
       server: { host: "server.fri4666.com", port: 25565 },
       files: []
     },
-    instanceDir: "C:\\Bweeep\\instances\\create-aeronautics",
+    instanceDir: "C:\\Bweeep\\instances\\bweeep-pokemon-cobbleverse",
     downloaded: 2,
     skipped: 1
   };
@@ -179,31 +180,30 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       if (previewCatalogUnavailable) throw new Error("서버 목록 연결 실패");
       return [
         {
-          id: "create-aeronautics",
-          name: "Create Aeronautics",
-          packId: "create-aeronautics",
-          description: "하늘과 기계가 만나는 모드팩",
+          id: "bweeep-pokemon-cobbleverse",
+          name: "코블버스 주말",
+          packId: "bweeep-pokemon-cobbleverse",
+          description: "기존 월드 · 주말 운영",
           environment: "production",
           server: { host: "server.fri4666.com", port: 25565 },
           minecraftVersion: "1.21.1",
-          loader: { kind: "neoforge", version: "21.1.228" },
-          serverLoader: { kind: "fabric", version: "0.18.1" },
+          loader: { kind: "fabric", version: "0.16.10" },
           gameAuth: "yggdrasil",
           blockedModrinthProjects: ["zbhsCnsA"],
           recommendedMemoryMb: 6144
         },
         {
-          id: "vanilla-survival-test",
-          name: "Vanilla Test",
-          packId: "vanilla-survival-test",
-          description: "테스터 검증용 순정 서버",
-          environment: "test",
-          server: { host: "server.fri4666.com", port: 25566 },
-          minecraftVersion: "26.3",
-          loader: { kind: "fabric", version: "0.19.5" },
-          gameAuth: "offline",
-          blockedModrinthProjects: [],
-          recommendedMemoryMb: 3072
+          id: "bweeep-pokemon-cobblebox-weekday",
+          name: "코블박스 평일",
+          packId: "bweeep-pokemon-cobblebox-weekday",
+          description: "새 월드 · 평일 24시간 운영",
+          environment: "production",
+          server: { host: "server.fri4666.com", port: 31234 },
+          minecraftVersion: "1.21.1",
+          loader: { kind: "fabric", version: "0.16.10" },
+          gameAuth: "yggdrasil",
+          blockedModrinthProjects: ["zbhsCnsA"],
+          recommendedMemoryMb: 6144
         }
       ];
     },
@@ -359,10 +359,11 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
     userContentFolders: async () => ({ mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] }),
     chooseUserContentFolders: async (_root, kind) => ({ folders: kind === "mods" ? { mods: ["D:\\Minecraft\\my-mods", "D:\\Minecraft\\more-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders"] } : { mods: ["D:\\Minecraft\\my-mods"], shaderpacks: ["D:\\Minecraft\\my-shaders", "D:\\Minecraft\\more-shaders"] }, selected: 1 }),
     removeUserContentFolder: async (_root, kind, folder) => ({ mods: kind === "mods" ? [] : ["D:\\Minecraft\\my-mods"], shaderpacks: kind === "shaderpacks" ? [] : ["D:\\Minecraft\\my-shaders"] }),
-    // The test server (25566) is off; the main one too in the server-offline preview.
+    // The two Cobbleverse cards use separate gate ports and therefore receive separate live states.
     serverStatus: async (server) => {
       window.__serverStatusCalls += 1;
-      if (server.port === 25566 || (previewServerOffline && !window.__serverBackOnline)) {
+      window.__serverStatusPorts.push(server.port);
+      if (previewServerOffline && !window.__serverBackOnline) {
         return { online: false, host: server.host, port: server.port, message: "연결 끊김" };
       }
       if (previewServerClosed) {
@@ -371,6 +372,10 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       }
       if (previewServerSleeping) {
         return { online: true, host: server.host, port: server.port, latencyMs: 18, message: "서버 연결 가능", players: { online: 0, max: 20 }, version: "1.21.1", sleep: "sleeping" };
+      }
+      if (server.port === 31234) {
+        // Sunday fixture: the weekday world opens as soon as the weekend world closes at 19:30 KST.
+        return { online: true, host: server.host, port: server.port, latencyMs: 16, message: "서버 연결 가능", players: { online: 0, max: 20 }, version: "1.21.1", closed: { nextOpen: Date.UTC(2026, 9, 25, 10, 30, 0) } };
       }
       return {
         online: true,
@@ -508,7 +513,7 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
         emitGameStatus({ state: "running", pid: 4242, startedAt });
         return result;
       }
-      listeners.forEach((listener) => listener({ kind: "info", stage: "모드팩 파일", message: "Create Aeronautics 동기화 시작", completed: 0, total: 3 }));
+      listeners.forEach((listener) => listener({ kind: "info", stage: "모드팩 파일", message: "코블버스 주말 동기화 시작", completed: 0, total: 3 }));
       await new Promise((resolve) => setTimeout(resolve, 90));
       listeners.forEach((listener) => listener({ kind: "download", stage: "모드팩 파일", message: "다운로드: mods/create.jar", completed: 0, total: 3, filePath: "mods/create.jar" }));
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1095,7 +1100,7 @@ if (adminMode) {
 if (authOutage) {
   await page.locator(".launchButton").waitFor({ timeout: 10000 });
   if ((await page.locator(".dockHint").innerText()) !== "인증 서버 점검 중") throw new Error("the auth outage hint is missing");
-  if (!(await page.locator(".heroCopy h2").innerText()).includes("Create Aeronautics")) throw new Error("the saved server list is not shown during the outage");
+  if (!(await page.locator(".heroCopy h2").innerText()).includes("코블버스 주말")) throw new Error("the saved server list is not shown during the outage");
   await page.screenshot({ path: "previews/bweeep-launcher-auth-outage.png" });
   await page.locator(".launchButton").click();
   await page.locator(".dockError").waitFor();
@@ -1145,7 +1150,7 @@ if (!catalogUnavailable) {
 await page.screenshot({ path: accessDenied ? "previews/bweeep-launcher-invite-entry.png" : signedIn ? "previews/bweeep-launcher-flow-ready.png" : "previews/bweeep-launcher-login-main.png" });
 if (catalogUnavailable) {
   const mainText = await page.locator("main").innerText();
-  if (!mainText.includes("서버 목록 연결 실패") || !mainText.includes("서버에 연결하지 못했어요") || mainText.includes("Create Aeronautics")) {
+  if (!mainText.includes("서버 목록 연결 실패") || !mainText.includes("서버에 연결하지 못했어요") || mainText.includes("코블버스 주말")) {
     throw new Error("catalog failure did not fail closed with a visible reason");
   }
   if (!(await page.getByRole("button", { name: "게임 시작" }).isDisabled())) throw new Error("launch remained enabled without a catalog");
@@ -1167,15 +1172,16 @@ if (catalogUnavailable) {
   }
   if (await page.locator(".libraryDetails, .supportPanel, .sideAction, .brandWord").count()) throw new Error("obsolete navigation or connection panel remains");
   if (!(await page.locator(".libraryCard.isSelected .libraryConnection").innerText()).includes("3명 접속 중")) throw new Error("server card has no player summary");
-  await page.locator(".libraryCard").filter({ hasText: "Vanilla Test" }).click();
-  await page.locator(".heroCopy h2").filter({ hasText: "Vanilla Test" }).waitFor();
-  if (!(await page.locator(".launchButton .launchOffIcon").count())) throw new Error("offline server has no launch mark");
-  await page.locator(".libraryCard").filter({ hasText: "Create Aeronautics" }).click();
-  await page.locator(".heroCopy h2").filter({ hasText: "Create Aeronautics" }).waitFor();
+  await page.locator(".libraryCard").filter({ hasText: "코블박스 평일" }).click();
+  await page.locator(".heroCopy h2").filter({ hasText: "코블박스 평일" }).waitFor();
+  if (!(await page.locator(".libraryCard.isSelected .libraryConnection").innerText()).includes("일 19:30 열림")) throw new Error("weekday schedule is missing from its server card");
+  if (!(await page.locator(".launchButton").isDisabled())) throw new Error("closed weekday server can be launched");
+  await page.locator(".libraryCard").filter({ hasText: "코블버스 주말" }).click();
+  await page.locator(".heroCopy h2").filter({ hasText: "코블버스 주말" }).waitFor();
   interactionChecks.push("main-screen-server-switch", "server-address-hidden", "server-only-rail");
   await openSettings("설정");
   const environment = await page.locator(".selectedEnvironment").innerText();
-  if (!environment.includes("Fabric 서버") || !environment.includes("NeoForge 클라이언트")) throw new Error("server/client loader labels are missing");
+  if (!environment.includes("Fabric 서버") || !environment.includes("Fabric 클라이언트")) throw new Error("server/client loader labels are missing");
   await page.keyboard.press("Escape");
   interactionChecks.push("server-loader-visible");
   await page.setViewportSize({ width: 920, height: 620 });
@@ -1221,7 +1227,7 @@ if (catalogUnavailable) {
   // Game memory per server: automatic by default, a warning below the recommendation.
   const memoryRows = page.locator(".memoryRow");
   if (await memoryRows.count() !== 2) throw new Error("game memory is not listed per server");
-  if ((await memoryRows.nth(0).locator(".memoryValue").innerText()) !== "자동 6GB" || (await memoryRows.nth(1).locator(".memoryValue").innerText()) !== "자동 3GB") {
+  if ((await memoryRows.nth(0).locator(".memoryValue").innerText()) !== "자동 6GB" || (await memoryRows.nth(1).locator(".memoryValue").innerText()) !== "자동 6GB") {
     throw new Error(`automatic memory is wrong: ${await page.locator(".memoryList").innerText()}`);
   }
   if (await page.locator(".memoryValue.isLow").count()) throw new Error("automatic memory warns on a 16GB PC");
@@ -1232,7 +1238,7 @@ if (catalogUnavailable) {
   await memoryRows.nth(1).getByRole("slider").press("End");
   if ((await memoryRows.nth(1).locator(".memoryValue").innerText()) !== "14GB") throw new Error("the slider does not reach PC memory minus 2GB");
   await memoryRows.nth(1).getByRole("button", { name: "자동" }).click();
-  if ((await memoryRows.nth(1).locator(".memoryValue").innerText()) !== "자동 3GB") throw new Error("자동 did not reset the memory");
+  if ((await memoryRows.nth(1).locator(".memoryValue").innerText()) !== "자동 6GB") throw new Error("자동 did not reset the memory");
   interactionChecks.push("memory-per-server");
   await page.getByRole("radio", { name: "10명" }).click();
   await page.getByRole("button", { name: "10명용 초대 만들기" }).click();
@@ -1295,7 +1301,7 @@ if (catalogUnavailable) {
   await openSettings("편의 모드");
   await page.locator(".modItem").first().waitFor();
   const modsText = await page.locator(".modsModal").innerText();
-  if (!modsText.includes("NeoForge · Minecraft 1.21.1용") || !modsText.includes("서버 팩에 포함") || !modsText.includes("서버에서 막음")) {
+  if (!modsText.includes("Fabric · Minecraft 1.21.1용") || !modsText.includes("서버 팩에 포함") || !modsText.includes("서버에서 막음")) {
     throw new Error("mod search does not show the server's loader, pack mods and blocked mods");
   }
   await page.locator(".modItem").filter({ hasText: "Sodium" }).getByRole("button", { name: "설치" }).click();
