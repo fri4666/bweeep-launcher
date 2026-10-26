@@ -1,5 +1,6 @@
 /* The profile opens one settings document with persistent section navigation. */
 .settingsHub {
+  animation: dialogRise 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
   width: min(1120px, calc(100vw - 40px));
