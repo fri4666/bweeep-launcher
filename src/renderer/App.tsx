@@ -1125,7 +1125,7 @@ function App() {
             <span className="artworkEdition">MINECRAFT JAVA EDITION</span>
           </div>
           <div className="heroFooter">
-            <div className="heroCopy">
+            <div className="heroCopy" key={selected?.id ?? catalogState}>
               {catalogState === "error" ? (
                 <>
                   <p className="eyebrow">서버 목록</p>

@@ -62,8 +62,9 @@ async function downloadManifest(repository, tag, name, output, releaseInfo, publ
 }
 
 async function main() {
-  const [version, runId, output] = process.argv.slice(2);
+  const [version, runId, output, betaBuild = "1"] = process.argv.slice(2);
   assert.match(version ?? "", /^\d+\.\d+\.\d+$/);
+  assert.match(betaBuild, /^[1-9]\d*$/, "Beta build must be a positive integer");
   assert.match(runId ?? "", /^[1-9]\d*$/);
   assert.ok(output, "Proof output directory is required");
   const repository = process.env.GITHUB_REPOSITORY;
@@ -95,7 +96,7 @@ async function main() {
   }
 
   const stableTag = "v" + version;
-  const betaVersion = version + "-beta.1";
+  const betaVersion = version + "-beta." + betaBuild;
   const betaTag = "v" + betaVersion;
   const stable = release(repository, stableTag);
   const beta = release(repository, betaTag);

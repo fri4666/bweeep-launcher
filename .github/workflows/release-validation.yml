@@ -18,6 +18,11 @@ on:
         description: Candidate version; blank uses package.json
         required: false
         type: string
+      beta_build:
+        description: Candidate beta number used for fixed-helper and ARM64 migration validation
+        required: true
+        default: '1'
+        type: string
       staged_candidate:
         description: Validate archived signed candidate without publishing a channel
         required: true
@@ -29,7 +34,7 @@ on:
         default: 0.1.40-beta.4
         type: string
       arm64_file_baseline:
-        description: Fixed ARM64 NSIS baseline; blank uses target-version-beta.1 (old ARM64 installers cannot boot)
+        description: Fixed ARM64 NSIS baseline; blank uses target-version-beta.N (old ARM64 installers cannot boot)
         required: false
         type: string
       update_timeout_minutes:
@@ -83,6 +88,7 @@ jobs:
           EXPECTED_X64_SHA: ${{ inputs.stable_installer_sha256 }}
           EXPECTED_ARM64_SHA: ${{ inputs.stable_installer_arm64_sha256 }}
           TARGET_VERSION: ${{ inputs.target_version }}
+          BETA_BUILD: ${{ inputs.beta_build || '1' }}
           STAGED_CANDIDATE: ${{ inputs.staged_candidate }}
           FILE_BASELINE: ${{ inputs.file_baseline }}
           ARM64_FILE_BASELINE: ${{ inputs.arm64_file_baseline }}
@@ -90,15 +96,18 @@ jobs:
           TRACE_HELPER_FAILURE: ${{ inputs.trace_helper_failure }}
         run: |
           $version = if ($env:TARGET_VERSION) { $env:TARGET_VERSION } else { (Get-Content package.json -Raw | ConvertFrom-Json).version }
+          $betaBuild = if ($env:BETA_BUILD) { $env:BETA_BUILD } else { '1' }
+          if ($betaBuild -notmatch '^[1-9]\d*$') { throw 'Beta build must be a positive integer' }
+          $betaVersion = "$version-beta.$betaBuild"
           $baseline = if ($env:FILE_BASELINE) { $env:FILE_BASELINE } else { '0.1.40-beta.4' }
-          if ('${{ matrix.architecture }}' -eq 'arm64') { $baseline = if ($env:ARM64_FILE_BASELINE) { $env:ARM64_FILE_BASELINE } else { $version + '-beta.1' } }
-          if ('${{ matrix.mode }}' -eq 'FixedFileBridge') { $baseline = $version + '-beta.1' }
+          if ('${{ matrix.architecture }}' -eq 'arm64') { $baseline = if ($env:ARM64_FILE_BASELINE) { $env:ARM64_FILE_BASELINE } else { $betaVersion } }
+          if ('${{ matrix.mode }}' -eq 'FixedFileBridge') { $baseline = $betaVersion }
           $timeout = if ($env:UPDATE_TIMEOUT_MINUTES) { [int]$env:UPDATE_TIMEOUT_MINUTES } else { 15 }
           $staged = $env:STAGED_CANDIDATE -eq 'true'
           $trace = $env:TRACE_HELPER_FAILURE -eq 'true'
           $pin = if ('${{ matrix.architecture }}' -eq 'arm64') { $env:EXPECTED_ARM64_SHA } else { $env:EXPECTED_X64_SHA }
           if ($staged -and -not $pin) { throw 'Staged release validation requires the reviewed installer SHA-256 for this architecture' }
-          ./scripts/Test-ReleaseOnDisposableWindows.ps1 -Mode '${{ matrix.mode }}' -Architecture '${{ matrix.architecture }}' -ExpectedStableVersion $version -ExpectedStableInstallerSha256 $pin -FileBaselineVersion $baseline -UpdateTimeoutMinutes $timeout -StagedCandidate:$staged -InspectorPort 9229 -TraceHelperFailure:$trace
+          ./scripts/Test-ReleaseOnDisposableWindows.ps1 -Mode '${{ matrix.mode }}' -Architecture '${{ matrix.architecture }}' -ExpectedStableVersion $version -ExpectedStableInstallerSha256 $pin -FileBaselineVersion $baseline -BetaBuild $betaBuild -UpdateTimeoutMinutes $timeout -StagedCandidate:$staged -InspectorPort 9229 -TraceHelperFailure:$trace
       - name: 실제 교체 도우미의 롤백과 부모 종료 대기
         if: matrix.mode == 'FreshNSIS'
         shell: pwsh
@@ -152,16 +161,19 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          BETA_BUILD: ${{ inputs.beta_build || '1' }}
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Candidate version must be stable semver' }
           if ($version -eq '0.1.40') { throw 'Withdrawn 0.1.40 archives must not be rebuilt or overwritten' }
+          $betaBuild = if ($env:BETA_BUILD) { $env:BETA_BUILD } else { '1' }
+          if ($betaBuild -notmatch '^[1-9]\d*$') { throw 'Beta build must be a positive integer' }
           $release = Invoke-WebRequest -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/v$version" -Headers @{Accept='application/vnd.github+json';Authorization=('Bearer '+$env:GH_TOKEN)} -SkipHttpErrorCheck
           if ([int]$release.StatusCode -eq 200) {
             if (-not ($release.Content | ConvertFrom-Json).draft) { throw 'A published version cannot be rebuilt as a candidate' }
           } elseif ([int]$release.StatusCode -ne 404) { throw 'Cannot verify that the candidate version is unpublished' }
           "version=$version" >> $env:GITHUB_OUTPUT
-          "beta_version=$version-beta.1" >> $env:GITHUB_OUTPUT
+          "beta_version=$version-beta.$betaBuild" >> $env:GITHUB_OUTPUT
       - name: 의존성과 업데이트 회귀 검사
         shell: pwsh
         run: |
@@ -185,7 +197,7 @@ jobs:
       - name: x64 및 ARM64 정식·베타 후보 만들기
         shell: pwsh
         env:
-          BWEEP_BETA_BUILD: '1'
+          BWEEP_BETA_BUILD: ${{ inputs.beta_build || '1' }}
           BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
         run: |
           $PSNativeCommandUseErrorActionPreference = $true

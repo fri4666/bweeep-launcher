@@ -236,6 +236,31 @@ h3 {
 
 /* Shell */
 
+@keyframes surfaceRise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes surfaceSlide {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes surfaceFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dialogRise {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes artworkDrift {
+  from { transform: scale(1); }
+  to { transform: scale(1.035); }
+}
+
 .shell {
   display: grid;
   grid-template-columns: 292px minmax(0, 1fr);
@@ -247,6 +272,7 @@ h3 {
 }
 
 .sidebar {
+  animation: surfaceSlide 380ms cubic-bezier(0.2, 0.8, 0.2, 1) 60ms both;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -505,12 +531,14 @@ h3 {
 }
 
 .content {
+  animation: surfaceRise 420ms cubic-bezier(0.2, 0.8, 0.2, 1) 90ms both;
   min-width: 0;
   min-height: 0;
   padding: 16px 28px 28px 12px;
 }
 
 .topbar {
+  animation: surfaceRise 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   position: relative;
   grid-column: 1 / -1;
   display: flex;
@@ -701,6 +729,7 @@ h3 {
 
 .profileBox:hover {
   background: #14243b;
+  transform: translateY(-1px);
 }
 
 .profileCharacter {
@@ -757,10 +786,13 @@ h3 {
   inset: 0;
   background: url("/images/launcher-landscape.png") center 40% / cover no-repeat;
   filter: saturate(0.65) brightness(0.82);
+  animation: artworkDrift 24s ease-in-out infinite alternate;
+  transform-origin: 50% 45%;
 }
 
 /* The copy stops short of the launch dock, so chips wrap instead of sliding under the button at narrow widths. */
 .heroCopy {
+  animation: surfaceRise 280ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   min-width: 0;
   max-width: 610px;
 }
@@ -1275,6 +1307,7 @@ h3 {
   border-bottom: 0;
 }
 .entryVisual {
+  animation: surfaceSlide 440ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   position: relative;
   align-self: stretch;
   margin: 20px;
@@ -1419,6 +1452,7 @@ h3 {
   inset: 0;
   background: linear-gradient(90deg,rgba(7,17,32,.97),rgba(7,17,32,.8) 45%,rgba(7,17,32,.3)), url("/images/launcher-landscape.png") 60% center / cover;
   opacity: .55;
+  transition: opacity 240ms ease;
 }
 .libraryCardCopy {
   position: relative;
@@ -1462,6 +1496,11 @@ h3 {
 }
 .libraryCard:hover:not(:disabled) {
   border-color: rgba(142,175,231,.4);
+  box-shadow: 0 8px 22px rgba(1, 6, 15, 0.25);
+  transform: translateY(-2px);
+}
+.libraryCard:active:not(:disabled) {
+  transform: translateY(0);
 }
 .libraryCard:disabled {
   background: #0b1727;
@@ -1732,6 +1771,7 @@ h3 {
 
 /* A fixed height keeps the logo in place while the card switches between states. */
 .entryCard {
+  animation: surfaceRise 420ms cubic-bezier(0.2, 0.8, 0.2, 1) 70ms both;
   position: relative;
   z-index: 2;
   display: flex;
@@ -1858,6 +1898,7 @@ input[aria-invalid="true"] {
 /* Modals */
 
 .modalBackdrop {
+  animation: surfaceFade 180ms ease-out both;
   position: fixed;
   inset: 0;
   z-index: 10;
@@ -1870,6 +1911,7 @@ input[aria-invalid="true"] {
 }
 
 .modal {
+  animation: dialogRise 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(800px, 100%);
@@ -2338,6 +2380,7 @@ input[aria-invalid="true"] {
 }
 
 .confirmDialog {
+  animation: dialogRise 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   width: min(420px, 100%);
   padding: 22px;
   background: #1c1d21;
@@ -2918,16 +2961,30 @@ input[aria-invalid="true"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  button {
+  button,
+  .libraryCardArt {
     transition-duration: 0.01ms;
   }
 
-  .launchButton {
+  .launchButton,
+  .libraryCard:hover:not(:disabled),
+  .profileBox:hover {
     transform: none !important;
   }
 
   .spinner,
-  .statusDot {
+  .statusDot,
+  .launcherHeader,
+  .sidebar,
+  .content,
+  .heroCopy,
+  .entryVisual,
+  .entryCard,
+  .heroBackdrop,
+  .modalBackdrop,
+  .modal,
+  .confirmDialog,
+  .settingsHub {
     animation: none !important;
   }
 }
