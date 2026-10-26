@@ -4,6 +4,7 @@ param(
   [string]$ExpectedStableVersion='0.1.40',
   [string]$ExpectedStableInstallerSha256,
   [string]$FileBaselineVersion='0.1.40-beta.4',
+  [ValidateRange(1,2147483647)][int]$BetaBuild=1,
   [ValidateRange(1,15)][int]$UpdateTimeoutMinutes=15,
   [ValidateRange(1024,65535)][int]$InspectorPort=9229,
   [switch]$StagedCandidate,
@@ -175,7 +176,7 @@ try {
   }
   $manifestUrl=if($promoted -and -not $StagedCandidate){'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/channels/stable/'+$Architecture+'.json'}else{'https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates/manifests/'+$ExpectedStableVersion+'/'+$Architecture+'/stable.json'}
   $receipt.manifestSource=$manifestUrl
-  $baseline=if($Mode -eq 'LegacyBridge'){'0.1.39'}elseif($Mode -eq 'FileBridge'){$FileBaselineVersion}elseif($Mode -eq 'FixedFileBridge'){"${ExpectedStableVersion}-beta.1"}else{$ExpectedStableVersion}
+  $baseline=if($Mode -eq 'LegacyBridge'){'0.1.39'}elseif($Mode -eq 'FileBridge'){$FileBaselineVersion}elseif($Mode -eq 'FixedFileBridge'){"${ExpectedStableVersion}-beta.$BetaBuild"}else{$ExpectedStableVersion}
   $installer=Join-Path $work (Installer-Name $baseline)
   $pin=if($baseline -eq $ExpectedStableVersion){$ExpectedStableInstallerSha256}else{''}
   $receipt.installer=Download-Installer $baseline $installer $pin
