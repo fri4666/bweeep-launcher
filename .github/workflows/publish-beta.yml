@@ -1,0 +1,118 @@
+name: 테스터 베타 배포
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "게시할 버전 (예: 0.2.0)"
+        required: true
+        type: string
+      validation_run_id:
+        description: 같은 main 커밋의 Windows 전체 검증 실행 ID
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: launcher-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 소스 내려받기
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: 동일 소스 후보와 실제 Windows 검증 확인
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
+          INPUT_VERSION: ${{ inputs.version }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+        run: node scripts/verify-beta-promotion-gate.mjs "$INPUT_VERSION" "$VALIDATION_RUN_ID" "$RUNNER_TEMP/beta-proof"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: beta-promotion-proof
+          path: ${{ runner.temp }}/beta-proof/beta-promotion-gate.json
+          if-no-files-found: ignore
+      - name: x64 및 ARM64 베타 채널과 GitHub 프리릴리스 게시
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          BWEEP_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.BWEEP_UPDATE_PUBLIC_KEY_BASE64 }}
+          INPUT_VERSION: ${{ inputs.version }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          beta="$INPUT_VERSION-beta.1"
+          tag="v$beta"
+          root="https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/bweeep-launcher-updates"
+          x64="$RUNNER_TEMP/beta-proof/$tag/file-update-beta.json"
+          arm64="$RUNNER_TEMP/beta-proof/$tag/file-update-beta-arm64.json"
+          old_x64="$RUNNER_TEMP/beta-before-x64.json"
+          old_arm64="$RUNNER_TEMP/beta-before-arm64.json"
+          stable_x64="$RUNNER_TEMP/stable-before-x64.json"
+          stable_arm64="$RUNNER_TEMP/stable-before-arm64.json"
+          curl -fsS -H 'Cache-Control: no-cache' "$root/channels/beta/x64.json" -o "$old_x64"
+          curl -fsS -H 'Cache-Control: no-cache' "$root/channels/beta/arm64.json" -o "$old_arm64"
+          curl -fsS -H 'Cache-Control: no-cache' "$root/channels/stable/x64.json" -o "$stable_x64"
+          curl -fsS -H 'Cache-Control: no-cache' "$root/channels/stable/arm64.json" -o "$stable_arm64"
+          node scripts/verify-beta-promotion-gate.mjs --check-draft "$RUNNER_TEMP/beta-proof/beta-promotion-gate.json" "$old_x64" "$old_arm64"
+          notes="$RUNNER_TEMP/beta-release-notes.md"
+          {
+            printf '테스터용 v%s입니다. 정식 채널은 그대로 유지됩니다.\n\n' "$beta"
+            tail -n +3 build/release-notes.txt
+            printf '\nWindows x64와 ARM64 설치 및 자동 업데이트 검증: https://github.com/%s/actions/runs/%s\n' "$GITHUB_REPOSITORY" "$VALIDATION_RUN_ID"
+          } > "$notes"
+          rollback() {
+            node scripts/publish-file-release.mjs - "$old_x64" channel || true
+            node scripts/publish-file-release.mjs - "$old_arm64" channel || true
+          }
+          trap rollback ERR
+          node scripts/publish-file-release.mjs - "$x64" channel
+          node scripts/publish-file-release.mjs - "$arm64" channel
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false --title "붸에엡 v$beta (테스터 베타)" --notes-file "$notes"
+          trap - ERR
+          for arch in x64 arm64; do
+            expected="$x64"
+            if [ "$arch" = arm64 ]; then expected="$arm64"; fi
+            received="$RUNNER_TEMP/beta-after-$arch.json"
+            matched=false
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+              if curl -fsS -H 'Cache-Control: no-cache' "$root/channels/beta/$arch.json" -o "$received" && cmp -s "$expected" "$received"; then
+                matched=true
+                break
+              fi
+              sleep 2
+            done
+            test "$matched" = true
+          done
+          curl -fsS -H 'Cache-Control: no-cache' "$root/channels/stable/x64.json" -o "$RUNNER_TEMP/stable-after-x64.json"
+          curl -fsS -H 'Cache-Control: no-cache' "$root/channels/stable/arm64.json" -o "$RUNNER_TEMP/stable-after-arm64.json"
+          cmp "$stable_x64" "$RUNNER_TEMP/stable-after-x64.json"
+          cmp "$stable_arm64" "$RUNNER_TEMP/stable-after-arm64.json"
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)" = true
+          echo "테스터 베타 $beta 게시와 양쪽 채널 확인 완료"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: beta-channel-before
+          path: |
+            ${{ runner.temp }}/beta-before-x64.json
+            ${{ runner.temp }}/beta-before-arm64.json
+          if-no-files-found: ignore
