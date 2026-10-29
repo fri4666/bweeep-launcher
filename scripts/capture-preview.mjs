@@ -15,6 +15,7 @@ const serverSleeping = process.env.BWEEP_PREVIEW_SERVER_SLEEPING === "true";
 const serverClosed = process.env.BWEEP_PREVIEW_SERVER_CLOSED === "true";
 const authOutage = process.env.BWEEP_PREVIEW_AUTH_OUTAGE === "true";
 const moveAndModsMode = process.env.BWEEP_PREVIEW_MOVE_AND_MODS === "true";
+const hostingMode = process.env.BWEEP_PREVIEW_HOSTING === "true";
 const adminMode = process.env.BWEEP_PREVIEW_ADMIN === "true";
 const memberMode = process.env.BWEEP_PREVIEW_MEMBER === "true";
 page.on("pageerror", (error) => errors.push(error.message));
@@ -224,6 +225,12 @@ await page.addInitScript(({ previewSignedIn, previewAccessUnavailable, previewAc
       members = members.filter((member) => member.userId !== userId);
       return members;
     },
+    adminHosting: async () => window.__hosting ??= {policy:{primaryNode:"vps",automatic:false,failureSeconds:90,syncMinutes:5,maxSnapshotMinutes:10,allowRecovery:false},revision:1,activeNode:"vps",epoch:2,leaseUntil:new Date(Date.now()+60000).toISOString(),requestedNode:null,nodes:[{node:"vps",lastSeen:new Date().toISOString(),status:"active",snapshotAt:null},{node:"pc",lastSeen:new Date().toISOString(),status:"standby_ready",snapshotAt:new Date().toISOString()}]},
+    configureHosting: async (policy,revision) => {
+      if(revision!==window.__hosting.revision)throw new Error("다른 관리자가 설정을 변경했어요. 새로고침해 주세요.");
+      return window.__hosting={...window.__hosting,policy,revision:revision+1};
+    },
+    requestHostingSwitch: async node => window.__hosting={...window.__hosting,requestedNode:node===window.__hosting.activeNode?null:node,revision:window.__hosting.revision+1},
     adminNames: async () => adminNames,
     releaseName: async (userId, gameName) => {
       await adminGate();
@@ -758,6 +765,36 @@ if (memberMode) {
   console.log(JSON.stringify({ interactionChecks: ["admin-tab-hidden-from-members"], errors }));
   await browser.close();
   process.exit(errors.length ? 1 : 0);
+}
+if (hostingMode) {
+  await page.locator(".launchButton").waitFor();
+  await openSettings("관리");
+  const panel=page.locator(".adminModal");
+  await panel.getByRole("tab",{name:"서버 운영",exact:true}).click();
+  await panel.getByText("현재 운영:",{exact:false}).waitFor();
+  const automatic=panel.getByLabel("장애 시 자동 전환");
+  await automatic.check();
+  if(!await panel.getByRole("button",{name:"설정 저장"}).isDisabled())throw new Error("Recovery risk acknowledgment was bypassed");
+  await panel.getByLabel("장애 전환 때 마지막 동기화 이후 진행 내용이 사라질 수 있음을 확인했어요.").check();
+  await panel.getByRole("button",{name:"설정 저장"}).click();
+  await panel.getByText("전환 조건을 저장했어요.").waitFor();
+  if(!await page.evaluate(()=>window.__hosting.policy.automatic))throw new Error("Policy save failed");
+  await page.setViewportSize({width:1440,height:1100});
+  await panel.locator(".hostingPanel h3").scrollIntoViewIfNeeded();
+  await page.screenshot({path:"previews/bweeep-launcher-hosting.png"});
+  await page.setViewportSize({width:920,height:620});
+  await page.screenshot({path:"previews/bweeep-launcher-hosting-narrow.png"});
+  if(await panel.evaluate(e=>e.scrollWidth>e.clientWidth+1))throw new Error("Hosting panel overflows");
+  await panel.getByRole("button",{name:"이 서버로 전환"}).last().click();
+  const dialog=page.getByRole("alertdialog");
+  await dialog.getByRole("button",{name:"전환 요청",exact:true}).click();
+  await panel.getByText("내 컴퓨터로 전환을 기다리고 있어요.").waitFor();
+  await panel.getByRole("button",{name:"전환 요청 취소",exact:true}).click();
+  await panel.getByText("전환 요청을 취소했어요.").waitFor();
+  if(await page.evaluate(()=>window.__hosting.requestedNode!==null))throw new Error("Switch cancellation failed");
+  if(errors.length)throw new Error(errors.join("\n"));
+  console.log("Hosting UI: risk validation, save, manual switch confirmation, narrow layout PASS");
+  await browser.close();process.exit(0);
 }
 if (adminMode) {
   const checks = [];

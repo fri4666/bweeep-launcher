@@ -187,6 +187,11 @@ jobs:
           npm run build
           node scripts/verify-launcher-update.mjs
           node scripts/verify-file-update.mjs
+          node scripts/verify-vps-delivery.mjs
+          node scripts/verify-vps-stage.mjs
+          node scripts/verify-vps-mirror.mjs
+          node scripts/verify-host-agent.mjs
+          node --experimental-transform-types scripts/verify-hosting-admin.mjs
           node scripts/verify-protected-installer.mjs
           node scripts/verify-promotion-gate.test.mjs
           node scripts/verify-nsis-codecs.test.mjs

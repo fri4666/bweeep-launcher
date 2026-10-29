@@ -1,3 +1,4 @@
+import { UPDATE_DOWNLOAD_ROOT } from "../dist/src/main/update-delivery.js";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -93,7 +94,7 @@ try {
   assert.equal(sha256(await fs.readFile(saved.path)), manifest.sha256);
   assert.equal(progress[0][0], 0); assert.deepEqual(progress.at(-1), [payload.length, payload.length]);
   assert.equal(calls[0], `${UPDATE_STORAGE_ROOT}/installers/0.1.40/x64.json`);
-  assert.ok(calls.every((url) => url.startsWith(UPDATE_STORAGE_ROOT) && !url.includes("/stable/") && !url.includes("github")));
+  assert.ok(calls.every((url) => (url.startsWith(UPDATE_STORAGE_ROOT) || url.startsWith(UPDATE_DOWNLOAD_ROOT)) && !url.includes("/stable/") && !url.includes("github")));
   pass("download-all-parts-and-verify-complete-installer-before-exposure");
 
   for (const [kind, message] of [["missing", /받지 못/], ["truncate", /조각 크기/], ["oversize", /응답 크기/], ["corrupt", /검증에 실패/]]) {

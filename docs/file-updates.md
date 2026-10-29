@@ -1,5 +1,24 @@
 # Supabase file updates
 
+## Prepared VPS download origin
+
+The VPS delivery candidate uses `https://158.247.246.225/releases/` for
+hash-addressed runtime and installer parts. Signed channel pointers and installer
+descriptors still come from Supabase. A definite missing VPS object (404) uses
+the same immutable Storage URL so older releases and unpublished candidates
+remain compatible. TLS, redirects and other HTTP errors are surfaced. Existing
+signature, size and SHA-256 checks remain required.
+
+This does not activate a release or change installed clients. A reviewed
+version release, complete VPS mirroring, real Windows installation/update
+validation and a scoped CI publisher are still needed before cutover.
+`scripts/stage-vps-release.mjs` stages only signature/hash-verified runtime and
+optional installer chunks in a private directory; it does not publish channels.
+See `infra/vps-updates/README.txt` for the prepared origin, gates and rollback.
+Do not merge the alternative GitHub-download PR41 for this VPS rollout.
+Do not delete Storage objects still needed by installed clients.
+
+
 ## Release layout
 
 The Windows installer bootstraps shortcuts, uninstall, and the invite URL

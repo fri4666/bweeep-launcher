@@ -1,3 +1,4 @@
+import { fetchUpdateArtifact } from "./update-delivery.js";
 import { app, net } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -156,7 +157,7 @@ async function prepareFiles(manifest: FileUpdateManifest, signal: AbortSignal, u
     try {
       for (let part = 0; part < updatePartCount(file.packedSize); part++) {
         const downloadSignal = AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)]);
-        const response = await net.fetch(releaseFileUrl(manifest, file.path, part), { signal: downloadSignal });
+        const response = await fetchUpdateArtifact(releaseFileUrl(manifest, file.path, part), { signal: downloadSignal }, net.fetch);
         if (!response.ok || !response.body) throw new Error(`업데이트 파일을 받지 못했습니다. (${response.status})`);
         await pipeline(Readable.fromWeb(response.body as never), fs.createWriteStream(packedTemporary, { flags: part === 0 ? "w" : "a" }), { signal: downloadSignal });
         const partSize = Math.min(UPDATE_CHUNK_SIZE, file.packedSize - part * UPDATE_CHUNK_SIZE);

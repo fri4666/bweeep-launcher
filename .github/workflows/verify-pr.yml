@@ -39,6 +39,11 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: node scripts/verify-file-update.mjs
+      - run: node scripts/verify-vps-delivery.mjs
+      - run: node scripts/verify-vps-stage.mjs
+      - run: node scripts/verify-vps-mirror.mjs
+      - run: node scripts/verify-host-agent.mjs
+      - run: node --experimental-transform-types scripts/verify-hosting-admin.mjs
       - run: node scripts/verify-promotion-gate.test.mjs
       - run: node scripts/verify-nsis-codecs.test.mjs
       - run: node scripts/verify-protected-installer.mjs
@@ -88,6 +93,7 @@ jobs:
           BWEEP_PREVIEW_SERVER_SLEEPING=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_SERVER_CLOSED=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_ADMIN=true node scripts/capture-preview.mjs
+          BWEEP_PREVIEW_HOSTING=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_MEMBER=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_MOVE_AND_MODS=true node scripts/capture-preview.mjs
           BWEEP_PREVIEW_AUTH_OUTAGE=true node scripts/capture-preview.mjs

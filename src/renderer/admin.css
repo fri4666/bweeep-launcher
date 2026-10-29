@@ -432,3 +432,17 @@
   color: var(--danger);
   font-size: 13px;
 }
+
+.hostingFields { display: grid; gap: 12px; margin: 18px 0; padding: 16px; border: 1px solid var(--line, #41434c); border-radius: 12px; }
+.hostingFields label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hostingFields input[type="number"] { width: 100px; }
+.hostingFields input[type="checkbox"] { flex-shrink: 0; }
+.hostingNodes { display: grid; gap: 8px; }
+.hostingPanel { min-width: 0; }
+.hostingFields { min-width: 0; }
+.hostingFields label { min-width: 0; }
+.hostingFields input[type="number"] { flex: 0 0 100px; }
+.hostingFields input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; padding: 0; flex: 0 0 18px; accent-color: #8fb5ed; }
+.hostingFields select { max-width: 100%; min-height: 36px; color: var(--text-strong); background: var(--bg-sunken); border: 1px solid var(--line-strong); border-radius: 6px; }
+
+.hostingFields label:has(input[type="checkbox"]) { justify-content: flex-start; }

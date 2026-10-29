@@ -1,3 +1,4 @@
+import type { HostingState } from "../shared/hosting.js";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, session, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
 import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
@@ -508,6 +509,9 @@ app.whenReady().then(async () => {
     sessionUser = await auth.setGameProfile(sessionUser, gameName);
     return sessionUser;
   });
+  ipcMain.handle("admin:hosting", () => auth.call<HostingState>(sessionUser,{action:"adminHosting"},"서버 운영 정보를 불러오지 못했습니다."));
+  ipcMain.handle("admin:configureHosting", (_event, policy: unknown, revision: unknown) => auth.call<HostingState>(sessionUser,{action:"configureHosting",policy,revision},"서버 전환 설정을 저장하지 못했습니다."));
+  ipcMain.handle("admin:requestHostingSwitch", (_event, node: unknown) => auth.call<HostingState>(sessionUser,{action:"requestHostingSwitch",node},"서버 전환을 요청하지 못했습니다."));
   ipcMain.handle("access:listMembers", () => auth.listMembers(sessionUser));
   ipcMain.handle("access:setTester", (_event, userId: unknown, tester: unknown) => {
     if (typeof userId !== "string" || typeof tester !== "boolean") throw new Error("테스터 정보가 올바르지 않습니다.");
