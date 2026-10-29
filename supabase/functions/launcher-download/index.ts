@@ -78,11 +78,32 @@ export async function installerResponse(manifest: Installer, fetcher: typeof fet
   });
 }
 
+// GitHub supplies the large body directly; only a matching signed descriptor
+// and GitHub's recorded SHA-256 digest can select this redirect.
+export async function githubInstallerResponse(manifest: Installer, fetcher: typeof fetch = fetch): Promise<Response | null> {
+  if (!/^\d+\.\d+\.\d+$/.test(manifest.version) || !["x64", "arm64"].includes(manifest.arch)) throw new Error("invalid release");
+  const filename = `Bweeep-Setup-${manifest.version}${manifest.arch === "arm64" ? "-arm64" : ""}.exe`;
+  const url = `https://github.com/fri4666/bweeep-launcher/releases/download/v${manifest.version}/${filename}`;
+  const response = await fetcher(`https://api.github.com/repos/fri4666/bweeep-launcher/releases/tags/v${manifest.version}`, {
+    headers: { Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(15_000)
+  });
+  if (!response.ok) { await response.body?.cancel(); return null; }
+  const release = await response.json();
+  if (release.draft !== false || release.prerelease !== false || release.tag_name !== `v${manifest.version}` || !Array.isArray(release.assets)) return null;
+  const matches = release.assets.filter((asset: { name?: string }) => asset.name === filename);
+  if (matches.length !== 1 || matches[0].size !== manifest.size || matches[0].digest !== `sha256:${manifest.sha256}` || matches[0].browser_download_url !== url) return null;
+  return new Response(null, { status: 302, headers: { location: url, "cache-control": "no-store" } });
+}
+
 export async function handleDownload(request: Request): Promise<Response> {
   const requested = new URL(request.url).searchParams.get("arch");
   const arch = requested === "arm64" ? "arm64" : "x64";
   try {
     const manifest = await latestInstaller(arch);
+    try {
+      const github = await githubInstallerResponse(manifest);
+      if (github) return github;
+    } catch { /* Legacy signed Storage streaming remains available during migration. */ }
     return await installerResponse(manifest);
   } catch {
     return new Response("런처 설치 파일을 아직 받을 수 없습니다. 잠시 후 다시 시도해 주세요.", { status: 503 });

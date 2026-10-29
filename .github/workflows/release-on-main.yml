@@ -158,6 +158,8 @@ jobs:
             "release-installer-beta/Bweeep-Setup-$env:BETA_VERSION.exe.blockmap",
             "release-installer-beta/beta.yml",
             "release-installer-beta/file-update-beta.json",
+            "release-installer-beta/file-update-x64.bin",
+            "release-installer-beta-arm64/file-update-arm64.bin",
             "release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe",
             "release-installer-beta-arm64/Bweeep-Setup-$env:BETA_VERSION-arm64.exe.blockmap",
             "release-installer-beta-arm64/file-update-beta-arm64.json"
@@ -182,6 +184,8 @@ jobs:
             "release-installer/Bweeep-Setup-$env:VERSION.exe.blockmap",
             "release-installer/latest.yml",
             "release-installer/file-update-stable.json",
+            "release-installer/file-update-x64.bin",
+            "release-installer-arm64/file-update-arm64.bin",
             "release-installer/file-update-beta-channel.json",
             "release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe",
             "release-installer-arm64/Bweeep-Setup-$env:VERSION-arm64.exe.blockmap",

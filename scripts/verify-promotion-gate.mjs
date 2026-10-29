@@ -1,3 +1,4 @@
+import { verifyGithubBundle } from "./verify-github-bundle.mjs";
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -116,6 +117,12 @@ async function main() {
   assert.match(armAsset[0].digest ?? '', /^sha256:[a-f0-9]{64}$/);
   await fsp.mkdir(output, { recursive: true });
   gh(['release', 'download', `v${version}`, '--repo', repository, '--dir', output, '--pattern', 'file-update-stable.json', '--pattern', 'file-update-stable-arm64.json', '--pattern', proofAsset]);
+  for (const [architecture, manifestName] of [["x64", "file-update-stable.json"], ["arm64", "file-update-stable-arm64.json"]]) {
+    const name = `file-update-${architecture}.bin`;
+    assert.equal(release.assets.filter(entry => entry.name === name).length, 1, `Missing GitHub bundle: ${name}`);
+    gh(['release', 'download', `v${version}`, '--repo', repository, '--dir', output, '--pattern', name]);
+    await verifyGithubBundle(JSON.parse(await fsp.readFile(path.join(output, manifestName), 'utf8')), path.join(output, name));
+  }
   const manifestBytes = await fsp.readFile(path.join(output, 'file-update-stable.json'));
   const manifest = JSON.parse(manifestBytes);
   const native = JSON.parse(await fsp.readFile(path.join(output, proofAsset), 'utf8'));

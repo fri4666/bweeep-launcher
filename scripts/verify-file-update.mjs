@@ -1,3 +1,4 @@
+import { verifyGithubBundle } from "./verify-github-bundle.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
@@ -28,6 +29,15 @@ try {
   });
   assert.equal(created.status, 0, created.stderr);
   const manifest = JSON.parse(await fsp.readFile(output, "utf8"));
+  const bundlePath = path.join(temporary, "file-update-x64.bin");
+  await verifyGithubBundle(manifest, bundlePath);
+  const goodBundle = await fsp.readFile(bundlePath);
+  const corruptBundle = Buffer.from(goodBundle); corruptBundle[0] ^= 1;
+  await fsp.writeFile(bundlePath, corruptBundle);
+  await assert.rejects(() => verifyGithubBundle(manifest, bundlePath), /hash mismatch/);
+  await fsp.writeFile(bundlePath, Buffer.concat([goodBundle, Buffer.from([0])]));
+  await assert.rejects(() => verifyGithubBundle(manifest, bundlePath), /length differs/);
+  await fsp.writeFile(bundlePath, goodBundle);
   assert.deepEqual(manifest.files.map((file) => file.path), ["Bweeep.exe", "resources/app.js"]);
   assert.equal(manifest.files[0].packedSize, gzipSync(Buffer.from("desktop runtime"), { level: 6 }).length);
   assert.equal(manifest.files[0].packedSha256, createHash("sha256").update(gzipSync(Buffer.from("desktop runtime"), { level: 6 })).digest("hex"));
