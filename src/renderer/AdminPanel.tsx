@@ -1,3 +1,4 @@
+import { HostingPanel } from "./HostingPanel.js";
 import { PanelSurface } from "./PanelSurface.js";
 import { useEffect, useState } from "react";
 import type { AdminDiagnostics, AdminNames, AdminRelease, NameHold, UuidReservation } from "../shared/admin-types.js";
@@ -8,8 +9,8 @@ import { reasonLabel } from "./AuthFailureNotice.js";
 import { ActionMark, errorText, FeedbackToast, useActionFeedback } from "./adminFeedback.js";
 import "./admin.css";
 
-type Tab = "members" | "notice" | "names" | "releases" | "diagnostics";
-const tabs: Array<[Tab, string]> = [["members", "멤버"], ["notice", "공지"], ["names", "이름"], ["releases", "서버 팩"], ["diagnostics", "진단"]];
+type Tab = "hosting" | "members" | "notice" | "names" | "releases" | "diagnostics";
+const tabs: Array<[Tab, string]> = [["hosting", "서버 운영"], ["members", "멤버"], ["notice", "공지"], ["names", "이름"], ["releases", "서버 팩"], ["diagnostics", "진단"]];
 const noticeProblemText = { empty: "", long: `${MAX_NOTICE_LENGTH}자까지 쓸 수 있어요.`, lines: "두 줄까지 쓸 수 있어요." } as const;
 
 export interface AdminConfirm {
@@ -106,7 +107,7 @@ export function AdminPanel({ selfId, onClose, confirm, onNoticeChange, embedded 
     const role = member.role === "admin" ? "member" : "admin";
     confirm({
       title: role === "admin" ? `${member.name}을(를) 관리자로` : `${member.name}의 관리자 해제`,
-      body: role === "admin" ? "멤버 관리, 이름·예약, 서버 팩 버전을 모두 바꿀 수 있게 돼요." : "관리 탭을 더 이상 쓸 수 없어요.",
+      body: role === "admin" ? "서버 운영, 멤버 관리, 이름·예약, 서버 팩 버전을 모두 바꿀 수 있게 돼요." : "관리 탭을 더 이상 쓸 수 없어요.",
       confirmLabel: role === "admin" ? "관리자로" : "해제",
       danger: role === "member",
       onConfirm: () => void act(member.userId, () => window.bweeep.setMemberRole(member.userId, role), setMembers,
@@ -202,6 +203,7 @@ export function AdminPanel({ selfId, onClose, confirm, onNoticeChange, embedded 
               <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>
             ))}
           </div>
+          {tab === "hosting" && <HostingPanel confirm={confirm} />}
           {tab === "members" && (
             <div className="adminList">
               {members === null && <p className="emptyText">불러오는 중…</p>}

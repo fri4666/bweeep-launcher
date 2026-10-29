@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh verified launcher update payloads
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+Persistent=true
+[Install]
+WantedBy=timers.target

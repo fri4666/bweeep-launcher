@@ -1,0 +1,15 @@
+[Unit]
+Description=Verify and mirror signed launcher updates to the Korea VPS
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/bweeep-update-mirror
+ExecStart=/usr/bin/flock -n /run/bweeep-update-mirror.lock /opt/node-v24.18.0/bin/node /opt/bweeep-update-mirror/scripts/mirror-vps-updates.mjs /srv/bweeep-updates /opt/bweeep-update-mirror/update-public-key.pem
+TimeoutStartSec=30min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/srv/bweeep-updates /run
+Nice=10

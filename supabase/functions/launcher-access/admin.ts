@@ -1,3 +1,4 @@
+import { parseHostingPolicy, type HostingPolicy } from "./hosting.ts";
 import type { createClient } from "@supabase/supabase-js";
 import { isModpackManifest, usesBweeepAccounts } from "./catalog.ts";
 import { normalizeNoticeText, toNotice } from "./notice.ts";
@@ -9,6 +10,9 @@ type Db = ReturnType<typeof createClient<any, "public">>;
  * and the database functions behind the changes check it again.
  */
 export type AdminRequest =
+  | { action: "adminHosting" }
+  | { action: "configureHosting"; revision: number; policy: HostingPolicy }
+  | { action: "requestHostingSwitch"; node: "vps" | "pc" }
   | { action: "listMembers" }
   | { action: "setTester"; userId: string; tester: boolean }
   | { action: "setMemberRole"; userId: string; role: "admin" | "member" }
@@ -35,6 +39,13 @@ function noticeTarget(value: unknown): string | null | undefined {
 
 export function parseAdminRequest(body: Record<string, unknown>): AdminRequest | null {
   switch (body.action) {
+    case "adminHosting": return {action:"adminHosting"};
+    case "configureHosting": {
+      const policy=parseHostingPolicy(body.policy);
+      return policy && Number.isSafeInteger(body.revision) && (body.revision as number)>0 ? {action:"configureHosting",revision:body.revision as number,policy} : null;
+    }
+    case "requestHostingSwitch":
+      return body.node==="vps" || body.node==="pc" ? {action:"requestHostingSwitch",node:body.node} : null;
     case "listMembers":
     case "adminNames":
     case "adminReleases":
@@ -73,6 +84,7 @@ export function parseAdminRequest(body: Record<string, unknown>): AdminRequest |
 }
 
 export const ADMIN_ACTIONS: ReadonlySet<string> = new Set([
+  "adminHosting", "configureHosting", "requestHostingSwitch",
   "listMembers", "setTester", "setMemberRole", "removeMember", "adminNames", "releaseName", "deleteReservation",
   "adminReleases", "activateRelease", "adminDiagnostics", "openDiagnostics", "setNotice", "clearNotice", "adminNotices"
 ]);
@@ -86,6 +98,8 @@ const json = (body: unknown, status = 200) => Response.json(body, { status });
 
 /** Codes the admin database functions raise, as the launcher shows them. */
 const refusals: Record<string, [number, string]> = {
+  HOST_POLICY_CHANGED: [409, "다른 관리자가 설정을 바꿨어요. 새로고침 후 다시 저장해 주세요."],
+  INVALID_HOST_POLICY: [400, "서버 전환 조건을 확인해 주세요."],
   NOT_ADMIN: [403, "관리자만 할 수 있어요."],
   MEMBER_NOT_FOUND: [404, "멤버를 찾지 못했어요."],
   CANNOT_CHANGE_SELF: [409, "자기 자신은 바꿀 수 없어요."],
@@ -289,6 +303,16 @@ export async function handleAdminRequest(db: Db, actorId: string, body: AdminReq
   const names = new Names(db);
   try {
     switch (body.action) {
+      case "adminHosting":
+      case "configureHosting":
+      case "requestHostingSwitch": {
+        const action=body.action==="adminHosting" ? "read" : body.action==="configureHosting" ? "configure" : "switch";
+        const payload=body.action==="configureHosting" ? {revision:body.revision,policy:body.policy} : body.action==="requestHostingSwitch" ? {node:body.node} : {};
+        const {data,error}=await db.rpc("launcher_host_admin",{p_actor:actorId,p_action:action,p_payload:payload});
+        if(error)return refusal(error,"서버 운영 정보를 처리하지 못했어요.");
+        return json(data);
+      }
+
       case "listMembers":
         return json({ members: await listMembers(db, names) });
       case "setTester": {

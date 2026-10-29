@@ -1,3 +1,4 @@
+import type { HostingState, HostingPolicy, HostingNode } from "../shared/hosting.js";
 const { contextBridge, ipcRenderer } = require("electron") as typeof import("electron");
 import type {
   AccessStatus,
@@ -89,6 +90,9 @@ const api = {
   deleteReservation: (minecraftUuid: string) => ipcRenderer.invoke("admin:deleteReservation", minecraftUuid) as Promise<AdminNames>,
   adminReleases: () => ipcRenderer.invoke("admin:releases") as Promise<AdminRelease[]>,
   activateRelease: (releaseId: string) => ipcRenderer.invoke("admin:activateRelease", releaseId) as Promise<AdminRelease[]>,
+  adminHosting: () => ipcRenderer.invoke("admin:hosting") as Promise<HostingState>,
+  configureHosting: (policy: HostingPolicy, revision: number) => ipcRenderer.invoke("admin:configureHosting", policy, revision) as Promise<HostingState>,
+  requestHostingSwitch: (node: HostingNode) => ipcRenderer.invoke("admin:requestHostingSwitch", node) as Promise<HostingState>,
   adminDiagnostics: () => ipcRenderer.invoke("admin:diagnostics") as Promise<AdminDiagnostics>,
   openDiagnostics: (diagnosticId: string) => ipcRenderer.invoke("admin:openDiagnostics", diagnosticId) as Promise<void>,
   notice: () => ipcRenderer.invoke("notice:current") as Promise<LauncherNotice | null>,

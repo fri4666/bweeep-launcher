@@ -1,0 +1,38 @@
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from "node:fs/promises";
+import { generateKeyPairSync, sign, createHash } from "node:crypto";
+import { gzipSync, gunzipSync } from "node:zlib";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+const dir=await mkdtemp(path.join(os.tmpdir(),"bweeep-vps-stage-"));
+const hash=b=>createHash("sha256").update(b).digest("hex");
+const {publicKey,privateKey}=generateKeyPairSync("ed25519");
+const env={...process.env,BWEEP_UPDATE_PUBLIC_KEY_BASE64:Buffer.from(publicKey.export({type:"spki",format:"pem"})).toString("base64")};
+try {
+ const runtime=path.join(dir,"runtime"),out=path.join(dir,"staged");
+ await mkdir(runtime);
+ const bytes=Buffer.from("synthetic signed runtime"),packed=gzipSync(bytes,{level:6});
+ await writeFile(path.join(runtime,"Bweeep.exe"),bytes);
+ const payload={schema:1,version:"0.2.1-beta.1",channel:"beta",arch:"x64",files:[{path:"Bweeep.exe",size:bytes.length,packedSize:packed.length,sha256:hash(bytes),packedSha256:hash(packed)}]};
+ const manifest={...payload,signature:sign(null,Buffer.from(JSON.stringify(payload)),privateKey).toString("base64")};
+ const manifestFile=path.join(dir,"manifest.json");
+ await writeFile(manifestFile,JSON.stringify(manifest));
+ const installer=Buffer.from("synthetic installer, not executable");
+ const signed={schema:1,version:payload.version,arch:"x64",size:installer.length,sha256:hash(installer),chunkSize:5*1024*1024,chunks:1};
+ const descriptor={...signed,signature:sign(null,Buffer.from(JSON.stringify(signed)),privateKey).toString("base64")};
+ const exe=path.join(dir,"setup.exe"),descriptorFile=path.join(dir,"descriptor.json");
+ await writeFile(exe,installer); await writeFile(descriptorFile,JSON.stringify(descriptor));
+ const run=()=>execFileSync(process.execPath,["scripts/stage-vps-release.mjs",runtime,manifestFile,out,exe,descriptorFile],{env,stdio:"pipe"});
+ run();run();
+ assert.deepEqual(gunzipSync(await readFile(path.join(out,"blobs",hash(packed),"part-0000.bin"))),bytes);
+ assert.deepEqual(await readFile(path.join(out,"installers",payload.version,"x64",hash(installer),"part-0000.bin")),installer);
+ assert.ok(!(await readdir(out)).includes("channels"));
+ await writeFile(path.join(runtime,"Bweeep.exe"),Buffer.from("tampered"));
+ assert.throws(run);
+ await writeFile(path.join(runtime,"Bweeep.exe"),bytes);
+ descriptor.signature="invalid";
+ await writeFile(descriptorFile,JSON.stringify(descriptor));
+ assert.throws(run);
+ console.log("VPS staging: signed runtime and installer, immutable repeat, tamper rejection, no channel publication PASS");
+} finally {await rm(dir,{recursive:true,force:true});}

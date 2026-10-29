@@ -1,0 +1,19 @@
+[Unit]
+Description=Bweeep exclusive VPS/PC host coordinator
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=notify
+NotifyAccess=all
+WatchdogSec=30
+ExecStart=/usr/bin/flock -n /var/lib/bweeep-host-agent/agent.lock /opt/node-v24.18.0/bin/node /usr/local/lib/bweeep-hosting/host-agent.mjs /etc/bweeep-host-agent.json
+ExecStopPost=/usr/local/lib/bweeep-hosting/driver.py /etc/bweeep-host-agent.json fence
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=650
+KillMode=control-group
+NoNewPrivileges=yes
+Nice=5
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+{
+  "cluster": "main",
+  "node": "pc",
+  "credentialsFile": "/home/dev/.config/bweeep/notice-relay.env",
+  "stateFile": "/var/lib/bweeep-host-agent/activation.json",
+  "standbyRoot": "/var/lib/bweeep-host-agent/standby",
+  "knownHosts": "/home/dev/.ssh/known_hosts",
+  "vpsSshKey": "/home/dev/.ssh/vultr-minecraft-jp",
+  "vpsBackupKey": "/home/dev/.ssh/vultr-korea-backup"
+}

@@ -1,3 +1,4 @@
+import { fetchUpdateArtifact } from "./update-delivery.js";
 import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -92,9 +93,9 @@ export async function prepareProtectedInstaller(options: {
   try {
     options.progress(0, descriptor.size);
     for (let part = 0; part < descriptor.chunks; part++) {
-      const response = await fetcher(`${UPDATE_STORAGE_ROOT}/installers/${version}/${arch}/${descriptor.sha256}/part-${String(part).padStart(4, "0")}.bin`, {
+      const response = await fetchUpdateArtifact(`${UPDATE_STORAGE_ROOT}/installers/${version}/${arch}/${descriptor.sha256}/part-${String(part).padStart(4, "0")}.bin`, {
         signal: AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)])
-      });
+      }, fetcher);
       const expected = Math.min(UPDATE_CHUNK_SIZE, descriptor.size - received);
       const bytes = await boundedBytes(response, expected);
       if (bytes.length !== expected) throw new Error("설치 파일 조각 크기가 올바르지 않습니다.");
