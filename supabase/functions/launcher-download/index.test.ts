@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { installerResponse } from "./index.ts";
+import { installerResponse, githubInstallerResponse } from "./index.ts";
 
 Deno.test("serves the signed installer parts as one direct exe download", async () => {
   const first = new Uint8Array(5 * 1024 * 1024).fill(42);
@@ -44,4 +44,28 @@ Deno.test("fails the download if a part does not match the signed checksum", asy
     rejected = true;
   }
   if (!rejected) throw new Error("A corrupt part must fail the installer download");
+});
+
+Deno.test("redirects only to the exact public GitHub installer with matching signed size and digest", async () => {
+  for (const arch of ["x64", "arm64"] as const) {
+    const manifest = { version: "0.1.41", arch, size: 123, sha256: "a".repeat(64), chunks: 1 };
+    const filename = `Bweeep-Setup-0.1.41${arch === "arm64" ? "-arm64" : ""}.exe`;
+    const url = `https://github.com/fri4666/bweeep-launcher/releases/download/v0.1.41/${filename}`;
+    const asset = { name: filename, size: 123, digest: `sha256:${manifest.sha256}`, browser_download_url: url };
+    const release = { draft: false, prerelease: false, tag_name: "v0.1.41", assets: [asset] };
+    const fetcher = ((address: string) => {
+      if (!address.startsWith("https://api.github.com/repos/fri4666/bweeep-launcher/releases/tags/")) throw new Error("Unexpected destination");
+      return Promise.resolve(Response.json(release));
+    }) as typeof fetch;
+    const response = await githubInstallerResponse(manifest, fetcher);
+    if (response?.status !== 302 || response.headers.get("location") !== url) throw new Error("Expected verified GitHub redirect");
+    for (const change of [{ digest: "sha256:" + "b".repeat(64) }, { size: 124 }, { browser_download_url: "https://example.com/file.exe" }]) {
+      const wrong = (() => Promise.resolve(Response.json({ ...release, assets: [{ ...asset, ...change }] }))) as typeof fetch;
+      if (await githubInstallerResponse(manifest, wrong) !== null) throw new Error("Mismatched asset must not redirect");
+    }
+    for (const change of [{ draft: true }, { prerelease: true }, { tag_name: "v0.1.42" }, { assets: [asset, asset] }]) {
+      if (await githubInstallerResponse(manifest, (() => Promise.resolve(Response.json({ ...release, ...change }))) as typeof fetch) !== null) throw new Error("Unqualified release must not redirect");
+    }
+    if (await githubInstallerResponse(manifest, (() => Promise.resolve(new Response(null, { status: 404 }))) as typeof fetch) !== null) throw new Error("Missing release must use legacy path");
+  }
 });

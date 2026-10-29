@@ -1,3 +1,4 @@
+import { verifyGithubBundle } from "./verify-github-bundle.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -123,6 +124,13 @@ async function main() {
     const suffix = architecture === "arm64" ? "-arm64" : "";
     stableManifests[architecture] = await downloadManifest(repository, stableTag, "file-update-stable" + suffix + ".json", output, stable, publicKey, version, "stable", architecture);
     betaManifests[architecture] = await downloadManifest(repository, betaTag, "file-update-beta" + suffix + ".json", output, beta, publicKey, betaVersion, "beta", architecture);
+    for (const [tag, releaseInfo, fileManifest] of [[stableTag, stable, stableManifests[architecture]], [betaTag, beta, betaManifests[architecture]]]) {
+      const name = `file-update-${architecture}.bin`;
+      assert.equal(releaseInfo.assets.filter(item => item.name === name).length, 1, `Missing GitHub bundle: ${name}`);
+      const directory = path.join(output, tag);
+      gh(["release", "download", tag, "--repo", repository, "--pattern", name, "--dir", directory]);
+      await verifyGithubBundle(fileManifest.manifest, path.join(directory, name));
+    }
   }
 
   const blobParts = [];

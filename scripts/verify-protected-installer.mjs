@@ -41,6 +41,7 @@ function fetchFixture(options = {}) {
     calls.push(String(url));
     if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
     if (String(url).endsWith("/x64.json")) return new Response(JSON.stringify(options.manifest ?? manifest));
+    if (String(url).startsWith("https://github.com/")) return new Response(null, { status: 404 });
     const part = Number(/part-(\d+)\.bin$/.exec(String(url))?.[1]);
     let bytes = payload.subarray(part * UPDATE_CHUNK_SIZE, (part + 1) * UPDATE_CHUNK_SIZE);
     if (options.missing) return new Response(null, { status: 404 });
@@ -93,7 +94,8 @@ try {
   assert.equal(sha256(await fs.readFile(saved.path)), manifest.sha256);
   assert.equal(progress[0][0], 0); assert.deepEqual(progress.at(-1), [payload.length, payload.length]);
   assert.equal(calls[0], `${UPDATE_STORAGE_ROOT}/installers/0.1.40/x64.json`);
-  assert.ok(calls.every((url) => url.startsWith(UPDATE_STORAGE_ROOT) && !url.includes("/stable/") && !url.includes("github")));
+  assert.ok(calls.some((url) => url.startsWith("https://github.com/fri4666/bweeep-launcher/releases/download/v0.1.40/")));
+  assert.ok(calls.every((url) => !url.includes("/stable/")));
   pass("download-all-parts-and-verify-complete-installer-before-exposure");
 
   for (const [kind, message] of [["missing", /받지 못/], ["truncate", /조각 크기/], ["oversize", /응답 크기/], ["corrupt", /검증에 실패/]]) {

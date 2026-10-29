@@ -187,6 +187,7 @@ jobs:
           npm run build
           node scripts/verify-launcher-update.mjs
           node scripts/verify-file-update.mjs
+          node scripts/verify-github-delivery.mjs
           node scripts/verify-protected-installer.mjs
           node scripts/verify-promotion-gate.test.mjs
           node scripts/verify-nsis-codecs.test.mjs
@@ -255,14 +256,18 @@ jobs:
             release-installer/*.exe.blockmap
             release-installer/*.yml
             release-installer/file-update-*.json
+            release-installer/file-update-*.bin
             release-installer-beta/*.exe
             release-installer-beta/*.exe.blockmap
             release-installer-beta/*.yml
             release-installer-beta/file-update-*.json
+            release-installer-beta/file-update-*.bin
             release-installer-arm64/*.exe
             release-installer-arm64/*.exe.blockmap
             release-installer-arm64/file-update-*.json
+            release-installer-arm64/file-update-*.bin
             release-installer-beta-arm64/*.exe
             release-installer-beta-arm64/*.exe.blockmap
             release-installer-beta-arm64/file-update-*.json
+            release-installer-beta-arm64/file-update-*.bin
           retention-days: 7

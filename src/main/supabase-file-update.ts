@@ -1,3 +1,4 @@
+import { releaseAssetUrl, updateBundleRange, readReleaseRange } from "./github-delivery.js";
 import { app, net } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -131,6 +132,11 @@ async function prepareFiles(manifest: FileUpdateManifest, signal: AbortSignal, u
     changed = [];
     return;
   }
+  const bundleUrl = releaseAssetUrl(manifest.version, `file-update-${manifest.arch}.bin`);
+  // Old published releases have no bundle. Only a definite 404 uses legacy Storage.
+  const probe = await net.fetch(bundleUrl, { method: "HEAD", signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
+  const useGithub = probe.ok;
+  if (!useGithub && probe.status !== 404) throw new Error(`업데이트 파일을 확인하지 못했습니다. (${probe.status})`);
   const needed: FileUpdateEntry[] = [];
   for (const file of manifest.files) {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -156,9 +162,17 @@ async function prepareFiles(manifest: FileUpdateManifest, signal: AbortSignal, u
     try {
       for (let part = 0; part < updatePartCount(file.packedSize); part++) {
         const downloadSignal = AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)]);
-        const response = await net.fetch(releaseFileUrl(manifest, file.path, part), { signal: downloadSignal });
-        if (!response.ok || !response.body) throw new Error(`업데이트 파일을 받지 못했습니다. (${response.status})`);
-        await pipeline(Readable.fromWeb(response.body as never), fs.createWriteStream(packedTemporary, { flags: part === 0 ? "w" : "a" }), { signal: downloadSignal });
+        if (useGithub) {
+          const range = updateBundleRange(manifest, file.path, part, UPDATE_CHUNK_SIZE);
+          const response = await net.fetch(bundleUrl, { headers: { Range: `bytes=${range.start}-${range.end}` }, signal: downloadSignal });
+          const bytes = await readReleaseRange(response, range.start, range.end, range.total);
+          if (part === 0) await fsp.writeFile(packedTemporary, bytes);
+          else await fsp.appendFile(packedTemporary, bytes);
+        } else {
+          const response = await net.fetch(releaseFileUrl(manifest, file.path, part), { signal: downloadSignal });
+          if (!response.ok || !response.body) throw new Error(`업데이트 파일을 받지 못했습니다. (${response.status})`);
+          await pipeline(Readable.fromWeb(response.body as never), fs.createWriteStream(packedTemporary, { flags: part === 0 ? "w" : "a" }), { signal: downloadSignal });
+        }
         const partSize = Math.min(UPDATE_CHUNK_SIZE, file.packedSize - part * UPDATE_CHUNK_SIZE);
         received += partSize;
         setStatus({ state: "downloading", update, percent: total ? Math.round(received / total * 100) : 100 });

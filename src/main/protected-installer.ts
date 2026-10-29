@@ -1,3 +1,4 @@
+import { releaseAssetUrl, readReleaseRange } from "./github-delivery.js";
 import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -87,16 +88,30 @@ export async function prepareProtectedInstaller(options: {
   const temporary = `${destination}.part`;
   const hash = createHash("sha256");
   let received = 0;
+  const githubUrl = releaseAssetUrl(version, `Bweeep-Setup-${version}${arch === "arm64" ? "-arm64" : ""}.exe`);
+  let useGithub = true;
   await fsp.mkdir(options.stage, { recursive: true });
   const output = await fsp.open(temporary, "wx");
   try {
     options.progress(0, descriptor.size);
     for (let part = 0; part < descriptor.chunks; part++) {
-      const response = await fetcher(`${UPDATE_STORAGE_ROOT}/installers/${version}/${arch}/${descriptor.sha256}/part-${String(part).padStart(4, "0")}.bin`, {
+      const expected = Math.min(UPDATE_CHUNK_SIZE, descriptor.size - received);
+      const end = received + expected - 1;
+      let response: Response | undefined;
+      if (useGithub) {
+        response = await fetcher(githubUrl, {
+          headers: { Range: `bytes=${received}-${end}` },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)])
+        });
+        if (part === 0 && response.status === 404) {
+          await response.body?.cancel();
+          useGithub = false;
+        }
+      }
+      if (!useGithub) response = await fetcher(`${UPDATE_STORAGE_ROOT}/installers/${version}/${arch}/${descriptor.sha256}/part-${String(part).padStart(4, "0")}.bin`, {
         signal: AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)])
       });
-      const expected = Math.min(UPDATE_CHUNK_SIZE, descriptor.size - received);
-      const bytes = await boundedBytes(response, expected);
+      const bytes = useGithub ? await readReleaseRange(response!, received, end, descriptor.size) : await boundedBytes(response!, expected);
       if (bytes.length !== expected) throw new Error("설치 파일 조각 크기가 올바르지 않습니다.");
       hash.update(bytes);
       await output.writeFile(bytes);

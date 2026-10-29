@@ -30,18 +30,25 @@ async function filesIn(dir, relative = "") {
 }
 
 const files = [];
-for (const relative of (await filesIn(input)).sort()) {
-  const absolute = path.join(input, ...relative.split("/"));
-  const bytes = await fsp.readFile(absolute);
-  const packed = gzipSync(bytes, { level: 6 });
-  files.push({
-    path: relative,
-    size: bytes.length,
-    packedSize: packed.length,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
-    packedSha256: createHash("sha256").update(packed).digest("hex")
-  });
-}
+const bundlePath = path.join(path.dirname(output), `file-update-${arch}.bin`);
+await fsp.mkdir(path.dirname(output), { recursive: true });
+const bundle = await fsp.open(bundlePath, "w");
+try {
+  for (const relative of (await filesIn(input)).sort()) {
+    const absolute = path.join(input, ...relative.split("/"));
+    const bytes = await fsp.readFile(absolute);
+    const packed = gzipSync(bytes, { level: 6 });
+    await bundle.writeFile(packed);
+    files.push({
+      path: relative,
+      size: bytes.length,
+      packedSize: packed.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      packedSha256: createHash("sha256").update(packed).digest("hex")
+    });
+  }
+} finally { await bundle.close(); }
+if ((await fsp.stat(bundlePath)).size >= 2 * 1024 ** 3) throw new Error("GitHub update bundle must be below 2 GiB");
 if (!files.some((file) => file.path === "Bweeep.exe")) throw new Error("Bweeep.exe is missing from the package");
 const payload = { schema: 1, version, channel, arch, files };
 const signature = sign(null, Buffer.from(JSON.stringify(payload)), key).toString("base64");

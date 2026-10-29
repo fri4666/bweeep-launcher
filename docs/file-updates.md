@@ -1,6 +1,55 @@
-# Supabase file updates
+# Launcher updates through GitHub Releases
 
-## Release layout
+
+## GitHub delivery migration
+
+Large public launcher downloads now prefer the existing public
+`fri4666/bweeep-launcher` GitHub Releases. Authentication, membership, private
+modpacks, signed channel pointers and installer descriptors stay in Supabase.
+The repository and release assets must remain public while clients use them.
+Changing the publisher account does not change the repository owner or URLs.
+
+Each new release contains `file-update-x64.bin` and `file-update-arm64.bin`.
+A bundle concatenates each gzip-compressed file in the exact signed manifest
+order. The client derives offsets from signed `packedSize` values and requests
+only changed files in ranges of at most 5 MiB. It requires HTTP 206, the exact
+Content-Range and byte count, then verifies both compressed and expanded hashes.
+This preserves changed-file updates without attaching thousands of assets.
+Bundles must stay below GitHub's 2 GiB per-asset limit. Both stable and beta
+promotion gates download and verify every bundle file before publication.
+
+Protected installations fetch the existing GitHub NSIS asset with bounded
+range requests, retaining the signed version/architecture descriptor, complete
+SHA-256 check and existing NSIS approval/restart behavior. A definite missing
+asset (404) uses the existing Storage path for old releases or unpublished
+staged candidates. Other HTTP errors, bad ranges or corruption fail the update.
+The browser `launcher-download` route redirects only when GitHub's public
+non-prerelease asset has the exact filename, URL, size and SHA-256 digest from
+the verified signed descriptor. Otherwise it retains verified Storage streaming.
+
+This is a compatible transition, not immediate Storage retirement. Old installed
+clients still know only Storage. CI therefore continues uploading legacy chunks
+while also attaching GitHub bundles; existing signatures and channel formats
+are unchanged. Do not delete referenced blobs or installers after merging.
+
+Rollout:
+1. Human review/merge this change, then use the existing staged x64/ARM64 and
+   normal Windows protected-install validation gates before publishing a launcher.
+2. Verify an older installed launcher reaches that release through the retained
+   Storage bridge. Then verify the new launcher downloads a later release's
+   changed files and full installer from public GitHub without authentication.
+   A local fixture or unpublished draft fallback is not that end-to-end proof.
+3. Review and deploy the `launcher-download` Edge Function separately; check its
+   actual redirect and downloaded executable against the signed descriptor.
+4. Compare actual egress after rollout. Inventory all stable/beta manifests and
+   installed-client dependencies before approving a retention/deletion change.
+   Storage remains over quota until a separately reviewed cleanup or plan change.
+
+Rollback: revert through a new PR and rebuild/revalidate the next release;
+restore the previous Edge Function for the browser route. Retained Storage
+objects allow legacy delivery. Do not replace published signed bytes in place.
+
+## Legacy Storage layout and bridge
 
 The Windows installer bootstraps shortcuts, uninstall, and the invite URL
 protocol. It installs an unpacked Electron app. Writable per-user installations
@@ -42,10 +91,10 @@ them if a replacement or restart command fails.
 
 The Storage bucket is public for reads because update checks must work before
 login. Write access uses the project secret API key only in CI. Never put it
-in the desktop app. The private source repository still produces binaries
-users can inspect.
+in the desktop app. The repository is public during GitHub delivery; do not make it private while
+installed clients depend on its release assets.
 
-## Prepare the transition
+## Historical Supabase transition (not the GitHub rollout)
 
 1. Apply `supabase/migrations/20261019000000_add_launcher_update_bucket.sql` to
    the existing Bweeep project. Confirm the new bucket is public and the
@@ -77,9 +126,8 @@ users can inspect.
    release available for a migration window before making the repository
    private. Clients that missed v0.1.40 will then need the Supabase installer.
 
-The existing GitHub release workflow may continue to create private releases
-for build records after the repository is private. The new launcher does not
-use those assets for update downloads.
+The earlier private-repository plan is superseded by GitHub delivery above.
+GitHub release assets must remain publicly downloadable.
 
 ## Build and verification
 
