@@ -22,12 +22,42 @@ Deno.test("admin requests are checked field by field", () => {
     throw new Error("Release and diagnostics ids are UUIDs.");
   }
   for (const action of ADMIN_ACTIONS) {
-    if (parseAdminRequest({ action }) === null && !["setTester", "setMemberRole", "removeMember", "releaseName", "deleteReservation", "activateRelease", "openDiagnostics", "setNotice"].includes(action)) {
+    if (parseAdminRequest({ action }) === null && !["setTester", "setMemberRole", "removeMember", "releaseName", "deleteReservation", "activateRelease", "openDiagnostics", "setNotice", "configureHosting", "requestHostingSwitch"].includes(action)) {
       throw new Error(`${action} is listed but not parsed.`);
     }
   }
   if (ADMIN_ACTIONS.has("gameAuth") || ADMIN_ACTIONS.has("uploadDiagnostics") || ADMIN_ACTIONS.has("extendGameAuth")) {
     throw new Error("Member actions must not be treated as admin actions.");
+  }
+});
+
+Deno.test("hosting actions require valid policy, revision and target node", () => {
+  const policy = { primaryNode: "vps", automatic: false, failureSeconds: 90, syncMinutes: 1, maxSnapshotMinutes: 10, allowRecovery: false };
+  const configure = { action: "configureHosting", revision: 1, policy };
+  const parsed = parseAdminRequest(configure);
+  if (parsed?.action !== "configureHosting" || parsed.revision !== 1 || Object.entries(policy).some(([key, value]) => parsed.policy[key as keyof typeof policy] !== value)) {
+    throw new Error("A valid hosting policy must be preserved.");
+  }
+  for (const revision of [undefined, null, 0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+    if (parseAdminRequest({ ...configure, revision }) !== null) throw new Error("Hosting revision must be a positive safe integer.");
+  }
+  for (const invalid of [
+    undefined, null, {}, { ...policy, extra: true }, { ...policy, primaryNode: "other" },
+    { ...policy, automatic: true }, { ...policy, automatic: "true" },
+    { ...policy, failureSeconds: 89 }, { ...policy, failureSeconds: 1801 },
+    { ...policy, syncMinutes: 0 }, { ...policy, syncMinutes: 1.5 },
+    { ...policy, syncMinutes: 11 }, { ...policy, maxSnapshotMinutes: 121 }
+  ]) {
+    if (parseAdminRequest({ ...configure, policy: invalid }) !== null) throw new Error("Invalid hosting policy was accepted.");
+  }
+  if (parseAdminRequest({ ...configure, policy: { ...policy, automatic: true, allowRecovery: true } }) === null) {
+    throw new Error("Acknowledged automatic recovery must be accepted.");
+  }
+  for (const node of ["vps", "pc"]) {
+    if (parseAdminRequest({ action: "requestHostingSwitch", node })?.action !== "requestHostingSwitch") throw new Error("A known hosting target must be accepted.");
+  }
+  for (const node of [undefined, null, "other", 1]) {
+    if (parseAdminRequest({ action: "requestHostingSwitch", node }) !== null) throw new Error("An unknown hosting target must be rejected.");
   }
 });
 
