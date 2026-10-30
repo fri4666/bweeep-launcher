@@ -26,6 +26,7 @@ assert.equal(killed.abnormal, true);
 assert.match(killed.message, /코드 0xFFFFFFFF/);
 assert.equal(killed.code, 4294967295);
 assert.match(describeGameExit({ code: 3221225477, signal: null }).message, /코드 0xC0000005/);
+assert.equal(describeGameExit({ code: 3221226505, signal: null }).abnormal, true, "native OpenAL faults must remain errors, even after an intentional disconnect");
 
 const clean = describeGameExit({ code: 0, signal: null });
 assert.equal(clean.abnormal, false);

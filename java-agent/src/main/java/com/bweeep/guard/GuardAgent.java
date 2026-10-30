@@ -27,7 +27,7 @@ public final class GuardAgent {
         }
         boolean exitOnLeave = Boolean.parseBoolean(System.getProperty("bweeep.exitOnLeave", "").trim());
         // Last in the list: it registers no algorithms, so no lookup ever lands on it.
-        Security.addProvider(new GuardProvider(policy, exitOnLeave ? LeaveWatch.exitingJvm() : null));
+        Security.addProvider(new GuardProvider(policy, exitOnLeave ? LeaveWatch.exitingJvm(instrumentation) : null));
         instrumentation.addTransformer(new BootstrapTransformer(), true);
         for (Class<?> loaded : instrumentation.getAllLoadedClasses()) {
             if (BootstrapTransformer.TARGET.equals(loaded.getName().replace('.', '/'))) {

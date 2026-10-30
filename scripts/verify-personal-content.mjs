@@ -71,10 +71,10 @@ try {
   assert.equal(connectionGuardEnabled(manifest), true);
   assert.equal(connectionGuardEnabled({ ...manifest, clientFeatures: { connectionLock: false } }), false);
   assert.deepEqual(connectionGuardJvmArgs("/agent.jar", manifest), ["-javaagent:/agent.jar", "-Dbweeep.targetServer=example.test:25565", "-Dbweeep.exitOnLeave=true"]);
-  const guardJar = await fs.readFile(new URL("../resources/java-agent/bweeep-guard-1.1.0.jar", import.meta.url));
+  const guardJar = await fs.readFile(new URL("../resources/java-agent/bweeep-guard-1.1.1.jar", import.meta.url));
   assert.equal(
     crypto.createHash("sha256").update(guardJar).digest("hex"),
-    "57a2d566a946b86738d884c783795455ca52d5f9021c351adfe65341c30b55af"
+    "6c193f8f79007c0c9f0eebaf28a3a0fe7e6b91e0eb41c5522ded7e466a4c6bec"
   );
   const lockContents = Buffer.from("test remote bridge");
   const lockHash = crypto.createHash("sha256").update(lockContents).digest("hex");

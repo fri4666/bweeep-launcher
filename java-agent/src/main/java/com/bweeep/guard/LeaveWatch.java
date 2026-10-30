@@ -1,5 +1,6 @@
 package com.bweeep.guard;
 
+import java.lang.instrument.Instrumentation;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -15,6 +16,7 @@ final class LeaveWatch {
     // Players notice anything longer: the game used to close as soon as they left.
     static final long GRACE_MS = 100L;
     private static final long HALT_AFTER_MS = 2_000L;
+    private static final long CLIENT_HALT_AFTER_MS = 10_000L;
 
     /** Connections to the selected server being opened or open. */
     private final AtomicInteger active = new AtomicInteger();
@@ -28,11 +30,11 @@ final class LeaveWatch {
         this.exit = exit;
     }
 
-    static LeaveWatch exitingJvm() {
+    static LeaveWatch exitingJvm(final Instrumentation instrumentation) {
         return new LeaveWatch(GRACE_MS, new Runnable() {
             @Override
             public void run() {
-                exitJvm();
+                exitJvm(instrumentation);
             }
         });
     }
@@ -62,22 +64,36 @@ final class LeaveWatch {
         timer.start();
     }
 
-    private static void exitJvm() {
+    private static void exitJvm(Instrumentation instrumentation) {
         System.out.println("BWEEP_EXIT_ON_LEAVE");
+        if (ClientExit.requestStop(instrumentation)) {
+            System.out.println("BWEEP_EXIT_GRACEFUL_REQUESTED");
+            startWatchdog(CLIENT_HALT_AFTER_MS);
+            return;
+        }
+        startWatchdog(HALT_AFTER_MS);
+        exitFallback();
+    }
+
+    private static void startWatchdog(final long timeoutMs) {
         // A shutdown hook that hangs (a busy render thread, a mod) must not keep the game open.
         Thread halt = new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
-                    Thread.sleep(HALT_AFTER_MS);
+                    Thread.sleep(timeoutMs);
                 } catch (InterruptedException ignored) {
                     // Halt now instead.
                 }
+                System.out.println("BWEEP_EXIT_WATCHDOG");
                 Runtime.getRuntime().halt(0);
             }
         }, "Bweeep exit watchdog");
         halt.setDaemon(true);
         halt.start();
+    }
+
+    private static void exitFallback() {
         try {
             System.exit(0);
         } catch (SecurityException trapped) {

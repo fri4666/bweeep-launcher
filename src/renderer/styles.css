@@ -936,7 +936,7 @@ h3 {
 
 .dockError {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   padding: 12px 10px 12px 14px;
   border-color: rgba(238, 138, 128, 0.4);
@@ -945,13 +945,13 @@ h3 {
 .dockError strong {
   display: block;
   color: var(--danger);
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .dockError p {
   margin-top: 4px;
   color: #d8d3cb;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -962,6 +962,11 @@ h3 {
   gap: 4px;
 }
 
+/* Multiple recovery actions get their own row instead of squeezing the message. */
+.dockError:has(.dockErrorActions .secondaryButton + .secondaryButton) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .dockErrorActions .iconOnly {
   flex-shrink: 0;
   margin-left: auto;
@@ -970,7 +975,7 @@ h3 {
 .dockErrorActions .secondaryButton {
   min-height: 30px;
   padding: 0 10px;
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .dockHint {
@@ -1633,11 +1638,11 @@ h3 {
   border-color: rgba(145,177,224,.16);
 }
 .heroFooter:has(.dockError) {
-  grid-template-columns: minmax(0,1fr);
-  gap: 18px;
+  gap: 24px;
 }
 .heroFooter:has(.dockError) .actionDock {
-  width: 100%;
+  width: 340px;
+  max-width: 100%;
 }
 .heroFooter:has(.dockError) .launchRow {
   justify-self: end;

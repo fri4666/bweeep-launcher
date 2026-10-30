@@ -1522,6 +1522,26 @@ if (catalogUnavailable) {
   await page.waitForTimeout(50);
   if (await page.locator(".dockError .authFailureLine").count()) throw new Error("a refusal replaced the crash message");
   interactionChecks.push("crash-stays-over-refusal");
+  // Error cards retain the old compact dock footprint on every supported window.
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 1120, height: 740 }, { width: 920, height: 620 }]) {
+    await page.setViewportSize(viewport);
+    await page.waitForTimeout(100);
+    const errorSize = await page.locator(".dockError").evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return { width: box.width, bottom: box.bottom, height: box.height,
+        overflow: element.scrollWidth > element.clientWidth,
+        heading: getComputedStyle(element.querySelector("strong")).fontSize,
+        body: getComputedStyle(element.querySelector("p")).fontSize };
+    });
+    if (errorSize.width > 340 || errorSize.height > 170 || errorSize.bottom > viewport.height || errorSize.overflow ||
+        errorSize.heading !== "13px" || errorSize.body !== "12px") {
+      throw new Error("Error card lost its compact size: " + JSON.stringify({ viewport, errorSize }));
+    }
+    await page.screenshot({ path: "previews/bweeep-compact-error-" + viewport.width + ".png" });
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  interactionChecks.push("compact-error-size");
+
   await page.evaluate(() => { window.__exitBeforeLaunchResolves = true; });
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByText("Minecraft가 실행 직후 종료되었습니다. (신호 SIGSEGV)").waitFor();
@@ -1534,6 +1554,24 @@ if (catalogUnavailable) {
   await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
   await page.evaluate(() => window.__failWithPersonalMods());
   await page.getByText("개인 모드 때문일 수 있어요", { exact: false }).waitFor();
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 1120, height: 740 }, { width: 920, height: 620 }]) {
+    await page.setViewportSize(viewport);
+    await page.waitForTimeout(100);
+    const recovery = await page.locator(".dockError").evaluate((element) => ({
+      width: element.getBoundingClientRect().width,
+      height: element.getBoundingClientRect().height,
+      bottom: element.getBoundingClientRect().bottom,
+      messageWidth: element.querySelector("p").getBoundingClientRect().width,
+      overflowing: element.scrollWidth > element.clientWidth
+    }));
+    if (recovery.width > 340 || recovery.height > 170 || recovery.messageWidth < 200 ||
+        recovery.bottom > viewport.height || recovery.overflowing) {
+      throw new Error("Recovery actions squeeze the message: " + JSON.stringify({ viewport, recovery }));
+    }
+    await page.screenshot({ path: "previews/bweeep-recovery-error-" + viewport.width + ".png" });
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  interactionChecks.push("recovery-actions-preserve-readable-message");
   await page.screenshot({ path: "previews/bweeep-launcher-retry-without-mods.png" });
   await page.getByRole("button", { name: "개인 모드 빼고 시작" }).click();
   await page.waitForFunction(() => window.__lastLaunchRequest?.withoutPersonalMods === true);
