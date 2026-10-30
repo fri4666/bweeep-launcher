@@ -1533,7 +1533,7 @@ if (catalogUnavailable) {
         heading: getComputedStyle(element.querySelector("strong")).fontSize,
         body: getComputedStyle(element.querySelector("p")).fontSize };
     });
-    if (errorSize.width > 340 || errorSize.height > 170 || errorSize.bottom > viewport.height || errorSize.overflow ||
+    if (errorSize.width > 340 || errorSize.height > 108 || errorSize.bottom > viewport.height || errorSize.overflow ||
         errorSize.heading !== "13px" || errorSize.body !== "12px") {
       throw new Error("Error card lost its compact size: " + JSON.stringify({ viewport, errorSize }));
     }
@@ -1553,7 +1553,10 @@ if (catalogUnavailable) {
   await page.getByRole("button", { name: "게임 시작" }).click();
   await page.getByRole("button", { name: "게임 실행 중" }).waitFor();
   await page.evaluate(() => window.__failWithPersonalMods());
-  await page.getByText("개인 모드 때문일 수 있어요", { exact: false }).waitFor();
+  await page.getByRole("button", { name: "개인 모드 빼고 시작" }).waitFor();
+  if ((await page.locator(".dockError p").innerText()).trim() !== "Minecraft가 비정상 종료되었습니다. (코드 1)") {
+    throw new Error("Recovery error must retain the exit reason without redundant advice");
+  }
   for (const viewport of [{ width: 1440, height: 900 }, { width: 1120, height: 740 }, { width: 920, height: 620 }]) {
     await page.setViewportSize(viewport);
     await page.waitForTimeout(100);
@@ -1562,10 +1565,11 @@ if (catalogUnavailable) {
       height: element.getBoundingClientRect().height,
       bottom: element.getBoundingClientRect().bottom,
       messageWidth: element.querySelector("p").getBoundingClientRect().width,
-      overflowing: element.scrollWidth > element.clientWidth
+      overflowing: element.scrollWidth > element.clientWidth,
+      actionRows: new Set([...element.querySelectorAll(".dockErrorActions button")].map(button => Math.round(button.getBoundingClientRect().top))).size
     }));
-    if (recovery.width > 340 || recovery.height > 170 || recovery.messageWidth < 200 ||
-        recovery.bottom > viewport.height || recovery.overflowing) {
+    if (recovery.width > 340 || recovery.height > 90 || recovery.messageWidth < 200 ||
+        recovery.bottom > viewport.height || recovery.overflowing || recovery.actionRows !== 1) {
       throw new Error("Recovery actions squeeze the message: " + JSON.stringify({ viewport, recovery }));
     }
     await page.screenshot({ path: "previews/bweeep-recovery-error-" + viewport.width + ".png" });

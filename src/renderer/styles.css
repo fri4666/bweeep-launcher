@@ -935,15 +935,17 @@ h3 {
 }
 
 .dockError {
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  padding: 12px 10px 12px 14px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 10px 12px;
   border-color: rgba(238, 138, 128, 0.4);
 }
 
 .dockError strong {
   display: block;
+  padding-right: 22px;
   color: var(--danger);
   font-size: 13px;
 }
@@ -955,27 +957,47 @@ h3 {
   line-height: 1.45;
 }
 
+.dockErrorClose {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 24px;
+  height: 24px;
+}
+
 .dockErrorActions {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 4px;
+  align-items: center;
+  gap: 4px 12px;
 }
 
-/* Multiple recovery actions get their own row instead of squeezing the message. */
-.dockError:has(.dockErrorActions .secondaryButton + .secondaryButton) {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.dockErrorActions .iconOnly {
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-.dockErrorActions .secondaryButton {
-  min-height: 30px;
-  padding: 0 10px;
+.dockErrorActions .secondaryButton,
+.dockErrorActions .diagnosticsButton {
+  min-height: 20px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  background: transparent;
+  border: 0;
+}
+
+.dockErrorActions .secondaryButton:hover {
+  color: var(--text-strong);
+  background: transparent;
+}
+
+.dockErrorActions .diagnosticsButton.is-sent {
+  color: var(--ok);
+  text-decoration: none;
+}
+
+.dockErrorActions .diagnosticsError {
+  flex-basis: 100%;
 }
 
 .dockHint {
