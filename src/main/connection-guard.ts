@@ -9,8 +9,8 @@ import { ensureVerifiedCopy } from "./verified-copy.js";
  * included. Source: java-agent/.
  */
 const GUARD = {
-  fileName: "bweeep-guard-1.1.0.jar",
-  sha256: "57a2d566a946b86738d884c783795455ca52d5f9021c351adfe65341c30b55af"
+  fileName: "bweeep-guard-1.1.1.jar",
+  sha256: "6c193f8f79007c0c9f0eebaf28a3a0fe7e6b91e0eb41c5522ded7e466a4c6bec"
 };
 
 /** On unless a manifest explicitly opts out. */

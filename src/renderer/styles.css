@@ -935,42 +935,69 @@ h3 {
 }
 
 .dockError {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
-  padding: 12px 10px 12px 14px;
+  gap: 4px;
+  padding: 10px 12px;
   border-color: rgba(238, 138, 128, 0.4);
 }
 
 .dockError strong {
   display: block;
+  padding-right: 22px;
   color: var(--danger);
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .dockError p {
   margin-top: 4px;
   color: #d8d3cb;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1.45;
+}
+
+.dockErrorClose {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 24px;
+  height: 24px;
 }
 
 .dockErrorActions {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 4px;
+  align-items: center;
+  gap: 4px 12px;
 }
 
-.dockErrorActions .iconOnly {
-  flex-shrink: 0;
-  margin-left: auto;
+.dockErrorActions .secondaryButton,
+.dockErrorActions .diagnosticsButton {
+  min-height: 20px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  background: transparent;
+  border: 0;
 }
 
-.dockErrorActions .secondaryButton {
-  min-height: 30px;
-  padding: 0 10px;
-  font-size: 14px;
+.dockErrorActions .secondaryButton:hover {
+  color: var(--text-strong);
+  background: transparent;
+}
+
+.dockErrorActions .diagnosticsButton.is-sent {
+  color: var(--ok);
+  text-decoration: none;
+}
+
+.dockErrorActions .diagnosticsError {
+  flex-basis: 100%;
 }
 
 .dockHint {
@@ -1633,11 +1660,11 @@ h3 {
   border-color: rgba(145,177,224,.16);
 }
 .heroFooter:has(.dockError) {
-  grid-template-columns: minmax(0,1fr);
-  gap: 18px;
+  gap: 24px;
 }
 .heroFooter:has(.dockError) .actionDock {
-  width: 100%;
+  width: 340px;
+  max-width: 100%;
 }
 .heroFooter:has(.dockError) .launchRow {
   justify-self: end;

@@ -77,9 +77,7 @@ function writeStorage(key: string, value: string | null): void {
 function crashError(status: GameStatus): DockError {
   return {
     title: "게임이 꺼졌어요",
-    message: status.retryWithoutPersonalMods
-      ? `${status.exitMessage ?? "실행 중 오류"} · 개인 모드 때문일 수 있어요`
-      : status.exitMessage ?? "실행 중 오류",
+    message: status.exitMessage ?? "실행 중 오류",
     retryWithoutPersonalMods: Boolean(status.retryWithoutPersonalMods),
     crash: true
   };
@@ -1158,14 +1156,14 @@ function App() {
                   <div>
                     <strong>{dockError.title}</strong>
                     {dockError.authFailure ? <AuthFailureLine reason={dockError.authFailure} /> : dockError.message && <p>{dockError.message}</p>}
-                    {!dockError.outage && <DiagnosticsButton key={`${dockError.title}|${dockError.message}|${dockError.authFailure ?? ""}`} />}
                   </div>
+                  <button className="iconOnly dockErrorClose" aria-label="오류 닫기" onClick={dismissDockError}>×</button>
                   <div className="dockErrorActions">
+                    {!dockError.outage && <DiagnosticsButton key={`${dockError.title}|${dockError.message}|${dockError.authFailure ?? ""}`} />}
                     {dockError.retryWithoutPersonalMods && (
                       <button className="secondaryButton" onClick={() => void launchSelected({ withoutPersonalMods: true })}>개인 모드 빼고 시작</button>
                     )}
                     {dockError.message && <button className="secondaryButton" onClick={() => void window.bweeep.openLog("game")}>로그 열기</button>}
-                    <button className="iconOnly" aria-label="오류 닫기" onClick={dismissDockError}>×</button>
                   </div>
                 </div>
               )}
