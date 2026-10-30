@@ -1,6 +1,6 @@
 import { UPDATE_STORAGE_ROOT } from "./file-update-manifest.js";
 
-export const UPDATE_DOWNLOAD_ROOT = "https://158.247.246.225/releases";
+export const UPDATE_DOWNLOAD_ROOT = "https://bweeep.fri4666.com/releases";
 
 export function vpsArtifactUrl(storageUrl: string): string {
   const prefix = UPDATE_STORAGE_ROOT + "/";

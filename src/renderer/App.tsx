@@ -566,7 +566,7 @@ function App() {
   async function copyInvite(kind: "code" | "link") {
     if (!createdInvite) return;
     try {
-      await window.bweeep.copyText(kind === "code" ? createdInvite.code : "bwe-e-ep://invite/" + createdInvite.code);
+      await window.bweeep.copyText(kind === "code" ? createdInvite.code : "https://bweeep.fri4666.com/invite/" + createdInvite.code);
       if (kind === "code") setInviteCopied(true);
       else setInviteLinkCopied(true);
     } catch (error) {
