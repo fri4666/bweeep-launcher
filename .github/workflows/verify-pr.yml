@@ -43,6 +43,7 @@ jobs:
       - run: node scripts/verify-vps-stage.mjs
       - run: node scripts/verify-vps-mirror.mjs
       - run: node scripts/verify-host-agent.mjs
+      - run: node scripts/verify-snapshot-retention.mjs
       - run: node --experimental-transform-types scripts/verify-hosting-admin.mjs
       - run: node scripts/verify-promotion-gate.test.mjs
       - run: node scripts/verify-nsis-codecs.test.mjs

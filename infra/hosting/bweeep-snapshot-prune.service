@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep the newest acknowledged Bweeep world backup
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n /var/lib/bweeep-host-agent/standby/.prune.lock /opt/node-v24.18.0/bin/node /usr/local/lib/bweeep-hosting/prune-snapshots.mjs /etc/bweeep-host-agent.json
+TimeoutStartSec=0
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
