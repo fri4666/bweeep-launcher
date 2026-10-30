@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { packagedAuthOrigin } from "./auth-origin.js";
 import { app, safeStorage, shell } from "electron";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -542,7 +543,8 @@ async function postLauncherAccess<T>(config: Required<Pick<SupabaseConfig, "url"
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
         // Lets the server tell launchers too old for a server to update first.
-        "x-bweeep-launcher-version": app.getVersion()
+        "x-bweeep-launcher-version": app.getVersion(),
+        "x-bweeep-launcher-runtime": "electron"
       },
       body: JSON.stringify(body)
     });
@@ -647,7 +649,7 @@ let configLoad: Promise<SupabaseConfig> | null = null;
 
 // The config only changes between launches, so read it once per process.
 function readConfig(): Promise<SupabaseConfig> {
-  configLoad ??= loadConfig().catch((error: unknown) => {
+  configLoad ??= loadConfig().then((config) => ({ ...config, url: packagedAuthOrigin(config.url, app.isPackaged) })).catch((error: unknown) => {
     configLoad = null;
     throw error;
   });

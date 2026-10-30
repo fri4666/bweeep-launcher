@@ -20,7 +20,7 @@ export interface FileUpdateManifest {
 }
 
 export const UPDATE_BUCKET = "bweeep-launcher-updates";
-export const UPDATE_STORAGE_ROOT = `https://tmwvrglzjfzauuygofpp.supabase.co/storage/v1/object/public/${UPDATE_BUCKET}`;
+export const UPDATE_STORAGE_ROOT = `https://bweeep.fri4666.com/storage/v1/object/public/${UPDATE_BUCKET}`;
 // Each Storage object stays below the Free plan's 50 MB file limit.
 export const UPDATE_CHUNK_SIZE = 5 * 1024 * 1024;
 
