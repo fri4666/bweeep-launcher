@@ -10,7 +10,7 @@ Both nodes poll the database every five seconds. A database row lock grants one 
 
 The PC pulls complete snapshots into root-only ext4 storage under /var/lib/bweeep-host-agent/standby. RCON save-off / save-all flush brackets copies; a separate timer restores save-on after a failed job. New snapshots are committed under unique IDs before the database advertises them. Incremental snapshots hard-link unchanged files to the preceding immutable snapshot. The active game directory is an independent copy, never a hard link to a backup.
 
-Copies stop before starting when less than 20 GiB is free on the destination. Snapshots are retained; automatic retention deletion is not configured. Monitor disk usage.
+Copies stop before starting when less than 20 GiB is free on the destination. Only the newest complete, coordinator-acknowledged snapshot is retained on each destination. Install bweeep-snapshot-prune.service alongside the host agent; it is started after a successful capture, without a timer. Cleanup runs at low CPU/I/O priority separately from copying. The preceding acknowledged copy is preserved until its replacement is accepted; newer in-flight copies, unexpected paths and pre-migration original worlds are never pruned. Failed copies therefore do not remove the last usable backup.
 
 An automatic takeover requires a complete snapshot from the current owner and epoch, within the configured age limit. An old or absent snapshot blocks takeover. A planned switch first fences the old owner, captures a final complete snapshot and then releases ownership. Restoring a large world can take several minutes. An interrupted activation retains its restore-required marker for the next attempt.
 
@@ -24,7 +24,7 @@ The pre-migration PC directories are retained at /home/dev/vultr-migration-20261
 
 ## Validation and recovery
 
-Run node scripts/verify-host-agent.mjs, node --experimental-transform-types scripts/verify-hosting-admin.mjs and the SQL transaction in supabase/tests/host-failover.sql. The SQL test uses an isolated cluster and rolls back. BWEEP_PREVIEW_HOSTING=true node scripts/capture-preview.mjs checks the management UI against fixtures. probe-status.py HOST PORT checks Minecraft status without joining.
+Run node scripts/verify-snapshot-retention.mjs, node scripts/verify-host-agent.mjs, node --experimental-transform-types scripts/verify-hosting-admin.mjs and the SQL transaction in supabase/tests/host-failover.sql. The SQL test uses an isolated cluster and rolls back. BWEEP_PREVIEW_HOSTING=true node scripts/capture-preview.mjs checks the management UI against fixtures. probe-status.py HOST PORT checks Minecraft status without joining.
 
 Before a manual recovery, inspect launcher_host_state, both agents, snapshot metadata and current players. Select one authoritative world first; never simply start both original services. Remove only the named zzz-host-role.conf and zzz-host-lease.conf drop-ins if retiring this controller, and restore the earlier migration guards/proxy configuration consistently with the chosen authority. Disabling the root service fences its machine by design. Database/Edge rollback alone does not restore a world or switch authority.
 

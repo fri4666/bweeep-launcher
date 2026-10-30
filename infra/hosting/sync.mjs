@@ -47,6 +47,12 @@ try {
   const ok=await api("launcher_host_snapshot",{p_cluster:config.cluster,p_node:target,p_source:source,p_epoch:state.epoch,p_at:meta.at,p_snapshot:id});
   if(!ok)throw new Error("Authority changed during snapshot");
  }
+ // Cleanup is asynchronous so old history cannot delay the next world capture.
+ // Only the destination prunes, after the coordinator has accepted the new copy.
+ try {
+  if(direction==="pull")await run("systemctl",["start","--no-block","bweeep-snapshot-prune.service"],{timeout:10000});
+  else await run("ssh",[...admin,"systemctl start --no-block bweeep-snapshot-prune.service"],{timeout:30000});
+ } catch(error) {console.error("SNAPSHOT_PRUNE_START_FAILED",error.message);}
  console.log("WORLD_SYNC_SUCCESS",direction,id);
 } finally {
  if(resumeNeeded){
